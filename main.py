@@ -19,7 +19,7 @@ TICKER_ALIASES = {
     "TESLA": "TSLA",
 }
 
-app = FastAPI(title="PMSF-X Nano", version="0.1.1")
+app = FastAPI(title="PMSF-X Nano", version="0.1.2")
 
 
 def normalize_ticker(value: str) -> str:
@@ -56,7 +56,7 @@ def health():
     return {
         "status": "ok",
         "service": "pmsfx-nano",
-        "version": "0.1.1",
+        "version": "0.1.2",
         "tiingo_configured": configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -75,10 +75,10 @@ async def quote(ticker: str):
             raise HTTPException(status_code=response.status_code, detail="Tiingo IEX request failed")
 
         iex = first_record(response.json()) or {}
-        has_iex_tops = any(
-            iex.get(field) is not None
-            for field in ("last", "bidPrice", "askPrice", "bidSize", "askSize")
-        )
+
+        # Only treat the IEX response as TOPS when real bid AND ask prices exist.
+        # Zero/null sizes must not prevent the consolidated-feed fallback.
+        has_iex_tops = iex.get("bidPrice") is not None and iex.get("askPrice") is not None
 
         if has_iex_tops:
             return {
@@ -88,6 +88,7 @@ async def quote(ticker: str):
                 "quote": iex,
             }
 
+        # Fallback for accounts without the IEX FULL TOPS entitlement.
         response = await client.get(f"{TIINGO_EQUITY_URL}/{symbol}", headers=headers)
         if response.status_code >= 400:
             raise HTTPException(status_code=response.status_code, detail="Tiingo equity intraday request failed")
@@ -118,8 +119,8 @@ async def state(ticker: str):
         ask_size = q.get("askSize") or 0
         feed_label = "Tiingo IEX TOPS"
     else:
-        # Tiingo's consolidated derived feed is available without IEX FULL TOPS.
-        # lqBid/lqAsk are liquidity-reference metrics, not raw IEX exchange quotes.
+        # Derived/consolidated Tiingo feed. These are liquidity-reference
+        # metrics, not raw IEX exchange quotes.
         last = q.get("tngoLast")
         if last is None:
             last = q.get("last")
