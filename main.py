@@ -10,7 +10,6 @@ APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
 TIINGO_EQUITY_URL = "https://api.tiingo.com/tiingo/equity/intraday"
 
-# Common inputs that users may type instead of an exact ticker.
 TICKER_ALIASES = {
     "APPLE": "AAPL",
     "MICROSOFT": "MSFT",
@@ -20,7 +19,7 @@ TICKER_ALIASES = {
     "TESLA": "TSLA",
 }
 
-app = FastAPI(title="PMSF-X Nano", version="0.1.0")
+app = FastAPI(title="PMSF-X Nano", version="0.1.1")
 
 
 def normalize_ticker(value: str) -> str:
@@ -37,9 +36,7 @@ def tiingo_headers() -> dict:
 
 def first_record(data):
     if isinstance(data, list):
-        if not data:
-            return None
-        return data[0]
+        return data[0] if data else None
     if isinstance(data, dict):
         return data
     return None
@@ -47,7 +44,10 @@ def first_record(data):
 
 @app.get("/", include_in_schema=False)
 def dashboard():
-    return FileResponse(APP_DIR / "static" / "index.html")
+    return FileResponse(
+        APP_DIR / "static" / "index.html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @app.get("/health")
@@ -56,7 +56,7 @@ def health():
     return {
         "status": "ok",
         "service": "pmsfx-nano",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "tiingo_configured": configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -70,8 +70,6 @@ async def quote(ticker: str):
 
     headers = tiingo_headers()
     async with httpx.AsyncClient(timeout=10.0) as client:
-        # Prefer IEX TOPS. If the account is not entitled to the full TOPS
-        # feed, Tiingo can still provide the consolidated derived feed below.
         response = await client.get(f"{TIINGO_IEX_URL}/{symbol}", headers=headers)
         if response.status_code >= 400:
             raise HTTPException(status_code=response.status_code, detail="Tiingo IEX request failed")
@@ -90,7 +88,6 @@ async def quote(ticker: str):
                 "quote": iex,
             }
 
-        # Fallback for accounts without the IEX FULL TOPS entitlement.
         response = await client.get(f"{TIINGO_EQUITY_URL}/{symbol}", headers=headers)
         if response.status_code >= 400:
             raise HTTPException(status_code=response.status_code, detail="Tiingo equity intraday request failed")
@@ -113,16 +110,16 @@ async def state(ticker: str):
     result = await quote(symbol)
     q = result["quote"]
 
-    source = result["source"]
-    if source == "tiingo_iex_tops":
+    if result["source"] == "tiingo_iex_tops":
         last = q.get("last")
         bid = q.get("bidPrice")
         ask = q.get("askPrice")
         bid_size = q.get("bidSize") or 0
         ask_size = q.get("askSize") or 0
+        feed_label = "Tiingo IEX TOPS"
     else:
-        # Derived/consolidated Tiingo feed. These are liquidity-reference
-        # metrics, not raw IEX TOPS quotes.
+        # Tiingo's consolidated derived feed is available without IEX FULL TOPS.
+        # lqBid/lqAsk are liquidity-reference metrics, not raw IEX exchange quotes.
         last = q.get("tngoLast")
         if last is None:
             last = q.get("last")
@@ -130,6 +127,7 @@ async def state(ticker: str):
         ask = q.get("lqAskPrice")
         bid_size = q.get("lqBidSize") or 0
         ask_size = q.get("lqAskSize") or 0
+        feed_label = "Tiingo consolidated · liquidity reference"
 
     spread_bps = None
     microprice = None
@@ -138,6 +136,8 @@ async def state(ticker: str):
         spread_bps = round((ask - bid) / mid * 10000, 3)
         if bid_size + ask_size > 0:
             microprice = round((ask * bid_size + bid * ask_size) / (bid_size + ask_size), 6)
+
+    healthy = last is not None and bid is not None and ask is not None
 
     return {
         "symbol": symbol,
@@ -148,8 +148,9 @@ async def state(ticker: str):
         "ask_size": ask_size,
         "spread_bps": spread_bps,
         "microprice": microprice,
-        "data_health": "HEALTHY" if last is not None else "DEGRADED",
-        "data_source": source,
+        "data_health": "HEALTHY" if healthy else "DEGRADED",
+        "data_source": result["source"],
+        "feed_label": feed_label,
         "quote_timestamp": q.get("quoteTimestamp") or q.get("timestamp"),
         "received_at": result["received_at"],
         "forecast": None,
