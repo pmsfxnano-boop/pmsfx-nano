@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PMSF-X Nano</title>
+  <style>
+    body{font-family:system-ui,sans-serif;margin:0;background:#0b0f14;color:#eef2f7}main{max-width:720px;margin:auto;padding:24px}h1{margin-bottom:4px}.muted{color:#9aa6b2}.card{background:#121923;border:1px solid #263242;border-radius:16px;padding:18px;margin-top:18px}input,button{font-size:16px;padding:12px;border-radius:10px;border:1px solid #344256}input{width:60%;background:#0b0f14;color:white}button{background:#eef2f7;color:#0b0f14;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.metric{background:#0b0f14;border-radius:12px;padding:12px}.value{font-size:20px;font-weight:700;margin-top:4px}.ok{color:#71e0a2}.warn{color:#ffd166}</style>
+</head>
+<body>
+<main>
+  <h1>PMSF-X Nano</h1>
+  <div class="muted">Market state gateway · v0.1.0</div>
+  <div class="card">
+    <input id="ticker" value="AAPL" maxlength="8" aria-label="Ticker">
+    <button onclick="loadState()">Consultar</button>
+    <div id="status" class="muted" style="margin-top:12px">Esperando datos.</div>
+    <div id="metrics" class="grid"></div>
+  </div>
+</main>
+<script>
+const fmt=v=>v===null||v===undefined?'—':v;
+async function loadState(){
+ const s=document.getElementById('status'),m=document.getElementById('metrics');
+ const t=document.getElementById('ticker').value.trim().toUpperCase();
+ s.textContent='Consultando Tiingo…';m.innerHTML='';
+ try{
+  const r=await fetch('/api/state/'+encodeURIComponent(t));
+  const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Error');
+  s.innerHTML=`<span class="ok">${d.symbol} · ${d.data_health}</span> · ${d.gatillazo}`;
+  m.innerHTML=[['Last',d.last],['Bid',d.bid],['Ask',d.ask],['Spread (bps)',d.spread_bps],['Microprice',d.microprice],['Bid size',d.bid_size],['Ask size',d.ask_size],['Forecast',d.forecast]].map(x=>`<div class="metric"><div class="muted">${x[0]}</div><div class="value">${fmt(x[1])}</div></div>`).join('');
+ }catch(e){s.innerHTML=`<span class="warn">${e.message}</span>`}
+}
+</script>
+</body>
+</html>
