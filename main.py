@@ -7,7 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 APP_DIR = Path(__file__).resolve().parent
-TIINGO_URL = "https://api.tiingo.com/iex"
+TIINGO_IEX_URL = "https://api.tiingo.com/iex"
+TIINGO_EQUITY_URL = "https://api.tiingo.com/tiingo/equity/intraday"
 
 # Common inputs that users may type instead of an exact ticker.
 TICKER_ALIASES = {
@@ -34,6 +35,16 @@ def tiingo_headers() -> dict:
     return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
 
 
+def first_record(data):
+    if isinstance(data, list):
+        if not data:
+            return None
+        return data[0]
+    if isinstance(data, dict):
+        return data
+    return None
+
+
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(APP_DIR / "static" / "index.html")
@@ -57,24 +68,43 @@ async def quote(ticker: str):
     if not symbol or not symbol.isalnum():
         raise HTTPException(status_code=400, detail="Invalid ticker")
 
+    headers = tiingo_headers()
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(f"{TIINGO_URL}/{symbol}", headers=tiingo_headers())
+        # Prefer IEX TOPS. If the account is not entitled to the full TOPS
+        # feed, Tiingo can still provide the consolidated derived feed below.
+        response = await client.get(f"{TIINGO_IEX_URL}/{symbol}", headers=headers)
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail="Tiingo IEX request failed")
 
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail="Tiingo request failed")
+        iex = first_record(response.json()) or {}
+        has_iex_tops = any(
+            iex.get(field) is not None
+            for field in ("last", "bidPrice", "askPrice", "bidSize", "askSize")
+        )
 
-    data = response.json()
-    if isinstance(data, list):
-        if not data:
-            raise HTTPException(status_code=404, detail="No quote returned")
-        data = data[0]
+        if has_iex_tops:
+            return {
+                "source": "tiingo_iex_tops",
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "quote": iex,
+            }
 
-    return {
-        "source": "tiingo_iex",
-        "received_at": datetime.now(timezone.utc).isoformat(),
-        "symbol": symbol,
-        "quote": data,
-    }
+        # Fallback for accounts without the IEX FULL TOPS entitlement.
+        response = await client.get(f"{TIINGO_EQUITY_URL}/{symbol}", headers=headers)
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail="Tiingo equity intraday request failed")
+
+        equity = first_record(response.json())
+        if not equity:
+            raise HTTPException(status_code=404, detail="No Tiingo quote returned")
+
+        return {
+            "source": "tiingo_equity_intraday",
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "quote": equity,
+        }
 
 
 @app.get("/api/state/{ticker}")
@@ -82,11 +112,24 @@ async def state(ticker: str):
     symbol = normalize_ticker(ticker)
     result = await quote(symbol)
     q = result["quote"]
-    last = q.get("last")
-    bid = q.get("bidPrice")
-    ask = q.get("askPrice")
-    bid_size = q.get("bidSize") or 0
-    ask_size = q.get("askSize") or 0
+
+    source = result["source"]
+    if source == "tiingo_iex_tops":
+        last = q.get("last")
+        bid = q.get("bidPrice")
+        ask = q.get("askPrice")
+        bid_size = q.get("bidSize") or 0
+        ask_size = q.get("askSize") or 0
+    else:
+        # Derived/consolidated Tiingo feed. These are liquidity-reference
+        # metrics, not raw IEX TOPS quotes.
+        last = q.get("tngoLast")
+        if last is None:
+            last = q.get("last")
+        bid = q.get("lqBidPrice")
+        ask = q.get("lqAskPrice")
+        bid_size = q.get("lqBidSize") or 0
+        ask_size = q.get("lqAskSize") or 0
 
     spread_bps = None
     microprice = None
@@ -106,7 +149,8 @@ async def state(ticker: str):
         "spread_bps": spread_bps,
         "microprice": microprice,
         "data_health": "HEALTHY" if last is not None else "DEGRADED",
-        "data_source": result["source"],
+        "data_source": source,
+        "quote_timestamp": q.get("quoteTimestamp") or q.get("timestamp"),
         "received_at": result["received_at"],
         "forecast": None,
         "gatillazo": "NO_FORECAST",
