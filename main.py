@@ -19,7 +19,7 @@ TICKER_ALIASES = {
     "TESLA": "TSLA",
 }
 
-app = FastAPI(title="PMSF-X Nano", version="0.1.2")
+app = FastAPI(title="PMSF-X Nano", version="0.1.3")
 
 
 def normalize_ticker(value: str) -> str:
@@ -42,6 +42,62 @@ def first_record(data):
     return None
 
 
+def _snapshot_fields(source: str, quote_data: dict) -> dict:
+    if source == "tiingo_iex_tops":
+        return {
+            "last": quote_data.get("last"),
+            "bid": quote_data.get("bidPrice"),
+            "ask": quote_data.get("askPrice"),
+            "bid_size": quote_data.get("bidSize") or 0,
+            "ask_size": quote_data.get("askSize") or 0,
+        }
+    return {
+        "last": quote_data.get("tngoLast") if quote_data.get("tngoLast") is not None else quote_data.get("last"),
+        "bid": quote_data.get("lqBidPrice"),
+        "ask": quote_data.get("lqAskPrice"),
+        "bid_size": quote_data.get("lqBidSize") or 0,
+        "ask_size": quote_data.get("lqAskSize") or 0,
+    }
+
+
+@app.on_event("startup")
+async def tiingo_startup_check():
+    if not os.getenv("TIINGO_API_KEY"):
+        print("PMSF-X SELFTEST AAPL: TIINGO_API_KEY missing")
+        return
+
+    try:
+        headers = tiingo_headers()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            iex_response = await client.get(f"{TIINGO_IEX_URL}/AAPL", headers=headers)
+            iex = first_record(iex_response.json()) or {} if iex_response.status_code < 400 else {}
+            has_tops = iex.get("bidPrice") is not None and iex.get("askPrice") is not None
+
+            if has_tops:
+                source = "tiingo_iex_tops"
+                fields = _snapshot_fields(source, iex)
+            else:
+                equity_response = await client.get(f"{TIINGO_EQUITY_URL}/AAPL", headers=headers)
+                equity = first_record(equity_response.json()) or {} if equity_response.status_code < 400 else {}
+                source = "tiingo_equity_intraday"
+                fields = _snapshot_fields(source, equity)
+
+            print(
+                "PMSF-X SELFTEST AAPL:",
+                {
+                    "iex_status": iex_response.status_code,
+                    "source": source,
+                    "last": fields["last"],
+                    "bid": fields["bid"],
+                    "ask": fields["ask"],
+                    "bid_size": fields["bid_size"],
+                    "ask_size": fields["ask_size"],
+                },
+            )
+    except Exception as exc:
+        print(f"PMSF-X SELFTEST AAPL ERROR: {type(exc).__name__}: {exc}")
+
+
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(
@@ -56,7 +112,7 @@ def health():
     return {
         "status": "ok",
         "service": "pmsfx-nano",
-        "version": "0.1.2",
+        "version": "0.1.3",
         "tiingo_configured": configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -75,9 +131,6 @@ async def quote(ticker: str):
             raise HTTPException(status_code=response.status_code, detail="Tiingo IEX request failed")
 
         iex = first_record(response.json()) or {}
-
-        # Only treat the IEX response as TOPS when real bid AND ask prices exist.
-        # Zero/null sizes must not prevent the consolidated-feed fallback.
         has_iex_tops = iex.get("bidPrice") is not None and iex.get("askPrice") is not None
 
         if has_iex_tops:
@@ -88,7 +141,6 @@ async def quote(ticker: str):
                 "quote": iex,
             }
 
-        # Fallback for accounts without the IEX FULL TOPS entitlement.
         response = await client.get(f"{TIINGO_EQUITY_URL}/{symbol}", headers=headers)
         if response.status_code >= 400:
             raise HTTPException(status_code=response.status_code, detail="Tiingo equity intraday request failed")
@@ -111,24 +163,13 @@ async def state(ticker: str):
     result = await quote(symbol)
     q = result["quote"]
 
-    if result["source"] == "tiingo_iex_tops":
-        last = q.get("last")
-        bid = q.get("bidPrice")
-        ask = q.get("askPrice")
-        bid_size = q.get("bidSize") or 0
-        ask_size = q.get("askSize") or 0
-        feed_label = "Tiingo IEX TOPS"
-    else:
-        # Derived/consolidated Tiingo feed. These are liquidity-reference
-        # metrics, not raw IEX exchange quotes.
-        last = q.get("tngoLast")
-        if last is None:
-            last = q.get("last")
-        bid = q.get("lqBidPrice")
-        ask = q.get("lqAskPrice")
-        bid_size = q.get("lqBidSize") or 0
-        ask_size = q.get("lqAskSize") or 0
-        feed_label = "Tiingo consolidated · liquidity reference"
+    fields = _snapshot_fields(result["source"], q)
+    last = fields["last"]
+    bid = fields["bid"]
+    ask = fields["ask"]
+    bid_size = fields["bid_size"]
+    ask_size = fields["ask_size"]
+    feed_label = "Tiingo IEX TOPS" if result["source"] == "tiingo_iex_tops" else "Tiingo consolidated · liquidity reference"
 
     spread_bps = None
     microprice = None
