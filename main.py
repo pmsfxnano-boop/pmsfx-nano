@@ -9,7 +9,22 @@ from fastapi.responses import FileResponse
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_URL = "https://api.tiingo.com/iex"
 
+# Common inputs that users may type instead of an exact ticker.
+TICKER_ALIASES = {
+    "APPLE": "AAPL",
+    "MICROSOFT": "MSFT",
+    "MICROSOF": "MSFT",
+    "NVIDIA": "NVDA",
+    "NDIVIA": "NVDA",
+    "TESLA": "TSLA",
+}
+
 app = FastAPI(title="PMSF-X Nano", version="0.1.0")
+
+
+def normalize_ticker(value: str) -> str:
+    symbol = value.strip().upper()
+    return TICKER_ALIASES.get(symbol, symbol)
 
 
 def tiingo_headers() -> dict:
@@ -38,7 +53,7 @@ def health():
 
 @app.get("/api/quote/{ticker}")
 async def quote(ticker: str):
-    symbol = ticker.strip().upper()
+    symbol = normalize_ticker(ticker)
     if not symbol or not symbol.isalnum():
         raise HTTPException(status_code=400, detail="Invalid ticker")
 
@@ -57,13 +72,15 @@ async def quote(ticker: str):
     return {
         "source": "tiingo_iex",
         "received_at": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol,
         "quote": data,
     }
 
 
 @app.get("/api/state/{ticker}")
 async def state(ticker: str):
-    result = await quote(ticker)
+    symbol = normalize_ticker(ticker)
+    result = await quote(symbol)
     q = result["quote"]
     last = q.get("last")
     bid = q.get("bidPrice")
@@ -80,7 +97,7 @@ async def state(ticker: str):
             microprice = round((ask * bid_size + bid * ask_size) / (bid_size + ask_size), 6)
 
     return {
-        "symbol": ticker.upper(),
+        "symbol": symbol,
         "last": last,
         "bid": bid,
         "ask": ask,
@@ -89,6 +106,8 @@ async def state(ticker: str):
         "spread_bps": spread_bps,
         "microprice": microprice,
         "data_health": "HEALTHY" if last is not None else "DEGRADED",
+        "data_source": result["source"],
+        "received_at": result["received_at"],
         "forecast": None,
         "gatillazo": "NO_FORECAST",
         "rule": "NO DATA -> NO STATE -> NO FORECAST -> NO GATILLAZO",
