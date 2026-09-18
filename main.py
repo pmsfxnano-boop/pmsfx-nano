@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
+from quant.specialists.historical import get_historical_forecast
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -205,8 +206,81 @@ async def state(ticker: str):
         microprice=microprice,
     )
 
-    forecast = online["forecast"]
-    forecast_status = online["status"]
+    token = os.getenv("TIINGO_API_KEY")
+    historical = (
+        await get_historical_forecast(symbol, token)
+        if token and healthy
+        else {"status": "HISTORICAL_SKIPPED", "forecast": None, "evaluation": {}, "model_id": "historical-logit-v1"}
+    )
+
+    # Historical price model is primary until live flow has its own validation.
+    hist_forecast = historical.get("forecast")
+    flow_forecast = online.get("forecast")
+    both_validated = bool(
+        hist_forecast
+        and flow_forecast
+        and historical.get("evaluation", {}).get("validated")
+        and flow_forecast.get("validated")
+    )
+
+    if both_validated:
+        p_up = (hist_forecast["raw_probability_up"] + flow_forecast["raw_probability_up"]) / 2.0
+        model_id = "ensemble-historical-flow-v1"
+        selected_status = "VALIDATED"
+        selected_validated = True
+        horizon_seconds = min(hist_forecast["horizon_seconds"], flow_forecast["horizon_seconds"])
+    elif hist_forecast:
+        p_up = hist_forecast["raw_probability_up"]
+        model_id = hist_forecast["model_id"]
+        selected_status = historical.get("status", "EXPERIMENTAL")
+        selected_validated = bool(hist_forecast.get("validated"))
+        horizon_seconds = hist_forecast["horizon_seconds"]
+    elif flow_forecast:
+        p_up = flow_forecast["raw_probability_up"]
+        model_id = flow_forecast["model_id"]
+        selected_status = online.get("status", "EXPERIMENTAL")
+        selected_validated = bool(flow_forecast.get("validated"))
+        horizon_seconds = flow_forecast["horizon_seconds"]
+    else:
+        p_up = None
+        model_id = None
+        selected_status = online.get("status", "WARMUP")
+        selected_validated = False
+        horizon_seconds = None
+
+    forecast = None
+    if p_up is not None:
+        p_up = max(0.0, min(1.0, float(p_up)))
+        p_down = 1.0 - p_up
+        confidence = abs(p_up - 0.5) * 2.0
+        direction = "UP" if p_up >= 0.55 else ("DOWN" if p_down >= 0.55 else "NEUTRAL")
+        forecast = {
+            "direction": direction,
+            "raw_probability_up": round(p_up, 4),
+            "raw_probability_down": round(p_down, 4),
+            "confidence_raw": round(confidence, 4),
+            "model_id": model_id,
+            "status": selected_status,
+            "validated": selected_validated,
+            "calibrated": False,
+            "horizon_seconds": horizon_seconds,
+            "components": {
+                "historical": historical.get("status"),
+                "flow": online.get("status"),
+            },
+        }
+
+    armed = bool(
+        forecast
+        and forecast["validated"]
+        and forecast["confidence_raw"] >= 0.20
+        and spread_bps is not None
+        and spread_bps <= 5.0
+        and forecast["direction"] != "NEUTRAL"
+    )
+
+    evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
+    forecast_status = forecast["status"] if forecast else selected_status
     return {
         "symbol": symbol,
         "last": last,
@@ -223,16 +297,19 @@ async def state(ticker: str):
         "received_at": result["received_at"],
         "forecast": forecast,
         "forecast_status": forecast_status,
-        "gatillazo": online["gatillazo"],
+        "gatillazo": "ARMED" if armed else "BLOCKED_VALIDATION",
         "specialists": {
             "flow": flow,
         },
         "model": {
             "id": forecast["model_id"] if forecast else None,
             "status": forecast_status,
-            "resolved_samples": online["evaluation"]["sample_count"],
-            "pending_samples": online.get("pending_samples", 0),
+            "historical_id": historical.get("model_id"),
+            "flow_id": online.get("forecast", {}).get("model_id") if online.get("forecast") else "flow-baseline-v0",
+            "resolved_flow_samples": online["evaluation"]["sample_count"],
+            "pending_flow_samples": online.get("pending_samples", 0),
+            "historical_bars": historical.get("bars"),
         },
-        "evaluation": online["evaluation"],
+        "evaluation": evaluation
         "rule": "NO VALIDATION -> NO GATILLAZO",
     }
