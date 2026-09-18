@@ -72,7 +72,7 @@ def _predict(w: list[float], x: list[float]) -> float:
     return _sigmoid(z)
 
 
-def _bars_to_samples(rows: list[dict[str, Any]]) -> list[tuple[list[float], int]]:
+def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float], int]], list[float] | None]:
     bars: list[dict[str, float]] = []
     for row in rows:
         o = _safe_float(row.get("open"))
@@ -115,7 +115,34 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> list[tuple[list[float], int]
             _clamp(volume_change, -3.0, 3.0),
         ]
         samples.append((x, 1 if future_return_bps > 0 else 0))
-    return samples
+
+    latest_x: list[float] | None = None
+    if len(bars) >= 4:
+        i = len(bars) - 1
+        b0, b1, b3 = bars[i], bars[i - 1], bars[i - 3]
+        c0 = b0["close"]
+        c1 = b1["close"]
+        c3 = b3["close"]
+        r1_bps = (c0 / c1 - 1.0) * 10000.0
+        r3_bps = (c0 / c3 - 1.0) * 10000.0
+        range_bps = (b0["high"] - b0["low"]) / c0 * 10000.0
+        close_position = (
+            (c0 - b0["low"]) / (b0["high"] - b0["low"]) - 0.5
+            if b0["high"] > b0["low"]
+            else 0.0
+        )
+        volume_change = (
+            math.log1p(b0["volume"] + 1.0) - math.log1p(b1["volume"] + 1.0)
+        )
+        latest_x = [
+            _clamp(r1_bps / 25.0, -3.0, 3.0),
+            _clamp(r3_bps / 50.0, -3.0, 3.0),
+            _clamp(range_bps / 100.0, 0.0, 3.0),
+            _clamp(close_position, -0.5, 0.5),
+            _clamp(volume_change, -3.0, 3.0),
+        ]
+
+    return samples, latest_x
 
 
 def _evaluate(samples: list[tuple[list[float], int]]) -> dict[str, Any]:
@@ -206,10 +233,10 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
         if not isinstance(data, list):
             data = data.get("data", []) if isinstance(data, dict) else []
 
-        samples = _bars_to_samples(data[-MAX_ROWS:])
+        samples, latest_x = _bars_to_samples(data[-MAX_ROWS:])
         evaluation = _evaluate(samples)
 
-        if len(samples) < MIN_TRAIN_ROWS:
+        if len(samples) < MIN_TRAIN_ROWS or latest_x is None:
             result = {
                 "status": "HISTORICAL_WARMUP",
                 "forecast": None,
@@ -221,7 +248,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
             return result
 
         weights = _fit(samples)
-        x_last = samples[-1][0]
+        x_last = latest_x
         p_up = _predict(weights, x_last)
         p_down = 1.0 - p_up
         confidence = abs(p_up - 0.5) * 2.0
