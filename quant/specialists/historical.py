@@ -224,6 +224,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
                 "forecast": None,
                 "evaluation": {},
                 "model_id": "historical-logit-v1",
+                "lookback_days": LOOKBACK_DAYS,
                 "error": f"Tiingo historical HTTP {response.status_code}",
             }
             _CACHE[symbol] = (__import__("time").time(), result)
@@ -242,6 +243,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
                 "forecast": None,
                 "evaluation": evaluation,
                 "model_id": "historical-logit-v1",
+                "lookback_days": LOOKBACK_DAYS,
                 "bars": len(data),
             }
             _CACHE[symbol] = (__import__("time").time(), result)
@@ -282,6 +284,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
             },
             "evaluation": evaluation,
             "model_id": "historical-logit-v1",
+            "lookback_days": LOOKBACK_DAYS,
             "bars": len(data),
         }
         _CACHE[symbol] = (__import__("time").time(), result)
