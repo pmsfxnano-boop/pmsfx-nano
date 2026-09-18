@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast
+from quant.db import init_db, record_backtest, record_forecast
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -62,6 +63,14 @@ def _snapshot_fields(source: str, quote_data: dict) -> dict:
         "bid_size": quote_data.get("lqBidSize") or 0,
         "ask_size": quote_data.get("lqAskSize") or 0,
     }
+
+
+@app.on_event("startup")
+async def initialize_persistence():
+    try:
+        print("PMSF-X DB:", "READY" if init_db() else "NOT_CONFIGURED")
+    except Exception as exc:
+        print(f"PMSF-X DB ERROR: {type(exc).__name__}: {exc}")
 
 
 @app.on_event("startup")
@@ -281,7 +290,7 @@ async def state(ticker: str):
 
     evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
     forecast_status = forecast["status"] if forecast else selected_status
-    return {
+    response_payload = {
         "symbol": symbol,
         "last": last,
         "bid": bid,
@@ -312,4 +321,46 @@ async def state(ticker: str):
         },
         "evaluation": evaluation,
         "rule": "NO VALIDATION -> NO GATILLAZO",
+    }
+    try:
+        forecast_id = record_forecast(response_payload)
+    except Exception as exc:
+        print(f"PMSF-X FORECAST LOG ERROR: {type(exc).__name__}: {exc}")
+        forecast_id = None
+    response_payload["forecast_id"] = forecast_id
+    return response_payload
+
+@app.get("/api/backtest/{ticker}")
+async def backtest(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+
+    result = await get_historical_forecast(symbol, token)
+    evaluation = result.get("evaluation") or {}
+    payload = {
+        "symbol": symbol,
+        "model_id": result.get("model_id"),
+        "lookback_days": result.get("lookback_days"),
+        "bars": result.get("bars"),
+        "evaluation": evaluation,
+    }
+    try:
+        run_id = record_backtest(symbol, payload)
+    except Exception as exc:
+        print(f"PMSF-X BACKTEST LOG ERROR: {type(exc).__name__}: {exc}")
+        run_id = None
+
+    return {
+        "backtest_id": run_id,
+        "symbol": symbol,
+        "model_id": result.get("model_id"),
+        "lookback_days": result.get("lookback_days"),
+        "bars": result.get("bars"),
+        "metrics_oos": evaluation,
+        "forecast_status": result.get("status"),
+        "note": "Chronological holdout: first 80% train, final 20% OOS test. No future rows are used for fitting the OOS model.",
     }
