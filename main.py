@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from quant.specialists.flow import run_flow_specialist
+from quant.online import observe_online
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -21,7 +22,7 @@ TICKER_ALIASES = {
     "TESLA": "TSLA",
 }
 
-app = FastAPI(title="PMSF-X Nano", version="0.2.0")
+app = FastAPI(title="PMSF-X Nano", version="0.3.0")
 
 
 def normalize_ticker(value: str) -> str:
@@ -114,7 +115,7 @@ def health():
     return {
         "status": "ok",
         "service": "pmsfx-nano",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "tiingo_configured": configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -193,21 +194,19 @@ async def state(ticker: str):
         microprice=microprice,
     )
 
-    forecast = None
-    forecast_status = "NO_FORECAST"
-    if flow["status"] == "READY":
-        forecast = {
-            "direction": flow["direction"],
-            "raw_probability_up": flow["raw_probability_up"],
-            "raw_probability_down": flow["raw_probability_down"],
-            "confidence_raw": flow["confidence_raw"],
-            "model_id": flow["model_id"],
-            "validated": flow["validated"],
-            "calibrated": flow["calibrated"],
-            "features": flow["features"],
-        }
-        forecast_status = "UNVALIDATED_BASELINE"
+    online = observe_online(
+        symbol=symbol,
+        last=last,
+        bid=bid,
+        ask=ask,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        spread_bps=spread_bps,
+        microprice=microprice,
+    )
 
+    forecast = online["forecast"]
+    forecast_status = online["status"]
     return {
         "symbol": symbol,
         "last": last,
@@ -224,9 +223,16 @@ async def state(ticker: str):
         "received_at": result["received_at"],
         "forecast": forecast,
         "forecast_status": forecast_status,
-        "gatillazo": "BLOCKED_UNVALIDATED" if forecast else "NO_FORECAST",
+        "gatillazo": online["gatillazo"],
         "specialists": {
             "flow": flow,
         },
+        "model": {
+            "id": forecast["model_id"] if forecast else None,
+            "status": forecast_status,
+            "resolved_samples": online["evaluation"]["sample_count"],
+            "pending_samples": online.get("pending_samples", 0),
+        },
+        "evaluation": online["evaluation"],
         "rule": "NO VALIDATION -> NO GATILLAZO",
     }
