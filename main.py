@@ -310,6 +310,6 @@ async def state(ticker: str):
             "pending_flow_samples": online.get("pending_samples", 0),
             "historical_bars": historical.get("bars"),
         },
-        "evaluation": evaluation
+        "evaluation": evaluation,
         "rule": "NO VALIDATION -> NO GATILLAZO",
     }
