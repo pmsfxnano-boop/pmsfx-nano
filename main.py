@@ -6,6 +6,8 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
+from quant.specialists.flow import run_flow_specialist
+
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
 TIINGO_EQUITY_URL = "https://api.tiingo.com/tiingo/equity/intraday"
@@ -19,7 +21,7 @@ TICKER_ALIASES = {
     "TESLA": "TSLA",
 }
 
-app = FastAPI(title="PMSF-X Nano", version="0.1.3")
+app = FastAPI(title="PMSF-X Nano", version="0.2.0")
 
 
 def normalize_ticker(value: str) -> str:
@@ -112,7 +114,7 @@ def health():
     return {
         "status": "ok",
         "service": "pmsfx-nano",
-        "version": "0.1.3",
+        "version": "0.2.0",
         "tiingo_configured": configured,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -181,6 +183,31 @@ async def state(ticker: str):
 
     healthy = last is not None and bid is not None and ask is not None
 
+    flow = run_flow_specialist(
+        last=last,
+        bid=bid,
+        ask=ask,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        spread_bps=spread_bps,
+        microprice=microprice,
+    )
+
+    forecast = None
+    forecast_status = "NO_FORECAST"
+    if flow["status"] == "READY":
+        forecast = {
+            "direction": flow["direction"],
+            "raw_probability_up": flow["raw_probability_up"],
+            "raw_probability_down": flow["raw_probability_down"],
+            "confidence_raw": flow["confidence_raw"],
+            "model_id": flow["model_id"],
+            "validated": flow["validated"],
+            "calibrated": flow["calibrated"],
+            "features": flow["features"],
+        }
+        forecast_status = "UNVALIDATED_BASELINE"
+
     return {
         "symbol": symbol,
         "last": last,
@@ -195,7 +222,11 @@ async def state(ticker: str):
         "feed_label": feed_label,
         "quote_timestamp": q.get("quoteTimestamp") or q.get("timestamp"),
         "received_at": result["received_at"],
-        "forecast": None,
-        "gatillazo": "NO_FORECAST",
-        "rule": "NO DATA -> NO STATE -> NO FORECAST -> NO GATILLAZO",
+        "forecast": forecast,
+        "forecast_status": forecast_status,
+        "gatillazo": "BLOCKED_UNVALIDATED" if forecast else "NO_FORECAST",
+        "specialists": {
+            "flow": flow,
+        },
+        "rule": "NO VALIDATION -> NO GATILLAZO",
     }
