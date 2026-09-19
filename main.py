@@ -324,6 +324,10 @@ async def state(ticker: str):
     }
     try:
         forecast_id = record_forecast(response_payload)
+        print(
+            "PMSF-X FORECAST SAVED:",
+            {"forecast_id": forecast_id, "symbol": symbol, "model_id": model_id},
+        )
     except Exception as exc:
         print(f"PMSF-X FORECAST LOG ERROR: {type(exc).__name__}: {exc}")
         forecast_id = None
@@ -350,6 +354,10 @@ async def backtest(ticker: str):
     }
     try:
         run_id = record_backtest(symbol, payload)
+        print(
+            "PMSF-X BACKTEST SAVED:",
+            {"backtest_id": run_id, "symbol": symbol, "model_id": result.get("model_id")},
+        )
     except Exception as exc:
         print(f"PMSF-X BACKTEST LOG ERROR: {type(exc).__name__}: {exc}")
         run_id = None
