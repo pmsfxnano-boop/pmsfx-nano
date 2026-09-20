@@ -57,13 +57,17 @@ def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
+def database_connect_kwargs() -> dict[str, str]:
+    return {"sslmode": "require"}
+
+
 @contextmanager
 def connection():
     url = database_url()
     if not url:
         yield None
         return
-    with psycopg.connect(url) as conn:
+    with psycopg.connect(url, **database_connect_kwargs()) as conn:
         yield conn
 
 
