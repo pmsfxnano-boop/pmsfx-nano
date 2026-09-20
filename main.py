@@ -4,7 +4,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
@@ -113,6 +113,11 @@ async def tiingo_startup_check():
             )
     except Exception as exc:
         print(f"PMSF-X SELFTEST AAPL ERROR: {type(exc).__name__}: {exc}")
+
+
+@app.head("/", include_in_schema=False)
+def dashboard_head():
+    return Response(status_code=200)
 
 
 @app.get("/", include_in_schema=False)
