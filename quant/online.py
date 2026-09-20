@@ -156,32 +156,57 @@ class OnlineFlowEngine:
                 "accuracy": None,
                 "brier": None,
                 "baseline_brier": None,
+                "log_loss": None,
+                "baseline_log_loss": None,
+                "brier_skill": None,
                 "validated": False,
+                "validation_reason": "INSUFFICIENT_SAMPLES",
             }
 
         split = max(1, int(n * 0.8))
         train = samples[:split]
         test = samples[split:]
-        if len(test) < 24 or len({s.label for s in test}) < 2:
+        if (
+            len(train) < 2
+            or len(test) < 24
+            or len({s.label for s in train}) < 2
+            or len({s.label for s in test}) < 2
+        ):
             return {
                 "sample_count": n,
                 "test_count": len(test),
                 "accuracy": None,
                 "brier": None,
                 "baseline_brier": None,
+                "log_loss": None,
+                "baseline_log_loss": None,
+                "brier_skill": None,
                 "validated": False,
+                "validation_reason": "INVALID_TEMPORAL_SPLIT",
             }
 
         weights = self._fit(train)
         predictions = [self._predict(weights, s.features) for s in test]
         labels = [s.label for s in test]
+        train_rate = sum(s.label for s in train) / len(train)
+        baseline_predictions = [train_rate] * len(labels)
+
         accuracy = sum(
             (1 if p >= 0.5 else 0) == y
             for p, y in zip(predictions, labels)
         ) / len(test)
         brier = sum((p - y) ** 2 for p, y in zip(predictions, labels)) / len(test)
-        base_rate = sum(labels) / len(labels)
-        baseline_brier = min(base_rate, 1.0 - base_rate)
+        baseline_brier = sum(
+            (p - y) ** 2 for p, y in zip(baseline_predictions, labels)
+        ) / len(test)
+        log_loss = sum(
+            _log_loss(p, y) for p, y in zip(predictions, labels)
+        ) / len(test)
+        baseline_log_loss = sum(
+            _log_loss(p, y) for p, y in zip(baseline_predictions, labels)
+        ) / len(test)
+        brier_skill = 1.0 - (brier / baseline_brier) if baseline_brier > 0 else None
+
         validated = (
             n >= MIN_VALIDATION_SAMPLES
             and accuracy >= 0.55
@@ -194,7 +219,12 @@ class OnlineFlowEngine:
             "accuracy": round(accuracy, 4),
             "brier": round(brier, 5),
             "baseline_brier": round(baseline_brier, 5),
+            "log_loss": round(log_loss, 5),
+            "baseline_log_loss": round(baseline_log_loss, 5),
+            "brier_skill": round(brier_skill, 5) if brier_skill is not None else None,
+            "train_base_rate": round(train_rate, 5),
             "validated": validated,
+            "validation_reason": "PASS" if validated else "METRICS_BELOW_THRESHOLD",
         }
 
     def observe(
