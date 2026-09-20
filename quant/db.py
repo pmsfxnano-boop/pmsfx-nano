@@ -79,6 +79,58 @@ def init_db() -> bool:
     return True
 
 
+def persistence_summary() -> dict[str, Any]:
+    if not database_url():
+        return {
+            "configured": False,
+            "ready": False,
+            "forecast_count": None,
+            "backtest_count": None,
+            "last_forecast_id": None,
+            "last_backtest_id": None,
+        }
+
+    sql = """
+    SELECT
+        (SELECT COUNT(*) FROM forecasts) AS forecast_count,
+        (SELECT COUNT(*) FROM backtest_runs) AS backtest_count,
+        (SELECT MAX(id) FROM forecasts) AS last_forecast_id,
+        (SELECT MAX(id) FROM backtest_runs) AS last_backtest_id
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return {
+                    "configured": True,
+                    "ready": False,
+                    "forecast_count": None,
+                    "backtest_count": None,
+                    "last_forecast_id": None,
+                    "last_backtest_id": None,
+                }
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+        return {
+            "configured": True,
+            "ready": True,
+            "forecast_count": int(row[0]),
+            "backtest_count": int(row[1]),
+            "last_forecast_id": int(row[2]) if row[2] is not None else None,
+            "last_backtest_id": int(row[3]) if row[3] is not None else None,
+        }
+    except Exception as exc:
+        return {
+            "configured": True,
+            "ready": False,
+            "forecast_count": None,
+            "backtest_count": None,
+            "last_forecast_id": None,
+            "last_backtest_id": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def record_forecast(payload: dict[str, Any]) -> int | None:
     if not database_url():
         return None
