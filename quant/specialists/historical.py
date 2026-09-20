@@ -44,6 +44,11 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
+def _log_loss(p: float, y: int) -> float:
+    p = _clamp(p, 1e-6, 1.0 - 1e-6)
+    return -(y * math.log(p) + (1 - y) * math.log(1.0 - p))
+
+
 def _fit(samples: list[tuple[list[float], int]]) -> list[float]:
     w = [0.0] * 6
     n = len(samples)
@@ -154,29 +159,53 @@ def _evaluate(samples: list[tuple[list[float], int]]) -> dict[str, Any]:
             "accuracy": None,
             "brier": None,
             "baseline_brier": None,
+            "log_loss": None,
+            "baseline_log_loss": None,
+            "brier_skill": None,
             "validated": False,
+            "validation_reason": "INSUFFICIENT_SAMPLES",
         }
 
     split = max(1, int(n * 0.8))
     train = samples[:split]
     test = samples[split:]
-    if len(test) < 60 or len({y for _, y in test}) < 2:
+    if (
+        len(train) < 2
+        or len(test) < 60
+        or len({y for _, y in train}) < 2
+        or len({y for _, y in test}) < 2
+    ):
         return {
             "sample_count": n,
             "test_count": len(test),
             "accuracy": None,
             "brier": None,
             "baseline_brier": None,
+            "log_loss": None,
+            "baseline_log_loss": None,
+            "brier_skill": None,
             "validated": False,
+            "validation_reason": "INVALID_TEMPORAL_SPLIT",
         }
 
     w = _fit(train)
     probs = [_predict(w, x) for x, _ in test]
     labels = [y for _, y in test]
+    train_rate = sum(y for _, y in train) / len(train)
+    baseline_probs = [train_rate] * len(labels)
+
     accuracy = sum((p >= 0.5) == bool(y) for p, y in zip(probs, labels)) / len(labels)
     brier = sum((p - y) ** 2 for p, y in zip(probs, labels)) / len(labels)
-    base_rate = sum(labels) / len(labels)
-    baseline_brier = min(base_rate, 1.0 - base_rate)
+    baseline_brier = sum((p - y) ** 2 for p, y in zip(baseline_probs, labels)) / len(labels)
+    log_loss = sum(_log_loss(p, y) for p, y in zip(probs, labels)) / len(labels)
+    baseline_log_loss = sum(_log_loss(p, y) for p, y in zip(baseline_probs, labels)) / len(labels)
+    brier_skill = 1.0 - (brier / baseline_brier) if baseline_brier > 0 else None
+
+    validated = bool(
+        n >= MIN_TRAIN_ROWS
+        and accuracy >= 0.55
+        and brier < baseline_brier
+    )
 
     return {
         "sample_count": n,
@@ -184,11 +213,12 @@ def _evaluate(samples: list[tuple[list[float], int]]) -> dict[str, Any]:
         "accuracy": round(accuracy, 4),
         "brier": round(brier, 5),
         "baseline_brier": round(baseline_brier, 5),
-        "validated": bool(
-            n >= MIN_TRAIN_ROWS
-            and accuracy >= 0.55
-            and brier < baseline_brier
-        ),
+        "log_loss": round(log_loss, 5),
+        "baseline_log_loss": round(baseline_log_loss, 5),
+        "brier_skill": round(brier_skill, 5) if brier_skill is not None else None,
+        "train_base_rate": round(train_rate, 5),
+        "validated": validated,
+        "validation_reason": "PASS" if validated else "METRICS_BELOW_THRESHOLD",
     }
 
 
