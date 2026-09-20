@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast
-from quant.db import init_db, record_backtest, record_forecast
+from quant.db import init_db, persistence_summary, record_backtest, record_forecast
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -24,7 +24,8 @@ TICKER_ALIASES = {
     "TESLA": "TSLA",
 }
 
-app = FastAPI(title="PMSF-X Nano", version="0.3.0")
+app = FastAPI(title="PMSF-X Nano", version="0.4.0")
+DB_READY = False
 
 
 def normalize_ticker(value: str) -> str:
@@ -67,9 +68,12 @@ def _snapshot_fields(source: str, quote_data: dict) -> dict:
 
 @app.on_event("startup")
 async def initialize_persistence():
+    global DB_READY
     try:
-        print("PMSF-X DB:", "READY" if init_db() else "NOT_CONFIGURED")
+        DB_READY = bool(init_db())
+        print("PMSF-X DB:", "READY" if DB_READY else "NOT_CONFIGURED")
     except Exception as exc:
+        DB_READY = False
         print(f"PMSF-X DB ERROR: {type(exc).__name__}: {exc}")
 
 
@@ -121,13 +125,25 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    configured = bool(os.getenv("TIINGO_API_KEY"))
+    tiingo_configured = bool(os.getenv("TIINGO_API_KEY"))
+    status = "ok" if tiingo_configured and DB_READY else "degraded"
     return {
-        "status": "ok",
+        "status": status,
         "service": "pmsfx-nano",
-        "version": "0.3.0",
-        "tiingo_configured": configured,
+        "version": "0.4.0",
+        "tiingo_configured": tiingo_configured,
+        "db_ready": DB_READY,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/persistence")
+def persistence():
+    summary = persistence_summary()
+    return {
+        "service": "pmsfx-nano",
+        "version": "0.4.0",
+        **summary,
     }
 
 
