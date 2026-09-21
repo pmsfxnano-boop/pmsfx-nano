@@ -12,6 +12,7 @@ from quant.specialists.historical import get_historical_forecast
 from quant.db import init_db, persistence_summary, record_backtest, record_forecast
 from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
+from quant.model_health import assess_model_health
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -367,6 +368,12 @@ async def state(ticker: str):
 
     evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
     forecast_status = forecast["status"] if forecast else selected_status
+    model_health = assess_model_health(data_health=data_health, evaluation=evaluation, forecast=forecast)
+    if model_health["safe_mode"]:
+        armed = False
+        gatillazo_status = "SAFE_MODE"
+    else:
+        gatillazo_status = "ARMED" if armed else "BLOCKED_VALIDATION"
     response_payload = {
         "symbol": symbol,
         "last": last,
@@ -378,6 +385,7 @@ async def state(ticker: str):
         "microprice": microprice,
         "execution_costs": execution_gate,
         "regime": evaluation.get("regime"),
+        "model_health": model_health,
         "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
@@ -385,7 +393,7 @@ async def state(ticker: str):
         "received_at": result["received_at"],
         "forecast": forecast,
         "forecast_status": forecast_status,
-        "gatillazo": "ARMED" if armed else "BLOCKED_VALIDATION",
+        "gatillazo": gatillazo_status,
         "specialists": {
             "flow": flow,
         },
@@ -399,7 +407,7 @@ async def state(ticker: str):
             "historical_bars": historical.get("bars"),
         },
         "evaluation": evaluation,
-        "rule": "NO VALIDATION -> NO GATILLAZO",
+        "rule": "NO DATA HEALTH OR MODEL HEALTH -> NO FORECAST -> NO GATILLAZO",
     }
     try:
         forecast_id = record_forecast(response_payload)
