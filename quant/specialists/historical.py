@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import math
 from typing import Any
 
+from quant.temporal import TemporalSample, walk_forward_splits
+
 import httpx
 
 
@@ -87,7 +89,7 @@ def _predict(w: list[float], x: list[float]) -> float:
     return _sigmoid(z)
 
 
-def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float], int]], list[float] | None]:
+def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float], int]], list[TemporalSample], list[float] | None]:
     bars: list[dict[str, float]] = []
     for row in rows:
         o = _safe_float(row.get("open"))
@@ -103,6 +105,7 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
     bars.sort(key=lambda row: row["time"])
 
     samples: list[tuple[list[float], int]] = []
+    temporal_samples: list[TemporalSample] = []
     expected_step = timedelta(minutes=5)
     for i in range(3, len(bars) - 1):
         if any(bars[j]["time"] - bars[j - 1]["time"] != expected_step for j in (i - 2, i - 1, i, i + 1)):
@@ -135,7 +138,9 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
             _clamp(close_position, -0.5, 0.5),
             _clamp(volume_change, -3.0, 3.0),
         ]
-        samples.append((x, 1 if future_return_bps > 0 else 0))
+        label = 1 if future_return_bps > 0 else 0
+        samples.append((x, label))
+        temporal_samples.append(TemporalSample(event_time=b0['time'], label_end_time=bars[i + 1]['time'], features=x, label=label))
 
     latest_x: list[float] | None = None
     if len(bars) >= 4:
@@ -163,81 +168,30 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
             _clamp(volume_change, -3.0, 3.0),
         ]
 
-    return samples, latest_x
+    return samples, temporal_samples, latest_x
 
 
-def _evaluate(samples: list[tuple[list[float], int]]) -> dict[str, Any]:
+def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[TemporalSample]) -> dict[str, Any]:
     n = len(samples)
     if n < MIN_TRAIN_ROWS:
-        return {
-            "sample_count": n,
-            "test_count": 0,
-            "accuracy": None,
-            "brier": None,
-            "baseline_brier": None,
-            "log_loss": None,
-            "baseline_log_loss": None,
-            "brier_skill": None,
-            "validated": False,
-            "validation_reason": "INSUFFICIENT_SAMPLES",
-        }
-
-    split = max(1, int(n * 0.8))
-    train = samples[:split]
-    test = samples[split:]
-    if (
-        len(train) < 2
-        or len(test) < 60
-        or len({y for _, y in train}) < 2
-        or len({y for _, y in test}) < 2
-    ):
-        return {
-            "sample_count": n,
-            "test_count": len(test),
-            "accuracy": None,
-            "brier": None,
-            "baseline_brier": None,
-            "log_loss": None,
-            "baseline_log_loss": None,
-            "brier_skill": None,
-            "validated": False,
-            "validation_reason": "INVALID_TEMPORAL_SPLIT",
-        }
-
-    w = _fit(train)
-    probs = [_predict(w, x) for x, _ in test]
-    labels = [y for _, y in test]
-    train_rate = sum(y for _, y in train) / len(train)
-    baseline_probs = [train_rate] * len(labels)
-
-    accuracy = sum((p >= 0.5) == bool(y) for p, y in zip(probs, labels)) / len(labels)
-    brier = sum((p - y) ** 2 for p, y in zip(probs, labels)) / len(labels)
-    baseline_brier = sum((p - y) ** 2 for p, y in zip(baseline_probs, labels)) / len(labels)
-    log_loss = sum(_log_loss(p, y) for p, y in zip(probs, labels)) / len(labels)
-    baseline_log_loss = sum(_log_loss(p, y) for p, y in zip(baseline_probs, labels)) / len(labels)
-    brier_skill = 1.0 - (brier / baseline_brier) if baseline_brier > 0 else None
-
-    validated = bool(
-        n >= MIN_TRAIN_ROWS
-        and accuracy >= 0.55
-        and brier < baseline_brier
-    )
-
-    return {
-        "sample_count": n,
-        "test_count": len(test),
-        "accuracy": round(accuracy, 4),
-        "brier": round(brier, 5),
-        "baseline_brier": round(baseline_brier, 5),
-        "log_loss": round(log_loss, 5),
-        "baseline_log_loss": round(baseline_log_loss, 5),
-        "brier_skill": round(brier_skill, 5) if brier_skill is not None else None,
-        "train_base_rate": round(train_rate, 5),
-        "validated": validated,
-        "validation_reason": "PASS" if validated else "METRICS_BELOW_THRESHOLD",
-        "validation_type": "chronological_point_in_time_holdout",
-    }
-
+        return {'sample_count': n, 'test_count': 0, 'fold_count': 0, 'validated': False, 'validation_reason': 'INSUFFICIENT_SAMPLES'}
+    folds = walk_forward_splits(temporal_samples, train_size=300, test_size=60, purge=timedelta(minutes=5), embargo=timedelta(minutes=5))
+    if not folds:
+        return {'sample_count': n, 'test_count': 0, 'fold_count': 0, 'validated': False, 'validation_reason': 'NO_VALID_WALK_FORWARD_FOLDS'}
+    accs=[]; bs=[]; bbs=[]; lls=[]; blls=[]; total=0
+    for fold in folds:
+        train=[(list(x.features), x.label) for x in fold.train]; test=[(list(x.features), x.label) for x in fold.test]
+        if len({y for _,y in train})<2 or len({y for _,y in test})<2: continue
+        w=_fit(train); probs=[_predict(w,x) for x,_ in test]; labels=[y for _,y in test]
+        rate=sum(y for _,y in train)/len(train); base=[rate]*len(labels)
+        accs.append(sum((p>=0.5)==bool(y) for p,y in zip(probs,labels))/len(labels))
+        bs.append(sum((p-y)**2 for p,y in zip(probs,labels))/len(labels)); bbs.append(sum((p-y)**2 for p,y in zip(base,labels))/len(labels))
+        lls.append(sum(_log_loss(p,y) for p,y in zip(probs,labels))/len(labels)); blls.append(sum(_log_loss(p,y) for p,y in zip(base,labels))/len(labels)); total+=len(test)
+    if not accs:
+        return {'sample_count': n, 'test_count': 0, 'fold_count': len(folds), 'validated': False, 'validation_reason': 'NO_USABLE_FOLDS'}
+    accuracy=sum(accs)/len(accs); brier=sum(bs)/len(bs); baseline=sum(bbs)/len(bbs); ll=sum(lls)/len(lls); bll=sum(blls)/len(blls)
+    skill=1.0-brier/baseline if baseline>0 else None; validated=accuracy>=0.55 and brier<baseline and len(accs)>=2
+    return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
 
 async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
     cached = _CACHE.get(symbol)
@@ -281,8 +235,8 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
         if not isinstance(data, list):
             data = data.get("data", []) if isinstance(data, dict) else []
 
-        samples, latest_x = _bars_to_samples(data[-MAX_ROWS:])
-        evaluation = _evaluate(samples)
+        samples, temporal_samples, latest_x = _bars_to_samples(data[-MAX_ROWS:])
+        evaluation = _evaluate(samples, temporal_samples)
 
         if len(samples) < MIN_TRAIN_ROWS or latest_x is None:
             result = {
