@@ -13,6 +13,7 @@ from typing import Any
 
 from quant.temporal import TemporalSample, walk_forward_splits
 from quant.calibration import fit_platt, calibrate_platt, metrics
+from quant.regime import classify_regime
 
 import httpx
 
@@ -204,7 +205,8 @@ def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[Tem
         except ValueError:
             pass
     validated=accuracy>=0.55 and brier<baseline and len(accs)>=2
-    return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'calibration_method':'PLATT','calibration_status':calibration_status,'calibrated_brier':round(calibrated_brier,5) if calibrated_brier is not None else None,'calibrated_log_loss':round(calibrated_logloss,5) if calibrated_logloss is not None else None,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
+    regime = classify_regime([((x[0][0]) * 25.0) for x in samples[-40:]], [((x[0][2]) * 100.0) for x in samples[-40:]])
+    return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'calibration_method':'PLATT','calibration_status':calibration_status,'calibrated_brier':round(calibrated_brier,5) if calibrated_brier is not None else None,'calibrated_log_loss':round(calibrated_logloss,5) if calibrated_logloss is not None else None,'regime':regime,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
 
 async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
     cached = _CACHE.get(symbol)
