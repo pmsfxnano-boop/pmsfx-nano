@@ -11,6 +11,7 @@ from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast
 from quant.db import init_db, persistence_summary, record_backtest, record_forecast
 from quant.data_health import assess_quote
+from quant.execution_costs import estimate_execution_cost
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -336,6 +337,24 @@ async def state(ticker: str):
             },
         }
 
+    execution_cost = estimate_execution_cost(
+        bid=bid, ask=ask,
+        mid=((bid + ask) / 2.0) if bid is not None and ask is not None else None,
+        order_notional=0.0, adv_notional=1.0,
+        commission_bps=0.0, slippage_bps=1.0, latency_bps=0.5,
+        max_spread_bps=5.0,
+    )
+    execution_gate = {
+        "status": "BLOCKED_EXPECTED_MOVE_REQUIRED",
+        "executable_quote": execution_cost.executable,
+        "estimated_cost_bps": round(execution_cost.total_bps, 4),
+        "spread_bps": round(execution_cost.spread_bps, 4),
+        "slippage_bps": execution_cost.slippage_bps,
+        "latency_bps": execution_cost.latency_bps,
+        "impact_bps": None,
+        "reason": "EXPECTED_MOVE_AND_REAL_ADV_REQUIRED_FOR_EXECUTION_GATE",
+    }
+
     armed = bool(
         forecast
         and forecast["validated"]
@@ -343,6 +362,7 @@ async def state(ticker: str):
         and spread_bps is not None
         and spread_bps <= 5.0
         and forecast["direction"] != "NEUTRAL"
+        and execution_gate["status"] == "PASS"
     )
 
     evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
@@ -356,6 +376,7 @@ async def state(ticker: str):
         "ask_size": ask_size,
         "spread_bps": spread_bps,
         "microprice": microprice,
+        "execution_costs": execution_gate,
         "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
