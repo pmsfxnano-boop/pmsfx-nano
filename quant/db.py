@@ -35,6 +35,30 @@ CREATE TABLE IF NOT EXISTS forecasts (
 CREATE INDEX IF NOT EXISTS idx_forecasts_symbol_created
 ON forecasts(symbol, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS model_registry (
+    id BIGSERIAL PRIMARY KEY,
+    registered_at TIMESTAMPTZ NOT NULL,
+    model_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    dataset_version TEXT,
+    features_version TEXT,
+    validation_type TEXT,
+    accuracy DOUBLE PRECISION,
+    brier DOUBLE PRECISION,
+    brier_skill DOUBLE PRECISION,
+    calibration_status TEXT,
+    regime JSONB,
+    cpcv_status TEXT,
+    pbo_status TEXT,
+    dsr_status TEXT,
+    selection_rule TEXT,
+    metadata JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_registry_model_registered
+ON model_registry(model_id, registered_at DESC);
+
 CREATE TABLE IF NOT EXISTS backtest_runs (
     id BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL,
@@ -221,3 +245,33 @@ def record_backtest(symbol: str, result: dict[str, Any]) -> int | None:
             result_row = cur.fetchone()
         conn.commit()
         return int(result_row[0])
+
+
+def record_model_registry(record: dict[str, Any]) -> int | None:
+    if not database_url():
+        return None
+    sql = """
+    INSERT INTO model_registry (
+        registered_at, model_id, version, status, dataset_version,
+        features_version, validation_type, accuracy, brier, brier_skill,
+        calibration_status, regime, cpcv_status, pbo_status, dsr_status,
+        selection_rule, metadata
+    ) VALUES (
+        %(registered_at)s, %(model_id)s, %(version)s, %(status)s,
+        %(dataset_version)s, %(features_version)s, %(validation_type)s,
+        %(accuracy)s, %(brier)s, %(brier_skill)s, %(calibration_status)s,
+        %(regime)s::jsonb, %(cpcv_status)s, %(pbo_status)s, %(dsr_status)s,
+        %(selection_rule)s, %(metadata)s::jsonb
+    ) RETURNING id
+    """
+    row = dict(record)
+    row["regime"] = json.dumps(record.get("regime") or {})
+    row["metadata"] = json.dumps(record)
+    with connection() as conn:
+        if conn is None:
+            return None
+        with conn.cursor() as cur:
+            cur.execute(sql, row)
+            result = cur.fetchone()
+        conn.commit()
+        return int(result[0])
