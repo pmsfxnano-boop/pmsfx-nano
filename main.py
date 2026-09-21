@@ -377,6 +377,7 @@ async def state(ticker: str):
         "spread_bps": spread_bps,
         "microprice": microprice,
         "execution_costs": execution_gate,
+        "regime": evaluation.get("regime"),
         "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
