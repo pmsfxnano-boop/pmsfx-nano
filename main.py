@@ -13,6 +13,7 @@ from quant.db import init_db, persistence_summary, record_backtest, record_forec
 from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
 from quant.model_health import assess_model_health
+from quant.model_registry import build_registry_record
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -369,6 +370,7 @@ async def state(ticker: str):
     evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
     forecast_status = forecast["status"] if forecast else selected_status
     model_health = assess_model_health(data_health=data_health, evaluation=evaluation, forecast=forecast)
+    registry_record = build_registry_record(model_id=model_id or "none", version="v1", status="ACTIVE" if not model_health["safe_mode"] else "SAFE_MODE", evaluation=evaluation)
     if model_health["safe_mode"]:
         armed = False
         gatillazo_status = "SAFE_MODE"
@@ -386,6 +388,7 @@ async def state(ticker: str):
         "execution_costs": execution_gate,
         "regime": evaluation.get("regime"),
         "model_health": model_health,
+        "model_registry": registry_record,
         "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
