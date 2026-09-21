@@ -15,6 +15,7 @@ from quant.execution_costs import estimate_execution_cost
 from quant.model_health import assess_model_health
 from quant.model_registry import build_registry_record
 from quant.meta import combine_specialists
+from quant.trigger import evaluate_trigger
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -372,11 +373,23 @@ async def state(ticker: str):
     forecast_status = forecast["status"] if forecast else selected_status
     model_health = assess_model_health(data_health=data_health, evaluation=evaluation, forecast=forecast)
     registry_record = build_registry_record(model_id=model_id or "none", version="v1", status="ACTIVE" if not model_health["safe_mode"] else "SAFE_MODE", evaluation=evaluation)
+    trigger = evaluate_trigger(
+        probability_up=forecast.get("raw_probability_up") if forecast else None,
+        agreement=meta.get("agreement", 0.0),
+        confidence=forecast.get("confidence_raw", 0.0) if forecast else 0.0,
+        model_health=model_health,
+        regime=evaluation.get("regime"),
+        spread_bps=spread_bps,
+        expected_move_bps=None,
+        estimated_cost_bps=execution_gate.get("estimated_cost_bps"),
+        persistence_count=1,
+        cooldown_active=False,
+    )
     if model_health["safe_mode"]:
         armed = False
         gatillazo_status = "SAFE_MODE"
     else:
-        gatillazo_status = "ARMED" if armed else "BLOCKED_VALIDATION"
+        gatillazo_status = trigger["status"]
     response_payload = {
         "symbol": symbol,
         "last": last,
@@ -391,6 +404,7 @@ async def state(ticker: str):
         "model_health": model_health,
         "model_registry": registry_record,
         "meta": meta,
+        "trigger": trigger,
         "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
