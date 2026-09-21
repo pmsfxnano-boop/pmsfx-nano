@@ -1,0 +1,148 @@
+"""Isolated GGAL + Argentina sovereign-risk shadow specialist.
+
+This module is additive only. It does not import or mutate the existing
+forecast/Gatillazo pipeline. Status is always EXPERIMENTAL/SHADOW.
+"""
+from __future__ import annotations
+
+import json, math, os, sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+DB_PATH = Path(os.getenv("GGAL_SHADOW_DB", "/tmp/ggal_shadow.sqlite3"))
+GGAL_SYMBOL = "GGAL.BA"
+EMBI_URL = "https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais"
+YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GGAL.BA"
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS ggal_shadow_market_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL,
+      event_time TEXT NOT NULL, received_time TEXT NOT NULL,
+      close REAL NOT NULL, volume REAL, source TEXT NOT NULL,
+      UNIQUE(symbol,event_time,source)
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_risk_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+      event_time TEXT NOT NULL, received_time TEXT NOT NULL,
+      embi_bps REAL NOT NULL, UNIQUE(source,event_time)
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_forecasts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+      event_time TEXT NOT NULL, model_id TEXT NOT NULL,
+      probability_up REAL, direction TEXT, accuracy_oos REAL,
+      brier_oos REAL, sample_count INTEGER, status TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_registry (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, registered_at TEXT NOT NULL,
+      model_id TEXT NOT NULL, version TEXT NOT NULL,
+      status TEXT NOT NULL, mode TEXT NOT NULL,
+      validation_type TEXT, engineering_thresholds TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+    """)
+    return conn
+
+def fetch_json(url: str) -> dict | list:
+    req = Request(url, headers={"User-Agent":"PMSF-X-Nano-GGAL-Shadow/1.0"})
+    with urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def capture() -> dict:
+    received = now_iso()
+    y = fetch_json(YAHOO_URL + "?range=5y&interval=1d")
+    result = (y.get("chart",{}).get("result") or [None])[0]
+    if not result:
+        raise RuntimeError("GGAL_PRICE_SOURCE_INVALID")
+    ts = result["timestamp"]
+    q = result["indicators"]["quote"][0]
+    prices = []
+    for i,t in enumerate(ts):
+        close = q["close"][i]
+        if close is not None:
+            prices.append((datetime.fromtimestamp(t, timezone.utc).isoformat(), float(close), q.get("volume",[None]*len(ts))[i]))
+    risk = fetch_json(EMBI_URL)
+    if not isinstance(risk, list):
+        raise RuntimeError("EMBI_SOURCE_INVALID")
+    conn = db()
+    for event_time, close, volume in prices:
+        conn.execute("INSERT OR IGNORE INTO ggal_shadow_market_events(symbol,event_time,received_time,close,volume,source) VALUES(?,?,?,?,?,?)",
+                     (GGAL_SYMBOL,event_time,received,close,volume,"yahoo_chart"))
+    for row in risk:
+        if row.get("fecha") and row.get("valor") is not None:
+            conn.execute("INSERT OR IGNORE INTO ggal_shadow_risk_events(source,event_time,received_time,embi_bps) VALUES(?,?,?,?)",
+                         ("ArgentinaDatos", str(row["fecha"])+"T23:59:59+00:00", received, float(row["valor"])))
+    conn.commit()
+    conn.close()
+    return {"market_status":"HEALTHY","risk_status":"HEALTHY","market_events":len(prices),"risk_events":len(risk),"received_time":received}
+
+def sigmoid(z: float) -> float:
+    z=max(-30,min(30,z))
+    return 1/(1+math.exp(-z))
+
+def train_and_forecast() -> dict:
+    conn=db()
+    rows=conn.execute("""
+      SELECT m.event_time,m.close,r.embi_bps
+      FROM ggal_shadow_market_events m
+      JOIN ggal_shadow_risk_events r ON substr(m.event_time,1,10)=substr(r.event_time,1,10)
+      ORDER BY m.event_time
+    """).fetchall()
+    conn.close()
+    if len(rows)<40:
+        return {"status":"EXPERIMENTAL","mode":"SHADOW","validation":"INSUFFICIENT_DATA","sample_count":len(rows),
+                "forecast":None,"accuracy_oos":None,"brier_oos":None}
+    data=[]
+    for i in range(6,len(rows)-1):
+        c0=float(rows[i]["close"]); c1=float(rows[i+1]["close"])
+        prev=float(rows[i-1]["close"]); e=float(rows[i]["embi_bps"]); ep=float(rows[i-5]["embi_bps"])
+        ret=(c0/prev-1)*10000
+        embi_delta=e-ep
+        future=(c1/c0-1)*10000
+        x=(ret,embi_delta,e); y=1 if future>0 else 0
+        data.append((x,y))
+    split=max(20,int(len(data)*0.8))
+    train,test=data[:split],data[split:]
+    if not test or len(set(y for _,y in train))<2:
+        return {"status":"EXPERIMENTAL","mode":"SHADOW","validation":"INSUFFICIENT_CLASS_VARIATION","sample_count":len(data),
+                "forecast":None,"accuracy_oos":None,"brier_oos":None}
+    means=[sum(x[j] for x,_ in train)/len(train) for j in range(3)]
+    scales=[max(1e-6,(sum((x[j]-means[j])**2 for x,_ in train)/len(train))**0.5) for j in range(3)]
+    w=[0.0,0.0,0.0]; b=0.0
+    for _ in range(220):
+        for x,y in train:
+            z=b+sum(w[j]*((x[j]-means[j])/scales[j]) for j in range(3)); p=sigmoid(z); e=p-y
+            for j in range(3): w[j]-=0.04*e*((x[j]-means[j])/scales[j])
+            b-=0.04*e
+    probs=[]; labels=[]
+    for x,y in test:
+        z=b+sum(w[j]*((x[j]-means[j])/scales[j]) for j in range(3))
+        probs.append(sigmoid(z)); labels.append(y)
+    acc=sum((p>=0.5)==bool(y) for p,y in zip(probs,labels))/len(labels)
+    brier=sum((p-y)**2 for p,y in zip(probs,labels))/len(labels)
+    x,y=data[-1]
+    p=sigmoid(b+sum(w[j]*((x[j]-means[j])/scales[j]) for j in range(3)))
+    forecast={"probability_up":round(p,4),"direction":"UP" if p>=0.5 else "DOWN"}
+    conn=db()
+    meta={"inputs":["GGAL.BA","EMBI+ Argentina"],"thresholds":"PROVISIONAL_ENGINEERING_DEFAULTS_NOT_VALIDATED_ALPHA",
+          "sources":{"price":"Yahoo Finance Chart (unofficial)","risk":"ArgentinaDatos / Ámbito"}}
+    conn.execute("INSERT INTO ggal_shadow_forecasts(created_at,event_time,model_id,probability_up,direction,accuracy_oos,brier_oos,sample_count,status,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                 (now_iso(),rows[-1]["event_time"],"sovereign-risk-v1",p,forecast["direction"],acc,brier,len(data),"EXPERIMENTAL_SHADOW",json.dumps(meta)))
+    conn.execute("INSERT INTO ggal_shadow_registry(registered_at,model_id,version,status,mode,validation_type,engineering_thresholds,metadata) VALUES(?,?,?,?,?,?,?,?)",
+                 (now_iso(),"sovereign-risk-v1","v1","EXPERIMENTAL","SHADOW","chronological_oos_holdout",
+                  "PROVISIONAL_ENGINEERING_DEFAULTS_NOT_VALIDATED_ALPHA",json.dumps(meta)))
+    conn.commit(); conn.close()
+    return {"status":"EXPERIMENTAL","mode":"SHADOW","validation":"CHRONOLOGICAL_OOS_HOLDOUT",
+            "sample_count":len(data),"forecast":forecast,"accuracy_oos":round(acc,4),"brier_oos":round(brier,4)}
+
+def run_cycle():
+    capture_result=capture()
+    model=train_and_forecast()
+    return {"capture":capture_result,"model":model,"triggers_enabled":False}
