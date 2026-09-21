@@ -12,6 +12,7 @@ import math
 from typing import Any
 
 from quant.temporal import TemporalSample, walk_forward_splits
+from quant.calibration import fit_platt, calibrate_platt, metrics
 
 import httpx
 
@@ -179,10 +180,12 @@ def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[Tem
     if not folds:
         return {'sample_count': n, 'test_count': 0, 'fold_count': 0, 'validated': False, 'validation_reason': 'NO_VALID_WALK_FORWARD_FOLDS'}
     accs=[]; bs=[]; bbs=[]; lls=[]; blls=[]; total=0
+    calibration_probs=[]; calibration_labels=[]
     for fold in folds:
         train=[(list(x.features), x.label) for x in fold.train]; test=[(list(x.features), x.label) for x in fold.test]
         if len({y for _,y in train})<2 or len({y for _,y in test})<2: continue
         w=_fit(train); probs=[_predict(w,x) for x,_ in test]; labels=[y for _,y in test]
+        calibration_probs.extend(probs); calibration_labels.extend(labels)
         rate=sum(y for _,y in train)/len(train); base=[rate]*len(labels)
         accs.append(sum((p>=0.5)==bool(y) for p,y in zip(probs,labels))/len(labels))
         bs.append(sum((p-y)**2 for p,y in zip(probs,labels))/len(labels)); bbs.append(sum((p-y)**2 for p,y in zip(base,labels))/len(labels))
@@ -190,8 +193,18 @@ def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[Tem
     if not accs:
         return {'sample_count': n, 'test_count': 0, 'fold_count': len(folds), 'validated': False, 'validation_reason': 'NO_USABLE_FOLDS'}
     accuracy=sum(accs)/len(accs); brier=sum(bs)/len(bs); baseline=sum(bbs)/len(bbs); ll=sum(lls)/len(lls); bll=sum(blls)/len(blls)
-    skill=1.0-brier/baseline if baseline>0 else None; validated=accuracy>=0.55 and brier<baseline and len(accs)>=2
-    return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
+    skill=1.0-brier/baseline if baseline>0 else None
+    calibration_status="NOT_ENOUGH_DATA"; calibrated_brier=None; calibrated_logloss=None
+    if len(calibration_labels)>=30 and len(set(calibration_labels))>=2:
+        try:
+            a,b=fit_platt(calibration_probs, calibration_labels)
+            cp=[calibrate_platt(p,a,b) for p in calibration_probs]
+            calibrated_brier, calibrated_logloss=metrics(cp,calibration_labels)
+            calibration_status="PLATT_FIT"
+        except ValueError:
+            pass
+    validated=accuracy>=0.55 and brier<baseline and len(accs)>=2
+    return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'calibration_method':'PLATT','calibration_status':calibration_status,'calibrated_brier':round(calibrated_brier,5) if calibrated_brier is not None else None,'calibrated_log_loss':round(calibrated_logloss,5) if calibrated_logloss is not None else None,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
 
 async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
     cached = _CACHE.get(symbol)
