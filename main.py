@@ -10,6 +10,7 @@ from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast
 from quant.db import init_db, persistence_summary, record_backtest, record_forecast
+from quant.data_health import assess_quote
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -213,7 +214,42 @@ async def state(ticker: str):
         if bid_size + ask_size > 0:
             microprice = round((ask * bid_size + bid * ask_size) / (bid_size + ask_size), 6)
 
-    healthy = last is not None and bid is not None and ask is not None
+    data_health = assess_quote(
+        symbol=symbol,
+        last=last,
+        bid=bid,
+        ask=ask,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        quote_timestamp=q.get("quoteTimestamp") or q.get("timestamp"),
+        received_at=result["received_at"],
+    )
+    healthy = data_health["status"] == "HEALTHY"
+
+    if not healthy:
+        return {
+            "symbol": symbol,
+            "last": last,
+            "bid": bid,
+            "ask": ask,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+            "spread_bps": spread_bps,
+            "microprice": microprice,
+            "data_health": data_health,
+            "data_source": result["source"],
+            "feed_label": feed_label,
+            "quote_timestamp": q.get("quoteTimestamp") or q.get("timestamp"),
+            "received_at": result["received_at"],
+            "forecast": None,
+            "forecast_status": "BLOCKED_DATA_HEALTH",
+            "gatillazo": "BLOCKED_DATA_HEALTH",
+            "specialists": {},
+            "model": {"id": None, "status": "BLOCKED_DATA_HEALTH"},
+            "evaluation": {},
+            "rule": "NO DATA HEALTH -> NO FORECAST -> NO GATILLAZO",
+            "forecast_id": None,
+        }
 
     flow = run_flow_specialist(
         last=last,
@@ -320,7 +356,7 @@ async def state(ticker: str):
         "ask_size": ask_size,
         "spread_bps": spread_bps,
         "microprice": microprice,
-        "data_health": "HEALTHY" if healthy else "DEGRADED",
+        "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
         "quote_timestamp": q.get("quoteTimestamp") or q.get("timestamp"),
