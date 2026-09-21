@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, Response
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast
-from quant.db import init_db, persistence_summary, record_backtest, record_forecast
+from quant.db import init_db, persistence_summary, record_backtest, record_forecast, record_model_registry
 from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
 from quant.model_health import assess_model_health
@@ -422,6 +422,12 @@ async def state(ticker: str):
         print(f"PMSF-X FORECAST LOG ERROR: {type(exc).__name__}: {exc}")
         forecast_id = None
     response_payload["forecast_id"] = forecast_id
+    try:
+        registry_id = record_model_registry(registry_record)
+    except Exception as exc:
+        print(f"PMSF-X MODEL REGISTRY ERROR: {type(exc).__name__}: {exc}")
+        registry_id = None
+    response_payload["model_registry_id"] = registry_id
     return response_payload
 
 @app.get("/api/backtest/{ticker}")
