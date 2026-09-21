@@ -32,6 +32,16 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _parse_bar_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         return None if value is None else float(value)
@@ -85,12 +95,18 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
         lo = _safe_float(row.get("low"))
         c = _safe_float(row.get("close"))
         v = _safe_float(row.get("volume")) or 0.0
-        if None in (o, h, lo, c) or c <= 0 or h < lo:
+        ts = _parse_bar_time(row.get("date") or row.get("timestamp"))
+        if ts is None or None in (o, h, lo, c) or c <= 0 or h < lo:
             continue
-        bars.append({"open": o, "high": h, "low": lo, "close": c, "volume": v})
+        bars.append({"time": ts, "open": o, "high": h, "low": lo, "close": c, "volume": v})
+
+    bars.sort(key=lambda row: row["time"])
 
     samples: list[tuple[list[float], int]] = []
+    expected_step = timedelta(minutes=5)
     for i in range(3, len(bars) - 1):
+        if any(bars[j]["time"] - bars[j - 1]["time"] != expected_step for j in (i - 2, i - 1, i, i + 1)):
+            continue
         b0, b1, b3 = bars[i], bars[i - 1], bars[i - 3]
         c0 = b0["close"]
         c1 = b1["close"]
@@ -219,6 +235,7 @@ def _evaluate(samples: list[tuple[list[float], int]]) -> dict[str, Any]:
         "train_base_rate": round(train_rate, 5),
         "validated": validated,
         "validation_reason": "PASS" if validated else "METRICS_BELOW_THRESHOLD",
+        "validation_type": "chronological_point_in_time_holdout",
     }
 
 
