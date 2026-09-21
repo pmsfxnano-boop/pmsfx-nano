@@ -14,6 +14,7 @@ from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
 from quant.model_health import assess_model_health
 from quant.model_registry import build_registry_record
+from quant.meta import combine_specialists
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -285,19 +286,19 @@ async def state(ticker: str):
     # Historical price model is primary until live flow has its own validation.
     hist_forecast = historical.get("forecast")
     flow_forecast = online.get("forecast")
-    both_validated = bool(
-        hist_forecast
-        and flow_forecast
-        and historical.get("evaluation", {}).get("validated")
-        and flow_forecast.get("validated")
+    meta = combine_specialists(
+        historical=hist_forecast,
+        flow=flow_forecast,
+        historical_evaluation=historical.get("evaluation", {}),
     )
 
-    if both_validated:
-        p_up = (hist_forecast["raw_probability_up"] + flow_forecast["raw_probability_up"]) / 2.0
-        model_id = "ensemble-historical-flow-v1"
-        selected_status = "VALIDATED"
-        selected_validated = True
-        horizon_seconds = min(hist_forecast["horizon_seconds"], flow_forecast["horizon_seconds"])
+    if meta["status"] == "READY":
+        p_up = meta["probability_up"]
+        model_id = "meta-adaptive-v1"
+        selected_status = "VALIDATED" if bool(historical.get("evaluation", {}).get("validated")) else "EXPERIMENTAL"
+        selected_validated = bool(historical.get("evaluation", {}).get("validated"))
+        horizons = [x.get("horizon_seconds") for x in (hist_forecast, flow_forecast) if x and x.get("horizon_seconds")]
+        horizon_seconds = min(horizons) if horizons else None
     elif hist_forecast:
         p_up = hist_forecast["raw_probability_up"]
         model_id = hist_forecast["model_id"]
@@ -389,6 +390,7 @@ async def state(ticker: str):
         "regime": evaluation.get("regime"),
         "model_health": model_health,
         "model_registry": registry_record,
+        "meta": meta,
         "data_health": data_health,
         "data_source": result["source"],
         "feed_label": feed_label,
