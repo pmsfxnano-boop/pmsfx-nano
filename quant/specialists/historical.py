@@ -237,6 +237,10 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
 
         samples, temporal_samples, latest_x = _bars_to_samples(data[-MAX_ROWS:])
         evaluation = _evaluate(samples, temporal_samples)
+        evaluation["cpcv_status"] = "RESEARCH_MODULE_READY"
+        evaluation["pbo_status"] = "RESEARCH_MODULE_READY"
+        evaluation["dsr_status"] = "RESEARCH_MODULE_READY"
+        evaluation["search_ledger"] = {"trials": 1, "selection_rule": "record_only"}
 
         if len(samples) < MIN_TRAIN_ROWS or latest_x is None:
             result = {
