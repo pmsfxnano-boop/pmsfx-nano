@@ -7,7 +7,7 @@ after the horizon and stores the realized move plus audit metadata.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -16,6 +16,7 @@ import httpx
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
 TIINGO_EQUITY_URL = "https://api.tiingo.com/tiingo/equity/intraday"
 REALIZED_MOVE_THRESHOLD_BPS = 0.5
+OUTCOME_RESAMPLE_FREQ = "1min"
 
 
 def _first_record(data: Any) -> dict[str, Any] | None:
@@ -46,6 +47,58 @@ def _price_fields(source: str, row: dict[str, Any]) -> dict[str, Any]:
         "bid_size": row.get("lqBidSize") or 0,
         "ask_size": row.get("lqAskSize") or 0,
         "timestamp": row.get("timestamp"),
+    }
+
+
+
+
+async def _fetch_future_bar(symbol: str, token: str, due_at: datetime) -> dict[str, Any] | None:
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+    }
+    start_date = due_at.date()
+    end_date = start_date + timedelta(days=1)
+    params = {
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+        "resampleFreq": OUTCOME_RESAMPLE_FREQ,
+        "columns": "close",
+    }
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(
+            f"{TIINGO_EQUITY_URL}/{symbol}/prices",
+            headers=headers,
+            params=params,
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Tiingo historical outcome HTTP {response.status_code}")
+
+    data = response.json()
+    if not isinstance(data, list):
+        data = data.get("data", []) if isinstance(data, dict) else []
+
+    candidates: list[tuple[datetime, float]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        ts = _parse_datetime(row.get("date") or row.get("timestamp"))
+        close = row.get("close")
+        if ts is None or close is None or ts < due_at:
+            continue
+        try:
+            candidates.append((ts, float(close)))
+        except (TypeError, ValueError):
+            continue
+
+    if not candidates:
+        return None
+
+    ts, price = min(candidates, key=lambda item: item[0])
+    return {
+        "price": price,
+        "source": "tiingo_equity_intraday_1min",
+        "quote_timestamp": ts.isoformat(),
     }
 
 
@@ -147,7 +200,9 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
         else None
     )
 
-    quote_timestamp = _parse_datetime(quote.get("timestamp"))
+    quote_timestamp = _parse_datetime(
+        quote.get("quote_timestamp") or quote.get("timestamp")
+    )
     return {
         "resolved_at": resolved,
         "forecast_id": int(forecast["id"]),
@@ -170,7 +225,7 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
             "quote_timestamp": quote_timestamp.isoformat() if quote_timestamp else None,
             "quote_received_at": quote.get("received_at"),
             "realized_move_threshold_bps": REALIZED_MOVE_THRESHOLD_BPS,
-            "resolution_rule": "first fresh observation available after forecast horizon",
+            "resolution_rule": "first Tiingo 1-minute observation at or after forecast horizon",
             "actual_elapsed_seconds": round(elapsed, 3),
         },
     }
@@ -189,7 +244,17 @@ async def resolve_forecast(forecast: dict[str, Any], token: str) -> dict[str, An
             "due_at": datetime.fromtimestamp(due_at, tz=timezone.utc).isoformat(),
         }
 
-    quote = await _fetch_fresh_price(str(forecast["symbol"]), token)
+    due_at = datetime.fromtimestamp(due_at, tz=timezone.utc)
+    quote = await _fetch_future_bar(str(forecast["symbol"]), token, due_at)
+
+    if quote is None:
+        return {
+            "status": "NOT_AVAILABLE",
+            "forecast_id": int(forecast["id"]),
+            "due_at": due_at.isoformat(),
+            "reason": "NO_FUTURE_1MIN_OBSERVATION_AVAILABLE",
+        }
+
     outcome = build_outcome(forecast, quote, resolved_at=now)
     outcome["status"] = "RESOLVED"
     return outcome
