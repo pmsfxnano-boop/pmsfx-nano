@@ -59,6 +59,34 @@ CREATE TABLE IF NOT EXISTS model_registry (
 CREATE INDEX IF NOT EXISTS idx_model_registry_model_registered
 ON model_registry(model_id, registered_at DESC);
 
+CREATE TABLE IF NOT EXISTS forecast_outcomes (
+    id BIGSERIAL PRIMARY KEY,
+    forecast_id BIGINT NOT NULL REFERENCES forecasts(id) ON DELETE CASCADE,
+    resolved_at TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    forecast_created_at TIMESTAMPTZ NOT NULL,
+    target_horizon_seconds INTEGER NOT NULL,
+    actual_elapsed_seconds DOUBLE PRECISION NOT NULL,
+    forecast_direction TEXT,
+    forecast_p_up DOUBLE PRECISION,
+    forecast_confidence DOUBLE PRECISION,
+    entry_price DOUBLE PRECISION,
+    exit_price DOUBLE PRECISION,
+    realized_return_bps DOUBLE PRECISION NOT NULL,
+    realized_direction TEXT NOT NULL,
+    prediction_correct BOOLEAN,
+    binary_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    brier_loss DOUBLE PRECISION,
+    resolution_source TEXT NOT NULL,
+    metadata JSONB
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_forecast_outcomes_forecast_id
+ON forecast_outcomes(forecast_id);
+
+CREATE INDEX IF NOT EXISTS idx_forecast_outcomes_symbol_resolved
+ON forecast_outcomes(symbol, resolved_at DESC);
+
 CREATE TABLE IF NOT EXISTS backtest_runs (
     id BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL,
@@ -285,3 +313,190 @@ def record_model_registry(record: dict[str, Any]) -> int | None:
             result = cur.fetchone()
         conn.commit()
         return int(result[0])
+
+
+def pending_due_forecasts(limit: int = 20) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+    limit = max(1, min(int(limit), 100))
+    sql = f"""
+    SELECT
+        f.id,
+        f.created_at,
+        f.symbol,
+        f.horizon_seconds,
+        f.direction,
+        f.p_up,
+        f.confidence,
+        COALESCE(
+            (f.bid + f.ask) / 2.0,
+            f.last
+        ) AS entry_price
+    FROM forecasts f
+    LEFT JOIN forecast_outcomes o
+      ON o.forecast_id = f.id
+    WHERE o.forecast_id IS NULL
+      AND f.horizon_seconds IS NOT NULL
+      AND f.created_at + (f.horizon_seconds || ' seconds')::interval <= NOW()
+    ORDER BY f.created_at ASC
+    LIMIT {limit}
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return []
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+        return [
+            {
+                "id": int(row[0]),
+                "created_at": row[1],
+                "symbol": row[2],
+                "horizon_seconds": int(row[3]),
+                "direction": row[4],
+                "p_up": float(row[5]) if row[5] is not None else None,
+                "confidence": float(row[6]) if row[6] is not None else None,
+                "entry_price": float(row[7]) if row[7] is not None else None,
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def record_outcome(outcome: dict[str, Any]) -> int | None:
+    if not database_url():
+        return None
+    sql = """
+    INSERT INTO forecast_outcomes (
+        forecast_id, resolved_at, symbol, forecast_created_at,
+        target_horizon_seconds, actual_elapsed_seconds,
+        forecast_direction, forecast_p_up, forecast_confidence,
+        entry_price, exit_price, realized_return_bps,
+        realized_direction, prediction_correct, binary_eligible,
+        brier_loss, resolution_source, metadata
+    ) VALUES (
+        %(forecast_id)s, %(resolved_at)s, %(symbol)s, %(forecast_created_at)s,
+        %(target_horizon_seconds)s, %(actual_elapsed_seconds)s,
+        %(forecast_direction)s, %(forecast_p_up)s, %(forecast_confidence)s,
+        %(entry_price)s, %(exit_price)s, %(realized_return_bps)s,
+        %(realized_direction)s, %(prediction_correct)s, %(binary_eligible)s,
+        %(brier_loss)s, %(resolution_source)s, %(metadata)s::jsonb
+    )
+    ON CONFLICT (forecast_id) DO NOTHING
+    RETURNING id
+    """
+    row = dict(outcome)
+    row["metadata"] = json.dumps(outcome.get("metadata") or {})
+    with connection() as conn:
+        if conn is None:
+            return None
+        with conn.cursor() as cur:
+            cur.execute(sql, row)
+            result = cur.fetchone()
+            if result is None:
+                cur.execute(
+                    "SELECT id FROM forecast_outcomes WHERE forecast_id = %(forecast_id)s",
+                    {"forecast_id": outcome["forecast_id"]},
+                )
+                result = cur.fetchone()
+        conn.commit()
+        return int(result[0]) if result else None
+
+
+def get_outcome(forecast_id: int) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+    sql = """
+    SELECT
+        id, forecast_id, resolved_at, symbol, forecast_created_at,
+        target_horizon_seconds, actual_elapsed_seconds,
+        forecast_direction, forecast_p_up, forecast_confidence,
+        entry_price, exit_price, realized_return_bps,
+        realized_direction, prediction_correct, binary_eligible,
+        brier_loss, resolution_source, metadata
+    FROM forecast_outcomes
+    WHERE forecast_id = %(forecast_id)s
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(sql, {"forecast_id": int(forecast_id)})
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]),
+            "forecast_id": int(row[1]),
+            "resolved_at": row[2].isoformat(),
+            "symbol": row[3],
+            "forecast_created_at": row[4].isoformat(),
+            "target_horizon_seconds": int(row[5]),
+            "actual_elapsed_seconds": float(row[6]),
+            "forecast_direction": row[7],
+            "forecast_probability_up": float(row[8]) if row[8] is not None else None,
+            "forecast_confidence": float(row[9]) if row[9] is not None else None,
+            "entry_price": float(row[10]) if row[10] is not None else None,
+            "exit_price": float(row[11]) if row[11] is not None else None,
+            "realized_return_bps": float(row[12]),
+            "realized_direction": row[13],
+            "prediction_correct": row[14],
+            "binary_eligible": row[15],
+            "brier_loss": float(row[16]) if row[16] is not None else None,
+            "resolution_source": row[17],
+            "metadata": row[18],
+        }
+    except Exception:
+        return None
+
+
+def outcome_summary() -> dict[str, Any]:
+    if not database_url():
+        return {
+            "configured": False,
+            "ready": False,
+            "outcome_count": None,
+            "binary_eligible_count": None,
+            "correct_count": None,
+            "mean_realized_return_bps": None,
+            "last_resolved_at": None,
+        }
+    sql = """
+    SELECT
+        COUNT(*) AS outcome_count,
+        COUNT(*) FILTER (WHERE binary_eligible) AS binary_eligible_count,
+        COUNT(*) FILTER (WHERE prediction_correct IS TRUE) AS correct_count,
+        AVG(realized_return_bps) AS mean_realized_return_bps,
+        MAX(resolved_at) AS last_resolved_at
+    FROM forecast_outcomes
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                raise RuntimeError("database unavailable")
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+        return {
+            "configured": True,
+            "ready": True,
+            "outcome_count": int(row[0]),
+            "binary_eligible_count": int(row[1]),
+            "correct_count": int(row[2]),
+            "mean_realized_return_bps": round(float(row[3]), 4) if row[3] is not None else None,
+            "last_resolved_at": row[4].isoformat() if row[4] is not None else None,
+        }
+    except Exception as exc:
+        return {
+            "configured": True,
+            "ready": False,
+            "outcome_count": None,
+            "binary_eligible_count": None,
+            "correct_count": None,
+            "mean_realized_return_bps": None,
+            "last_resolved_at": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
