@@ -95,41 +95,6 @@ async def initialize_persistence():
 
 
 @app.on_event("startup")
-async def outcome_startup_smoketest():
-    if os.getenv("PMSFX_OUTCOME_SMOKETEST") != "1":
-        return
-    if not DB_READY or not os.getenv("TIINGO_API_KEY"):
-        print("PMSF-X OUTCOME SMOKETEST: prerequisites unavailable")
-        return
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://pmsfx-internal") as client:
-            resolve = await client.post("/api/outcome/resolve?limit=1")
-            resolve_body = resolve.json()
-            summary = await client.get("/api/outcome/summary")
-            summary_body = summary.json()
-            print(
-                "PMSF-X OUTCOME SMOKETEST RESULT:",
-                {
-                    "resolve_status_code": resolve.status_code,
-                    "attempted": resolve_body.get("attempted"),
-                    "resolved": resolve_body.get("resolved"),
-                    "errors": resolve_body.get("errors"),
-                    "error_details": resolve_body.get("error_details"),
-                    "outcome_count": summary_body.get("outcome_count"),
-                    "summary_status_code": summary.status_code,
-                    "status": "PASS"
-                    if resolve.status_code == 200
-                    and summary.status_code == 200
-                    and resolve_body.get("errors") == 0
-                    else "FAIL",
-                },
-            )
-    except Exception as exc:
-        print(f"PMSF-X OUTCOME SMOKETEST ERROR: {type(exc).__name__}: {exc}")
-
-
-@app.on_event("startup")
 async def tiingo_startup_check():
     if not os.getenv("TIINGO_API_KEY"):
         print("PMSF-X SELFTEST AAPL: TIINGO_API_KEY missing")
