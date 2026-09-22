@@ -150,6 +150,7 @@ async def outcome_resolver_loop():
                     "resolved": resolved.get("resolved"),
                     "errors": resolved.get("errors"),
                     "outcome_count": outcome_summary().get("outcome_count"),
+                    "binary_eligible_count": outcome_summary().get("binary_eligible_count"),
                 },
             )
             if any("429" in str(item.get("error") or item.get("reason")) for item in resolved.get("error_details", [])):
@@ -303,6 +304,8 @@ async def resolve_outcomes(limit: int = 20):
                     "symbol": outcome["symbol"],
                     "realized_return_bps": outcome["realized_return_bps"],
                     "prediction_correct": outcome["prediction_correct"],
+                    "binary_eligible": outcome["binary_eligible"],
+                    "actual_elapsed_seconds": outcome["actual_elapsed_seconds"],
                 },
             )
         except Exception as exc:
