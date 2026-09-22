@@ -116,6 +116,8 @@ def persistence_summary() -> dict[str, Any]:
             "backtest_count": None,
             "last_forecast_id": None,
             "last_backtest_id": None,
+            "last_forecast_created_at": None,
+            "last_backtest_created_at": None,
         }
 
     sql = """
@@ -123,7 +125,9 @@ def persistence_summary() -> dict[str, Any]:
         (SELECT COUNT(*) FROM forecasts) AS forecast_count,
         (SELECT COUNT(*) FROM backtest_runs) AS backtest_count,
         (SELECT MAX(id) FROM forecasts) AS last_forecast_id,
-        (SELECT MAX(id) FROM backtest_runs) AS last_backtest_id
+        (SELECT MAX(id) FROM backtest_runs) AS last_backtest_id,
+        (SELECT MAX(created_at) FROM forecasts) AS last_forecast_created_at,
+        (SELECT MAX(created_at) FROM backtest_runs) AS last_backtest_created_at
     """
     try:
         with connection() as conn:
@@ -146,6 +150,8 @@ def persistence_summary() -> dict[str, Any]:
             "backtest_count": int(row[1]),
             "last_forecast_id": int(row[2]) if row[2] is not None else None,
             "last_backtest_id": int(row[3]) if row[3] is not None else None,
+            "last_forecast_created_at": row[4].isoformat() if row[4] is not None else None,
+            "last_backtest_created_at": row[5].isoformat() if row[5] is not None else None,
         }
     except Exception as exc:
         return {
@@ -155,6 +161,8 @@ def persistence_summary() -> dict[str, Any]:
             "backtest_count": None,
             "last_forecast_id": None,
             "last_backtest_id": None,
+            "last_forecast_created_at": None,
+            "last_backtest_created_at": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
 
