@@ -32,6 +32,7 @@ TICKER_ALIASES = {
 
 app = FastAPI(title="PMSF-X Nano", version="0.4.0")
 DB_READY = False
+PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 def normalize_ticker(value: str) -> str:
@@ -81,6 +82,62 @@ async def initialize_persistence():
     except Exception as exc:
         DB_READY = False
         print(f"PMSF-X DB ERROR: {type(exc).__name__}: {exc}")
+
+
+@app.on_event("startup")
+async def persistence_startup_smoketest():
+    if os.getenv("PMSFX_PERSISTENCE_SMOKETEST") != "1":
+        return
+    if not DB_READY:
+        print("PMSF-X PERSISTENCE SMOKETEST: DB NOT READY")
+        return
+
+    restart_at = PROCESS_STARTED_AT
+    print("PMSF-X PERSISTENCE SMOKETEST START:", {"restart_at": restart_at.isoformat()})
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://pmsfx-internal") as client:
+            backtest_response = await client.get("/api/backtest/AAPL")
+            backtest_body = backtest_response.json()
+            print(
+                "PMSF-X PERSISTENCE SMOKETEST BACKTEST:",
+                {
+                    "status_code": backtest_response.status_code,
+                    "backtest_id": backtest_body.get("backtest_id"),
+                    "symbol": backtest_body.get("symbol"),
+                },
+            )
+
+            persistence_response = await client.get("/api/persistence")
+            persistence_body = persistence_response.json()
+            created_at = persistence_body.get("last_backtest_created_at")
+            timestamp_ok = False
+            if created_at:
+                try:
+                    timestamp_ok = datetime.fromisoformat(created_at) > restart_at
+                except ValueError:
+                    timestamp_ok = False
+
+            print(
+                "PMSF-X PERSISTENCE SMOKETEST RESULT:",
+                {
+                    "persistence_status_code": persistence_response.status_code,
+                    "backtest_count": persistence_body.get("backtest_count"),
+                    "last_backtest_id": persistence_body.get("last_backtest_id"),
+                    "last_backtest_created_at": created_at,
+                    "restart_at": restart_at.isoformat(),
+                    "timestamp_after_restart": timestamp_ok,
+                    "status": "PASS"
+                    if backtest_response.status_code == 200
+                    and persistence_response.status_code == 200
+                    and backtest_body.get("backtest_id") is not None
+                    and persistence_body.get("last_backtest_id") == backtest_body.get("backtest_id")
+                    and timestamp_ok
+                    else "FAIL",
+                },
+            )
+    except Exception as exc:
+        print(f"PMSF-X PERSISTENCE SMOKETEST ERROR: {type(exc).__name__}: {exc}")
 
 
 @app.on_event("startup")
