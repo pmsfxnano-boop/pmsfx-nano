@@ -17,6 +17,7 @@ TIINGO_IEX_URL = "https://api.tiingo.com/iex"
 TIINGO_EQUITY_URL = "https://api.tiingo.com/tiingo/equity/intraday"
 REALIZED_MOVE_THRESHOLD_BPS = 0.5
 OUTCOME_RESAMPLE_FREQ = "1min"
+MAX_TIMING_SLIPPAGE_SECONDS = 60.0
 
 
 def _first_record(data: Any) -> dict[str, Any] | None:
@@ -188,10 +189,13 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
     else:
         prediction_correct = None
 
+    timing_slippage_seconds = max(0.0, elapsed - float(horizon))
+    within_timing_tolerance = timing_slippage_seconds <= MAX_TIMING_SLIPPAGE_SECONDS
     binary_eligible = (
         forecast.get("p_up") is not None
         and forecast_direction in ("UP", "DOWN")
         and realized_direction in ("UP", "DOWN")
+        and within_timing_tolerance
     )
     realized_label = 1.0 if realized_direction == "UP" else 0.0
     brier_loss = (
@@ -225,8 +229,11 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
             "quote_timestamp": quote_timestamp.isoformat() if quote_timestamp else None,
             "quote_received_at": quote.get("received_at"),
             "realized_move_threshold_bps": REALIZED_MOVE_THRESHOLD_BPS,
-            "resolution_rule": "first Tiingo 1-minute observation at or after forecast horizon",
+            "resolution_rule": "first Tiingo 1-minute observation at or after horizon; late live-quote fallback",
             "actual_elapsed_seconds": round(elapsed, 3),
+            "timing_slippage_seconds": round(timing_slippage_seconds, 3),
+            "timing_tolerance_seconds": MAX_TIMING_SLIPPAGE_SECONDS,
+            "evaluation_eligible": binary_eligible,
         },
     }
 
@@ -247,14 +254,12 @@ async def resolve_forecast(forecast: dict[str, Any], token: str) -> dict[str, An
     due_at = datetime.fromtimestamp(due_at, tz=timezone.utc)
     quote = await _fetch_future_bar(str(forecast["symbol"]), token, due_at)
 
+    resolution_mode = "target_1min_bar"
     if quote is None:
-        return {
-            "status": "NOT_AVAILABLE",
-            "forecast_id": int(forecast["id"]),
-            "due_at": due_at.isoformat(),
-            "reason": "NO_FUTURE_1MIN_OBSERVATION_AVAILABLE",
-        }
+        quote = await _fetch_fresh_price(str(forecast["symbol"]), token)
+        resolution_mode = "late_live_quote"
 
     outcome = build_outcome(forecast, quote, resolved_at=now)
+    outcome["metadata"]["resolution_mode"] = resolution_mode
     outcome["status"] = "RESOLVED"
     return outcome
