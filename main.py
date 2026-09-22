@@ -115,6 +115,7 @@ async def outcome_startup_smoketest():
                     "attempted": resolve_body.get("attempted"),
                     "resolved": resolve_body.get("resolved"),
                     "errors": resolve_body.get("errors"),
+                    "error_details": resolve_body.get("error_details"),
                     "outcome_count": summary_body.get("outcome_count"),
                     "summary_status_code": summary.status_code,
                     "status": "PASS"
