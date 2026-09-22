@@ -3,14 +3,159 @@ from __future__ import annotations
 
 import json, math, os, sqlite3, time
 from datetime import datetime, timezone
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 DB_PATH = Path(os.getenv("GGAL_SHADOW_DB", "/tmp/ggal_shadow.sqlite3"))
-GGAL_SYMBOL = "GGAL.BA"
+GGAL_SYMBOL = "GGAL"
 EMBI_URL = "https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais"
-YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GGAL.BA"
+TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+MAX_RETRIES = 3
+BACKOFF_SECONDS = 2.0
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS ggal_shadow_market_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL,
+      event_time TEXT NOT NULL, received_time TEXT NOT NULL,
+      close REAL NOT NULL, volume REAL, source TEXT NOT NULL,
+      UNIQUE(symbol,event_time,source)
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_risk_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+      event_time TEXT NOT NULL, received_time TEXT NOT NULL,
+      embi_bps REAL NOT NULL, UNIQUE(source,event_time)
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_forecasts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+      event_time TEXT NOT NULL, model_id TEXT NOT NULL,
+      probability_up REAL, direction TEXT, accuracy_oos REAL,
+      brier_oos REAL, sample_count INTEGER, status TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_registry (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, registered_at TEXT NOT NULL,
+      model_id TEXT NOT NULL, version TEXT NOT NULL,
+      status TEXT NOT NULL, mode TEXT NOT NULL,
+      validation_type TEXT, engineering_thresholds TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ggal_shadow_source_health (
+      source TEXT PRIMARY KEY, status TEXT NOT NULL,
+      last_success_at TEXT, last_attempt_at TEXT,
+      last_error TEXT, usable_rows INTEGER NOT NULL DEFAULT 0
+    );
+    """)
+    return conn
+
+def fetch_json(url: str) -> dict | list:
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            req = Request(url, headers={"User-Agent":"PMSF-X-Nano-GGAL-Shadow/1.0"})
+            with urlopen(req, timeout=20) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt < MAX_RETRIES:
+                time.sleep(BACKOFF_SECONDS * (2 ** (attempt - 1)))
+    raise RuntimeError(f"SOURCE_REQUEST_FAILED after {MAX_RETRIES} attempts: {last_error}")
+
+def _set_health(source: str, status: str, *, success_at=None, error=None, usable_rows=None):
+    conn = db()
+    now = now_iso()
+    current = conn.execute("SELECT * FROM ggal_shadow_source_health WHERE source=?", (source,)).fetchone()
+    if usable_rows is None:
+        usable_rows = int(current["usable_rows"]) if current else 0
+    conn.execute("""
+      INSERT INTO ggal_shadow_source_health(source,status,last_success_at,last_attempt_at,last_error,usable_rows)
+      VALUES(?,?,?,?,?,?)
+      ON CONFLICT(source) DO UPDATE SET
+        status=excluded.status,last_success_at=COALESCE(excluded.last_success_at,ggal_shadow_source_health.last_success_at),
+        last_attempt_at=excluded.last_attempt_at,last_error=excluded.last_error,usable_rows=excluded.usable_rows
+    """, (source, status, success_at, now, error, usable_rows))
+    conn.commit(); conn.close()
+
+def source_health() -> dict:
+    conn = db()
+    rows = conn.execute("SELECT source,status,last_success_at,last_attempt_at,last_error,usable_rows FROM ggal_shadow_source_health").fetchall()
+    conn.close()
+    result = {}
+    for row in rows:
+        result[row["source"]] = dict(row)
+    return result
+
+def capture_market() -> dict:
+    received = now_iso()
+    source = "TwelveData/GGAL"
+    try:
+        if not TWELVE_DATA_API_KEY:
+            raise RuntimeError("TWELVE_DATA_API_KEY_MISSING")
+        params = urlencode({
+            "symbol": GGAL_SYMBOL,
+            "exchange": "NASDAQ",
+            "interval": "1day",
+            "outputsize": "5000",
+            "apikey": TWELVE_DATA_API_KEY,
+        })
+        market = fetch_json(f"{TWELVE_DATA_URL}?{params}")
+        if not isinstance(market, dict):
+            raise RuntimeError("GGAL_PRICE_SOURCE_INVALID")
+        if market.get("status") == "error" or market.get("code"):
+            raise RuntimeError(f"TWELVE_DATA_ERROR: {market.get('message', market.get('code'))}")
+        values = market.get("values") or []
+        if not values:
+            raise RuntimeError("GGAL_NO_USABLE_ROWS")
+        exchange_tz = (market.get("meta") or {}).get("exchange_timezone") or "America/New_York"
+        tz = ZoneInfo(exchange_tz)
+        prices = []
+        for row in values:
+            dt_text = row.get("datetime")
+            close = row.get("close")
+            if dt_text and close is not None:
+                local_dt = datetime.strptime(str(dt_text), "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+                event_time = local_dt.astimezone(timezone.utc).isoformat()
+                volume = float(row["volume"]) if row.get("volume") not in (None, "") else None
+                prices.append((event_time, float(close), volume))
+        if not prices:
+            raise RuntimeError("GGAL_NO_USABLE_ROWS")
+        conn = db()
+        for event_time, close, volume in prices:
+            conn.execute("INSERT OR IGNORE INTO ggal_shadow_market_events(symbol,event_time,received_time,close,volume,source) VALUES(?,?,?,?,?,?)",
+                         (GGAL_SYMBOL,event_time,received,close,volume,"twelvedata_time_series"))
+        conn.commit(); conn.close()
+        _set_health(source, "HEALTHY", success_at=received, error=None, usable_rows=len(prices))
+        return {"source":source,"status":"HEALTHY","events":len(prices),"received_time":received}
+    except Exception as exc:
+        previous = source_health().get(source, {})
+        status = "DEGRADED" if previous.get("usable_rows", 0) > 0 else "INVALID"
+        _set_health(source, status, error=str(exc), usable_rows=previous.get("usable_rows", 0))
+        return {"source":source,"status":status,"events":0,"error":str(exc),"received_time":received}
+"""Isolated GGAL + Argentina sovereign-risk shadow specialist."""
+from __future__ import annotations
+
+import json, math, os, sqlite3, time
+from datetime import datetime, timezone
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+DB_PATH = Path(os.getenv("GGAL_SHADOW_DB", "/tmp/ggal_shadow.sqlite3"))
+GGAL_SYMBOL = "GGAL"
+EMBI_URL = "https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais"
+TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
 MAX_RETRIES = 3
 BACKOFF_SECONDS = 2.0
 
@@ -187,7 +332,7 @@ def train_and_forecast() -> dict:
     brier=sum((p-y)**2 for p,y in zip(probs,labels))/len(labels)
     x,y=data[-1]; p=sigmoid(b+sum(w[j]*((x[j]-means[j])/scales[j]) for j in range(3)))
     forecast={"probability_up":round(p,4),"direction":"UP" if p>=0.5 else "DOWN"}
-    conn=db(); meta={"inputs":["GGAL.BA","EMBI+ Argentina"],"thresholds":"PROVISIONAL_ENGINEERING_DEFAULTS_NOT_VALIDATED_ALPHA","sources":{"price":"Yahoo Finance Chart (unofficial)","risk":"ArgentinaDatos / Ámbito"}}
+    conn=db(); meta={"inputs":["GGAL NASDAQ ADR","EMBI+ Argentina"],"thresholds":"PROVISIONAL_ENGINEERING_DEFAULTS_NOT_VALIDATED_ALPHA","sources":{"price":"Twelve Data / GGAL NASDAQ","risk":"ArgentinaDatos / Ámbito"}}
     conn.execute("INSERT INTO ggal_shadow_forecasts(created_at,event_time,model_id,probability_up,direction,accuracy_oos,brier_oos,sample_count,status,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)",(now_iso(),rows[-1]["event_time"],"sovereign-risk-v1",p,forecast["direction"],acc,brier,len(data),"EXPERIMENTAL_SHADOW",json.dumps(meta)))
     conn.execute("INSERT INTO ggal_shadow_registry(registered_at,model_id,version,status,mode,validation_type,engineering_thresholds,metadata) VALUES(?,?,?,?,?,?,?,?)",(now_iso(),"sovereign-risk-v1","v1","EXPERIMENTAL","SHADOW","chronological_oos_holdout","PROVISIONAL_ENGINEERING_DEFAULTS_NOT_VALIDATED_ALPHA",json.dumps(meta)))
     conn.commit(); conn.close()
