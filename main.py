@@ -46,7 +46,8 @@ app = FastAPI(title="PMSF-X Nano", version="0.4.0")
 DB_READY = False
 OUTCOME_COLLECTOR_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
-COLLECTOR_INTERVAL_SECONDS = 60.0
+OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
+OUTCOME_FORECAST_INTERVAL_SECONDS = 300.0
 
 
 def normalize_ticker(value: str) -> str:
@@ -136,21 +137,15 @@ async def tiingo_startup_check():
         print(f"PMSF-X SELFTEST AAPL ERROR: {type(exc).__name__}: {exc}")
 
 
-async def outcome_collection_loop():
-    index = 0
+async def outcome_resolver_loop():
     while True:
         if not DB_READY or not os.getenv("TIINGO_API_KEY"):
-            print(
-                "PMSF-X OUTCOME COLLECTOR WAIT:",
-                {"db_ready": DB_READY, "tiingo_configured": bool(os.getenv("TIINGO_API_KEY"))},
-            )
-            await asyncio.sleep(COLLECTOR_INTERVAL_SECONDS)
+            await asyncio.sleep(OUTCOME_RESOLVER_INTERVAL_SECONDS)
             continue
-
         try:
-            resolved = await asyncio.wait_for(resolve_outcomes(limit=100), timeout=45.0)
+            resolved = await asyncio.wait_for(resolve_outcomes(limit=100), timeout=30.0)
             print(
-                "PMSF-X OUTCOME COLLECTOR RESOLVE:",
+                "PMSF-X OUTCOME RESOLVER:",
                 {
                     "resolved": resolved.get("resolved"),
                     "errors": resolved.get("errors"),
@@ -159,16 +154,25 @@ async def outcome_collection_loop():
             )
         except Exception as exc:
             print(
-                "PMSF-X OUTCOME COLLECTOR RESOLVE ERROR:",
+                "PMSF-X OUTCOME RESOLVER ERROR:",
                 {"error": f"{type(exc).__name__}: {exc}"},
             )
+        await asyncio.sleep(OUTCOME_RESOLVER_INTERVAL_SECONDS)
+
+
+async def outcome_forecast_loop():
+    index = 0
+    while True:
+        if not DB_READY or not os.getenv("TIINGO_API_KEY"):
+            await asyncio.sleep(OUTCOME_FORECAST_INTERVAL_SECONDS)
+            continue
 
         symbol = COLLECTOR_SYMBOLS[index % len(COLLECTOR_SYMBOLS)]
         index += 1
         try:
             payload = await asyncio.wait_for(state(symbol), timeout=45.0)
             print(
-                "PMSF-X OUTCOME COLLECTOR FORECAST:",
+                "PMSF-X OUTCOME FORECAST COLLECTOR:",
                 {
                     "symbol": symbol,
                     "forecast_id": payload.get("forecast_id"),
@@ -177,11 +181,10 @@ async def outcome_collection_loop():
             )
         except Exception as exc:
             print(
-                "PMSF-X OUTCOME COLLECTOR FORECAST ERROR:",
+                "PMSF-X OUTCOME FORECAST COLLECTOR ERROR:",
                 {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
             )
-
-        await asyncio.sleep(COLLECTOR_INTERVAL_SECONDS)
+        await asyncio.sleep(OUTCOME_FORECAST_INTERVAL_SECONDS)
 
 
 @app.on_event("startup")
@@ -190,10 +193,22 @@ async def outcome_collector_startup():
     if os.getenv("PMSFX_OUTCOME_COLLECTOR") != "1":
         return
     if OUTCOME_COLLECTOR_TASK is None or OUTCOME_COLLECTOR_TASK.done():
-        OUTCOME_COLLECTOR_TASK = asyncio.create_task(outcome_collection_loop())
+        async def combined():
+            resolver = asyncio.create_task(outcome_resolver_loop())
+            forecaster = asyncio.create_task(outcome_forecast_loop())
+            try:
+                await asyncio.gather(resolver, forecaster)
+            finally:
+                resolver.cancel()
+                forecaster.cancel()
+        OUTCOME_COLLECTOR_TASK = asyncio.create_task(combined())
         print(
             "PMSF-X OUTCOME COLLECTOR: STARTED",
-            {"interval_seconds": COLLECTOR_INTERVAL_SECONDS, "symbols": COLLECTOR_SYMBOLS},
+            {
+                "resolver_interval_seconds": OUTCOME_RESOLVER_INTERVAL_SECONDS,
+                "forecast_interval_seconds": OUTCOME_FORECAST_INTERVAL_SECONDS,
+                "symbols": COLLECTOR_SYMBOLS,
+            },
         )
 
 
