@@ -47,7 +47,7 @@ DB_READY = False
 OUTCOME_COLLECTOR_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
-OUTCOME_FORECAST_INTERVAL_SECONDS = 300.0
+OUTCOME_FORECAST_INTERVAL_SECONDS = 600.0
 
 
 def normalize_ticker(value: str) -> str:
@@ -101,6 +101,9 @@ async def initialize_persistence():
 
 @app.on_event("startup")
 async def tiingo_startup_check():
+    if os.getenv("PMSFX_TIINGO_SELFTEST") != "1":
+        print("PMSF-X SELFTEST AAPL: SKIPPED (set PMSFX_TIINGO_SELFTEST=1 to enable)")
+        return
     if not os.getenv("TIINGO_API_KEY"):
         print("PMSF-X SELFTEST AAPL: TIINGO_API_KEY missing")
         return
@@ -211,6 +214,7 @@ async def outcome_collector_startup():
                 "resolver_interval_seconds": OUTCOME_RESOLVER_INTERVAL_SECONDS,
                 "forecast_interval_seconds": OUTCOME_FORECAST_INTERVAL_SECONDS,
                 "symbols": COLLECTOR_SYMBOLS,
+                "target_internal_request_budget_per_hour": 18,
             },
         )
 
