@@ -143,7 +143,7 @@ async def outcome_resolver_loop():
             await asyncio.sleep(OUTCOME_RESOLVER_INTERVAL_SECONDS)
             continue
         try:
-            resolved = await asyncio.wait_for(resolve_outcomes(limit=100), timeout=30.0)
+            resolved = await asyncio.wait_for(resolve_outcomes(limit=1), timeout=30.0)
             print(
                 "PMSF-X OUTCOME RESOLVER:",
                 {
@@ -152,6 +152,8 @@ async def outcome_resolver_loop():
                     "outcome_count": outcome_summary().get("outcome_count"),
                 },
             )
+            if any("429" in str(item.get("error") or item.get("reason")) for item in resolved.get("error_details", [])):
+                await asyncio.sleep(300.0)
         except Exception as exc:
             print(
                 "PMSF-X OUTCOME RESOLVER ERROR:",
