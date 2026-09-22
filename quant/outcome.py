@@ -252,12 +252,8 @@ async def resolve_forecast(forecast: dict[str, Any], token: str) -> dict[str, An
         }
 
     due_at = datetime.fromtimestamp(due_at, tz=timezone.utc)
-    quote = await _fetch_future_bar(str(forecast["symbol"]), token, due_at)
-
-    resolution_mode = "target_1min_bar"
-    if quote is None:
-        quote = await _fetch_fresh_price(str(forecast["symbol"]), token)
-        resolution_mode = "late_live_quote"
+    resolution_mode = "live_quote_due_window"
+    quote = await _fetch_fresh_price(str(forecast["symbol"]), token)
 
     outcome = build_outcome(forecast, quote, resolved_at=now)
     outcome["metadata"]["resolution_mode"] = resolution_mode
