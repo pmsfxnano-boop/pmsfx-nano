@@ -338,7 +338,7 @@ def pending_due_forecasts(limit: int = 20) -> list[dict[str, Any]]:
     WHERE o.forecast_id IS NULL
       AND f.horizon_seconds IS NOT NULL
       AND f.created_at + (f.horizon_seconds || ' seconds')::interval <= NOW()
-    ORDER BY f.created_at ASC
+    ORDER BY f.created_at DESC
     LIMIT {limit}
     """
     try:
