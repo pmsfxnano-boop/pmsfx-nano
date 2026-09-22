@@ -87,73 +87,6 @@ def _snapshot_fields(source: str, quote_data: dict) -> dict:
     }
 
 
-async def outcome_collection_loop():
-    index = 0
-    while True:
-        try:
-            token = os.getenv("TIINGO_API_KEY")
-            if token and DB_READY:
-                try:
-                    resolved = await resolve_outcomes(limit=100)
-                    print(
-                        "PMSF-X OUTCOME COLLECTOR RESOLVE:",
-                        {
-                            "resolved": resolved.get("resolved"),
-                            "errors": resolved.get("errors"),
-                        },
-                    )
-                except Exception as exc:
-                    print(f"PMSF-X OUTCOME COLLECTOR RESOLVE ERROR: {type(exc).__name__}: {exc}")
-
-                symbol = COLLECTOR_SYMBOLS[index % len(COLLECTOR_SYMBOLS)]
-                index += 1
-                try:
-                    payload = await state(symbol)
-                    print(
-                        "PMSF-X OUTCOME COLLECTOR FORECAST:",
-                        {
-                            "symbol": symbol,
-                            "forecast_id": payload.get("forecast_id"),
-                            "forecast_status": payload.get("forecast_status"),
-                        },
-                    )
-                except Exception as exc:
-                    print(
-                        "PMSF-X OUTCOME COLLECTOR FORECAST ERROR:",
-                        {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
-                    )
-        except Exception as exc:
-            print(f"PMSF-X OUTCOME COLLECTOR LOOP ERROR: {type(exc).__name__}: {exc}")
-
-        await asyncio.sleep(COLLECTOR_INTERVAL_SECONDS)
-
-
-@app.on_event("startup")
-async def outcome_collector_startup():
-    global OUTCOME_COLLECTOR_TASK
-    if os.getenv("PMSFX_OUTCOME_COLLECTOR") != "1":
-        return
-    if OUTCOME_COLLECTOR_TASK is None or OUTCOME_COLLECTOR_TASK.done():
-        OUTCOME_COLLECTOR_TASK = asyncio.create_task(outcome_collection_loop())
-        print(
-            "PMSF-X OUTCOME COLLECTOR: STARTED",
-            {"interval_seconds": COLLECTOR_INTERVAL_SECONDS, "symbols": COLLECTOR_SYMBOLS},
-        )
-
-
-@app.on_event("shutdown")
-async def outcome_collector_shutdown():
-    global OUTCOME_COLLECTOR_TASK
-    if OUTCOME_COLLECTOR_TASK is not None:
-        OUTCOME_COLLECTOR_TASK.cancel()
-        try:
-            await OUTCOME_COLLECTOR_TASK
-        except asyncio.CancelledError:
-            pass
-        OUTCOME_COLLECTOR_TASK = None
-        print("PMSF-X OUTCOME COLLECTOR: STOPPED")
-
-
 @app.on_event("startup")
 async def initialize_persistence():
     global DB_READY
@@ -201,6 +134,80 @@ async def tiingo_startup_check():
             )
     except Exception as exc:
         print(f"PMSF-X SELFTEST AAPL ERROR: {type(exc).__name__}: {exc}")
+
+
+async def outcome_collection_loop():
+    index = 0
+    while True:
+        if not DB_READY or not os.getenv("TIINGO_API_KEY"):
+            print(
+                "PMSF-X OUTCOME COLLECTOR WAIT:",
+                {"db_ready": DB_READY, "tiingo_configured": bool(os.getenv("TIINGO_API_KEY"))},
+            )
+            await asyncio.sleep(COLLECTOR_INTERVAL_SECONDS)
+            continue
+
+        try:
+            resolved = await asyncio.wait_for(resolve_outcomes(limit=100), timeout=45.0)
+            print(
+                "PMSF-X OUTCOME COLLECTOR RESOLVE:",
+                {
+                    "resolved": resolved.get("resolved"),
+                    "errors": resolved.get("errors"),
+                    "outcome_count": outcome_summary().get("outcome_count"),
+                },
+            )
+        except Exception as exc:
+            print(
+                "PMSF-X OUTCOME COLLECTOR RESOLVE ERROR:",
+                {"error": f"{type(exc).__name__}: {exc}"},
+            )
+
+        symbol = COLLECTOR_SYMBOLS[index % len(COLLECTOR_SYMBOLS)]
+        index += 1
+        try:
+            payload = await asyncio.wait_for(state(symbol), timeout=45.0)
+            print(
+                "PMSF-X OUTCOME COLLECTOR FORECAST:",
+                {
+                    "symbol": symbol,
+                    "forecast_id": payload.get("forecast_id"),
+                    "forecast_status": payload.get("forecast_status"),
+                },
+            )
+        except Exception as exc:
+            print(
+                "PMSF-X OUTCOME COLLECTOR FORECAST ERROR:",
+                {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+            )
+
+        await asyncio.sleep(COLLECTOR_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def outcome_collector_startup():
+    global OUTCOME_COLLECTOR_TASK
+    if os.getenv("PMSFX_OUTCOME_COLLECTOR") != "1":
+        return
+    if OUTCOME_COLLECTOR_TASK is None or OUTCOME_COLLECTOR_TASK.done():
+        OUTCOME_COLLECTOR_TASK = asyncio.create_task(outcome_collection_loop())
+        print(
+            "PMSF-X OUTCOME COLLECTOR: STARTED",
+            {"interval_seconds": COLLECTOR_INTERVAL_SECONDS, "symbols": COLLECTOR_SYMBOLS},
+        )
+
+
+@app.on_event("shutdown")
+async def outcome_collector_shutdown():
+    global OUTCOME_COLLECTOR_TASK
+    if OUTCOME_COLLECTOR_TASK is not None:
+        OUTCOME_COLLECTOR_TASK.cancel()
+        try:
+            await OUTCOME_COLLECTOR_TASK
+        except asyncio.CancelledError:
+            pass
+        OUTCOME_COLLECTOR_TASK = None
+        print("PMSF-X OUTCOME COLLECTOR: STOPPED")
 
 
 @app.head("/", include_in_schema=False)
