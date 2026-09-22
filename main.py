@@ -9,13 +9,24 @@ from fastapi.responses import FileResponse, Response
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast
-from quant.db import init_db, persistence_summary, record_backtest, record_forecast, record_model_registry
+from quant.db import (
+    get_outcome,
+    init_db,
+    outcome_summary,
+    pending_due_forecasts,
+    persistence_summary,
+    record_backtest,
+    record_forecast,
+    record_model_registry,
+    record_outcome,
+)
 from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
 from quant.model_health import assess_model_health
 from quant.model_registry import build_registry_record
 from quant.meta import combine_specialists
 from quant.trigger import evaluate_trigger
+from quant.outcome import resolve_forecast
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -156,6 +167,75 @@ def persistence():
         "version": "0.4.0",
         **summary,
     }
+
+
+@app.get("/api/outcome/summary")
+def outcome_summary_endpoint():
+    return {
+        "service": "pmsfx-nano",
+        "version": "0.4.0",
+        **outcome_summary(),
+    }
+
+
+@app.post("/api/outcome/resolve")
+async def resolve_outcomes(limit: int = 20):
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+
+    due = pending_due_forecasts(limit=limit)
+    resolved = []
+    errors = []
+
+    for forecast in due:
+        try:
+            outcome = await resolve_forecast(forecast, token)
+            if outcome.get("status") != "RESOLVED":
+                errors.append(outcome)
+                continue
+            outcome_id = record_outcome(outcome)
+            outcome["outcome_id"] = outcome_id
+            resolved.append(outcome)
+            print(
+                "PMSF-X OUTCOME SAVED:",
+                {
+                    "outcome_id": outcome_id,
+                    "forecast_id": outcome["forecast_id"],
+                    "symbol": outcome["symbol"],
+                    "realized_return_bps": outcome["realized_return_bps"],
+                    "prediction_correct": outcome["prediction_correct"],
+                },
+            )
+        except Exception as exc:
+            error = {
+                "forecast_id": forecast["id"],
+                "symbol": forecast["symbol"],
+                "status": "ERROR",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            errors.append(error)
+            print(f"PMSF-X OUTCOME ERROR: {error}")
+
+    return {
+        "service": "pmsfx-nano",
+        "attempted": len(due),
+        "resolved": len(resolved),
+        "errors": len(errors),
+        "outcomes": resolved,
+        "error_details": errors,
+    }
+
+
+@app.get("/api/outcome/{forecast_id}")
+def outcome_by_forecast(forecast_id: int):
+    result = get_outcome(forecast_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Outcome not found")
+    return result
 
 
 @app.get("/api/quote/{ticker}")
