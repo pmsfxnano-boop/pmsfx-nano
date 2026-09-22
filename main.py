@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +44,9 @@ TICKER_ALIASES = {
 
 app = FastAPI(title="PMSF-X Nano", version="0.4.0")
 DB_READY = False
+OUTCOME_COLLECTOR_TASK = None
+COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
+COLLECTOR_INTERVAL_SECONDS = 60.0
 
 
 def normalize_ticker(value: str) -> str:
@@ -81,6 +85,73 @@ def _snapshot_fields(source: str, quote_data: dict) -> dict:
         "bid_size": quote_data.get("lqBidSize") or 0,
         "ask_size": quote_data.get("lqAskSize") or 0,
     }
+
+
+async def outcome_collection_loop():
+    index = 0
+    while True:
+        try:
+            token = os.getenv("TIINGO_API_KEY")
+            if token and DB_READY:
+                try:
+                    resolved = await resolve_outcomes(limit=100)
+                    print(
+                        "PMSF-X OUTCOME COLLECTOR RESOLVE:",
+                        {
+                            "resolved": resolved.get("resolved"),
+                            "errors": resolved.get("errors"),
+                        },
+                    )
+                except Exception as exc:
+                    print(f"PMSF-X OUTCOME COLLECTOR RESOLVE ERROR: {type(exc).__name__}: {exc}")
+
+                symbol = COLLECTOR_SYMBOLS[index % len(COLLECTOR_SYMBOLS)]
+                index += 1
+                try:
+                    payload = await state(symbol)
+                    print(
+                        "PMSF-X OUTCOME COLLECTOR FORECAST:",
+                        {
+                            "symbol": symbol,
+                            "forecast_id": payload.get("forecast_id"),
+                            "forecast_status": payload.get("forecast_status"),
+                        },
+                    )
+                except Exception as exc:
+                    print(
+                        "PMSF-X OUTCOME COLLECTOR FORECAST ERROR:",
+                        {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+                    )
+        except Exception as exc:
+            print(f"PMSF-X OUTCOME COLLECTOR LOOP ERROR: {type(exc).__name__}: {exc}")
+
+        await asyncio.sleep(COLLECTOR_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def outcome_collector_startup():
+    global OUTCOME_COLLECTOR_TASK
+    if os.getenv("PMSFX_OUTCOME_COLLECTOR") != "1":
+        return
+    if OUTCOME_COLLECTOR_TASK is None or OUTCOME_COLLECTOR_TASK.done():
+        OUTCOME_COLLECTOR_TASK = asyncio.create_task(outcome_collection_loop())
+        print(
+            "PMSF-X OUTCOME COLLECTOR: STARTED",
+            {"interval_seconds": COLLECTOR_INTERVAL_SECONDS, "symbols": COLLECTOR_SYMBOLS},
+        )
+
+
+@app.on_event("shutdown")
+async def outcome_collector_shutdown():
+    global OUTCOME_COLLECTOR_TASK
+    if OUTCOME_COLLECTOR_TASK is not None:
+        OUTCOME_COLLECTOR_TASK.cancel()
+        try:
+            await OUTCOME_COLLECTOR_TASK
+        except asyncio.CancelledError:
+            pass
+        OUTCOME_COLLECTOR_TASK = None
+        print("PMSF-X OUTCOME COLLECTOR: STOPPED")
 
 
 @app.on_event("startup")
