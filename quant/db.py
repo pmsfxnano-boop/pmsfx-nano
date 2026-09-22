@@ -139,6 +139,8 @@ def persistence_summary() -> dict[str, Any]:
                     "backtest_count": None,
                     "last_forecast_id": None,
                     "last_backtest_id": None,
+                    "last_forecast_created_at": None,
+                    "last_backtest_created_at": None,
                 }
             with conn.cursor() as cur:
                 cur.execute(sql)
