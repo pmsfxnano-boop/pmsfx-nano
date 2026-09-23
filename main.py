@@ -485,7 +485,7 @@ async def state(ticker: str):
     token = os.getenv("TIINGO_API_KEY")
     print("PMSF-X FORECAST PIPELINE: HISTORICAL_START", {"symbol": symbol})
     historical = (
-        await get_historical_forecast(symbol, token)
+        await get_historical_forecast(symbol, token, evaluate=False)
         if token and healthy
         else {"status": "HISTORICAL_SKIPPED", "forecast": None, "evaluation": {}, "model_id": "historical-logit-v1"}
     )
