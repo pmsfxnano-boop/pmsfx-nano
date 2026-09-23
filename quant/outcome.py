@@ -104,6 +104,35 @@ async def _fetch_future_bar(symbol: str, token: str, due_at: datetime) -> dict[s
 
 
 async def _fetch_fresh_price(symbol: str, token: str) -> dict[str, Any]:
+    try:
+        from quant.market_stream import get_snapshot
+        snapshot = get_snapshot(symbol)
+        if snapshot:
+            bid = snapshot.get("bid")
+            ask = snapshot.get("ask")
+            last = snapshot.get("last")
+            if last is None and bid is not None and ask is not None:
+                last = (float(bid) + float(ask)) / 2.0
+            if last is not None:
+                price = (
+                    (float(bid) + float(ask)) / 2.0
+                    if bid is not None and ask is not None
+                    else float(last)
+                )
+                return {
+                    "price": price,
+                    "source": snapshot.get("source") or "tiingo_iex_websocket",
+                    "received_at": snapshot.get("received_at") or datetime.now(timezone.utc).isoformat(),
+                    "quote_timestamp": snapshot.get("quote_timestamp"),
+                    "bid": bid,
+                    "ask": ask,
+                    "bid_size": snapshot.get("bid_size") or 0,
+                    "ask_size": snapshot.get("ask_size") or 0,
+                    "last": last,
+                }
+    except Exception:
+        pass
+
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json",
@@ -118,9 +147,8 @@ async def _fetch_fresh_price(symbol: str, token: str) -> dict[str, Any]:
         if fields["bid"] is not None and fields["ask"] is not None:
             bid = float(fields["bid"])
             ask = float(fields["ask"])
-            price = (bid + ask) / 2.0
             return {
-                "price": price,
+                "price": (bid + ask) / 2.0,
                 "source": "tiingo_iex_tops",
                 "received_at": datetime.now(timezone.utc).isoformat(),
                 **fields,
@@ -145,7 +173,6 @@ async def _fetch_fresh_price(symbol: str, token: str) -> dict[str, Any]:
             "received_at": datetime.now(timezone.utc).isoformat(),
             **fields,
         }
-
 
 def _parse_datetime(value: Any) -> datetime | None:
     if not value:
@@ -239,23 +266,55 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
 
 
 async def resolve_forecast(forecast: dict[str, Any], token: str) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
     created = forecast["created_at"]
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
-    due_at = created.timestamp() + int(forecast["horizon_seconds"])
-    if now.timestamp() < due_at:
+
+    horizon = int(forecast["horizon_seconds"])
+    due_at = created + timedelta(seconds=horizon)
+    now = datetime.now(timezone.utc)
+    if now < due_at:
         return {
             "status": "NOT_DUE",
             "forecast_id": int(forecast["id"]),
-            "due_at": datetime.fromtimestamp(due_at, tz=timezone.utc).isoformat(),
+            "due_at": due_at.isoformat(),
         }
 
-    due_at = datetime.fromtimestamp(due_at, tz=timezone.utc)
-    resolution_mode = "live_quote_due_window"
     quote = await _fetch_fresh_price(str(forecast["symbol"]), token)
+    quote_timestamp = _parse_datetime(
+        quote.get("quote_timestamp") or quote.get("timestamp")
+    )
+    if quote_timestamp is None:
+        return {
+            "status": "ERROR",
+            "forecast_id": int(forecast["id"]),
+            "symbol": forecast["symbol"],
+            "reason": "MISSING_MARKET_EVENT_TIMESTAMP",
+        }
 
-    outcome = build_outcome(forecast, quote, resolved_at=now)
-    outcome["metadata"]["resolution_mode"] = resolution_mode
+    if quote_timestamp < due_at:
+        return {
+            "status": "NOT_DUE",
+            "forecast_id": int(forecast["id"]),
+            "due_at": due_at.isoformat(),
+            "market_event_at": quote_timestamp.isoformat(),
+            "reason": "LATEST_MARKET_EVENT_PRE_HORIZON",
+        }
+
+    timing_slippage_seconds = max(0.0, (quote_timestamp - due_at).total_seconds())
+    if timing_slippage_seconds > MAX_TIMING_SLIPPAGE_SECONDS:
+        return {
+            "status": "TIMING_EXPIRED",
+            "forecast_id": int(forecast["id"]),
+            "symbol": forecast["symbol"],
+            "due_at": due_at.isoformat(),
+            "market_event_at": quote_timestamp.isoformat(),
+            "timing_slippage_seconds": round(timing_slippage_seconds, 3),
+        }
+
+    outcome = build_outcome(forecast, quote, resolved_at=quote_timestamp)
+    outcome["metadata"]["resolution_mode"] = "tiingo_iex_websocket_event"
+    outcome["metadata"]["market_event_timestamp"] = quote_timestamp.isoformat()
+    outcome["metadata"]["timing_slippage_seconds"] = round(timing_slippage_seconds, 3)
     outcome["status"] = "RESOLVED"
     return outcome
