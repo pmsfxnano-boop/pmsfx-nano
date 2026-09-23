@@ -28,6 +28,7 @@ from quant.model_registry import build_registry_record
 from quant.meta import combine_specialists
 from quant.trigger import evaluate_trigger
 from quant.outcome import resolve_forecast
+from quant.market_stream import get_quote as get_stream_quote, start_stream, stop_stream, stream_status
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -108,37 +109,21 @@ async def tiingo_startup_check():
         print("PMSF-X SELFTEST AAPL: TIINGO_API_KEY missing")
         return
 
-    try:
-        headers = tiingo_headers()
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            iex_response = await client.get(f"{TIINGO_IEX_URL}/AAPL", headers=headers)
-            iex = first_record(iex_response.json()) or {} if iex_response.status_code < 400 else {}
-            has_tops = iex.get("bidPrice") is not None and iex.get("askPrice") is not None
-
-            if has_tops:
-                source = "tiingo_iex_tops"
-                fields = _snapshot_fields(source, iex)
-            else:
-                equity_response = await client.get(f"{TIINGO_EQUITY_URL}/AAPL", headers=headers)
-                equity = first_record(equity_response.json()) or {} if equity_response.status_code < 400 else {}
-                source = "tiingo_equity_intraday"
-                fields = _snapshot_fields(source, equity)
-
-            print(
-                "PMSF-X SELFTEST AAPL:",
-                {
-                    "iex_status": iex_response.status_code,
-                    "source": source,
-                    "last": fields["last"],
-                    "bid": fields["bid"],
-                    "ask": fields["ask"],
-                    "bid_size": fields["bid_size"],
-                    "ask_size": fields["ask_size"],
-                },
-            )
-    except Exception as exc:
-        print(f"PMSF-X SELFTEST AAPL ERROR: {type(exc).__name__}: {exc}")
-
+    await asyncio.sleep(2.0)
+    stream_quote = get_stream_quote("AAPL")
+    if stream_quote:
+        print(
+            "PMSF-X SELFTEST AAPL:",
+            {
+                "source": "tiingo_iex_websocket",
+                "last": stream_quote.get("last"),
+                "bid": stream_quote.get("bidPrice"),
+                "ask": stream_quote.get("askPrice"),
+                "quote_timestamp": stream_quote.get("quoteTimestamp"),
+            },
+        )
+    else:
+        print("PMSF-X SELFTEST AAPL: WS CACHE NOT_READY")
 
 async def outcome_resolver_loop():
     while True:
@@ -194,6 +179,11 @@ async def outcome_forecast_loop():
 
 
 @app.on_event("startup")
+async def tiingo_market_stream_startup():
+    if os.getenv("TIINGO_API_KEY"):
+        start_stream()
+
+@app.on_event("startup")
 async def outcome_collector_startup():
     global OUTCOME_COLLECTOR_TASK
     if os.getenv("PMSFX_OUTCOME_COLLECTOR") != "1":
@@ -214,7 +204,8 @@ async def outcome_collector_startup():
                 "resolver_interval_seconds": OUTCOME_RESOLVER_INTERVAL_SECONDS,
                 "forecast_interval_seconds": OUTCOME_FORECAST_INTERVAL_SECONDS,
                 "symbols": COLLECTOR_SYMBOLS,
-                "target_internal_request_budget_per_hour": 18,
+                "target_internal_request_budget_per_hour": 6,
+                "market_data_path": "Tiingo IEX WebSocket + REST history cache",
             },
         )
 
@@ -230,6 +221,7 @@ async def outcome_collector_shutdown():
             pass
         OUTCOME_COLLECTOR_TASK = None
         print("PMSF-X OUTCOME COLLECTOR: STOPPED")
+    stop_stream()
 
 
 @app.head("/", include_in_schema=False)
@@ -256,6 +248,7 @@ def health():
         "tiingo_configured": tiingo_configured,
         "db_ready": DB_READY,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "market_stream": stream_status(),
     }
 
 
@@ -346,6 +339,21 @@ async def quote(ticker: str):
     if not symbol or not symbol.isalnum():
         raise HTTPException(status_code=400, detail="Invalid ticker")
 
+    stream_quote = get_stream_quote(symbol)
+    if (
+        stream_quote
+        and stream_quote.get("last") is not None
+        and stream_quote.get("bidPrice") is not None
+        and stream_quote.get("askPrice") is not None
+    ):
+        received_at = stream_quote.get("received_at") or datetime.now(timezone.utc).isoformat()
+        return {
+            "source": "tiingo_iex_websocket",
+            "received_at": received_at,
+            "symbol": symbol,
+            "quote": stream_quote,
+        }
+
     headers = tiingo_headers()
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(f"{TIINGO_IEX_URL}/{symbol}", headers=headers)
@@ -354,7 +362,6 @@ async def quote(ticker: str):
 
         iex = first_record(response.json()) or {}
         has_iex_tops = iex.get("bidPrice") is not None and iex.get("askPrice") is not None
-
         if has_iex_tops:
             return {
                 "source": "tiingo_iex_tops",
@@ -378,7 +385,6 @@ async def quote(ticker: str):
             "quote": equity,
         }
 
-
 @app.get("/api/state/{ticker}")
 async def state(ticker: str):
     symbol = normalize_ticker(ticker)
@@ -391,7 +397,7 @@ async def state(ticker: str):
     ask = fields["ask"]
     bid_size = fields["bid_size"]
     ask_size = fields["ask_size"]
-    feed_label = "Tiingo IEX TOPS" if result["source"] == "tiingo_iex_tops" else "Tiingo consolidated · liquidity reference"
+    feed_label = "Tiingo IEX WebSocket" if result["source"] == "tiingo_iex_websocket" else ("Tiingo IEX TOPS" if result["source"] == "tiingo_iex_tops" else "Tiingo consolidated · liquidity reference")
 
     spread_bps = None
     microprice = None
