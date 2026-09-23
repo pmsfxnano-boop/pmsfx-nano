@@ -16,7 +16,7 @@ from typing import Any
 
 import websocket
 
-STREAM_URL = "wss://api.tiingo.com/tiingo/equity/intraday"
+STREAM_URL = "wss://api.tiingo.com/equity/intraday"
 DEFAULT_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 # Tiingo recommends the consolidated Equity Realtime websocket for derived
 # real-time data. thresholdLevel=4 supplies liquidity bid/ask + reference price.
