@@ -27,7 +27,7 @@ LABEL_THRESHOLD_BPS = 0.5
 LEARNING_RATE = 0.06
 TRAIN_STEPS = 160
 L2 = 0.02
-CACHE_SECONDS = 900.0
+CACHE_SECONDS = 3600.0
 
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
