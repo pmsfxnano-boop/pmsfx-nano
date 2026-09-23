@@ -205,7 +205,7 @@ async def outcome_collector_startup():
                 "forecast_interval_seconds": OUTCOME_FORECAST_INTERVAL_SECONDS,
                 "symbols": COLLECTOR_SYMBOLS,
                 "target_internal_request_budget_per_hour": 6,
-                "market_data_path": "Tiingo IEX WebSocket + REST history cache",
+                "market_data_path": "Tiingo consolidated WebSocket + REST history cache",
             },
         )
 
