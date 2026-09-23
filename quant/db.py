@@ -109,8 +109,8 @@ def database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
-def database_connect_kwargs() -> dict[str, str]:
-    return {"sslmode": "require"}
+def database_connect_kwargs() -> dict[str, Any]:
+    return {"sslmode": "require", "connect_timeout": 10}
 
 
 @contextmanager
