@@ -46,6 +46,8 @@ TICKER_ALIASES = {
 app = FastAPI(title="PMSF-X Nano", version="0.4.0")
 DB_READY = False
 OUTCOME_COLLECTOR_TASK = None
+OUTCOME_RESOLVER_TASK = None
+OUTCOME_FORECAST_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
 OUTCOME_FORECAST_INTERVAL_SECONDS = 600.0
@@ -151,8 +153,30 @@ async def outcome_resolver_loop():
         await asyncio.sleep(OUTCOME_RESOLVER_INTERVAL_SECONDS)
 
 
+async def collect_forecast_once(symbol: str):
+    print("PMSF-X OUTCOME FORECAST COLLECTOR: ATTEMPT", {"symbol": symbol})
+    try:
+        payload = await asyncio.wait_for(state(symbol), timeout=45.0)
+        print(
+            "PMSF-X OUTCOME FORECAST COLLECTOR:",
+            {
+                "symbol": symbol,
+                "forecast_id": payload.get("forecast_id"),
+                "forecast_status": payload.get("forecast_status"),
+            },
+        )
+        return payload
+    except Exception as exc:
+        print(
+            "PMSF-X OUTCOME FORECAST COLLECTOR ERROR:",
+            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+        )
+        return None
+
+
 async def outcome_forecast_loop():
     index = 0
+    print("PMSF-X OUTCOME FORECAST COLLECTOR: LOOP_ENTERED")
     while True:
         if not DB_READY or not os.getenv("TIINGO_API_KEY"):
             await asyncio.sleep(OUTCOME_FORECAST_INTERVAL_SECONDS)
@@ -160,21 +184,7 @@ async def outcome_forecast_loop():
 
         symbol = COLLECTOR_SYMBOLS[index % len(COLLECTOR_SYMBOLS)]
         index += 1
-        try:
-            payload = await asyncio.wait_for(state(symbol), timeout=45.0)
-            print(
-                "PMSF-X OUTCOME FORECAST COLLECTOR:",
-                {
-                    "symbol": symbol,
-                    "forecast_id": payload.get("forecast_id"),
-                    "forecast_status": payload.get("forecast_status"),
-                },
-            )
-        except Exception as exc:
-            print(
-                "PMSF-X OUTCOME FORECAST COLLECTOR ERROR:",
-                {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
-            )
+        await collect_forecast_once(symbol)
         await asyncio.sleep(OUTCOME_FORECAST_INTERVAL_SECONDS)
 
 
@@ -185,42 +195,44 @@ async def tiingo_market_stream_startup():
 
 @app.on_event("startup")
 async def outcome_collector_startup():
-    global OUTCOME_COLLECTOR_TASK
+    global OUTCOME_COLLECTOR_TASK, OUTCOME_RESOLVER_TASK, OUTCOME_FORECAST_TASK
     if os.getenv("PMSFX_OUTCOME_COLLECTOR") != "1":
         return
-    if OUTCOME_COLLECTOR_TASK is None or OUTCOME_COLLECTOR_TASK.done():
-        async def combined():
-            resolver = asyncio.create_task(outcome_resolver_loop())
-            forecaster = asyncio.create_task(outcome_forecast_loop())
-            try:
-                await asyncio.gather(resolver, forecaster)
-            finally:
-                resolver.cancel()
-                forecaster.cancel()
-        OUTCOME_COLLECTOR_TASK = asyncio.create_task(combined())
-        print(
-            "PMSF-X OUTCOME COLLECTOR: STARTED",
-            {
-                "resolver_interval_seconds": OUTCOME_RESOLVER_INTERVAL_SECONDS,
-                "forecast_interval_seconds": OUTCOME_FORECAST_INTERVAL_SECONDS,
-                "symbols": COLLECTOR_SYMBOLS,
-                "target_internal_request_budget_per_hour": 6,
-                "market_data_path": "Tiingo consolidated WebSocket + REST history cache",
-            },
-        )
+    OUTCOME_RESOLVER_TASK = asyncio.create_task(outcome_resolver_loop())
+    OUTCOME_FORECAST_TASK = asyncio.create_task(outcome_forecast_loop())
+    OUTCOME_COLLECTOR_TASK = OUTCOME_FORECAST_TASK
+    print(
+        "PMSF-X OUTCOME COLLECTOR: STARTED",
+        {
+            "resolver_interval_seconds": OUTCOME_RESOLVER_INTERVAL_SECONDS,
+            "forecast_interval_seconds": OUTCOME_FORECAST_INTERVAL_SECONDS,
+            "symbols": COLLECTOR_SYMBOLS,
+            "target_internal_request_budget_per_hour": 6,
+            "market_data_path": "Tiingo consolidated WebSocket + REST history cache",
+            "task_mode": "independent_background_tasks",
+        },
+    )
 
 
 @app.on_event("shutdown")
 async def outcome_collector_shutdown():
-    global OUTCOME_COLLECTOR_TASK
-    if OUTCOME_COLLECTOR_TASK is not None:
-        OUTCOME_COLLECTOR_TASK.cancel()
-        try:
-            await OUTCOME_COLLECTOR_TASK
-        except asyncio.CancelledError:
-            pass
-        OUTCOME_COLLECTOR_TASK = None
-        print("PMSF-X OUTCOME COLLECTOR: STOPPED")
+    global OUTCOME_COLLECTOR_TASK, OUTCOME_RESOLVER_TASK, OUTCOME_FORECAST_TASK
+
+    for task in (OUTCOME_RESOLVER_TASK, OUTCOME_FORECAST_TASK):
+        if task is not None:
+            task.cancel()
+
+    for task in (OUTCOME_RESOLVER_TASK, OUTCOME_FORECAST_TASK):
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    OUTCOME_RESOLVER_TASK = None
+    OUTCOME_FORECAST_TASK = None
+    OUTCOME_COLLECTOR_TASK = None
+    print("PMSF-X OUTCOME COLLECTOR: STOPPED")
     stop_stream()
 
 
