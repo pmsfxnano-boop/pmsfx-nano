@@ -403,7 +403,9 @@ async def quote(ticker: str):
 @app.get("/api/state/{ticker}")
 async def state(ticker: str):
     symbol = normalize_ticker(ticker)
+    print("PMSF-X FORECAST PIPELINE: STATE_START", {"symbol": symbol})
     result = await quote(symbol)
+    print("PMSF-X FORECAST PIPELINE: QUOTE_READY", {"symbol": symbol, "source": result.get("source")})
     q = result["quote"]
 
     fields = _snapshot_fields(result["source"], q)
@@ -481,10 +483,20 @@ async def state(ticker: str):
     )
 
     token = os.getenv("TIINGO_API_KEY")
+    print("PMSF-X FORECAST PIPELINE: HISTORICAL_START", {"symbol": symbol})
     historical = (
         await get_historical_forecast(symbol, token)
         if token and healthy
         else {"status": "HISTORICAL_SKIPPED", "forecast": None, "evaluation": {}, "model_id": "historical-logit-v1"}
+    )
+    print(
+        "PMSF-X FORECAST PIPELINE: HISTORICAL_READY",
+        {
+            "symbol": symbol,
+            "status": historical.get("status"),
+            "bars": historical.get("bars"),
+            "error": historical.get("error"),
+        },
     )
 
     # Historical price model is primary until live flow has its own validation.
