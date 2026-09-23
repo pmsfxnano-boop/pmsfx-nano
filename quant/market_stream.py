@@ -16,11 +16,11 @@ from typing import Any
 
 import websocket
 
-IEX_WS_URL = "wss://api.tiingo.com/iex"
+STREAM_URL = "wss://api.tiingo.com/tiingo/equity/intraday"
 DEFAULT_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
-# 5 = last trades + major TOPS updates. 6 is the compliant derived-price
-# stream when full IEX TOPS entitlement is unavailable.
-DEFAULT_THRESHOLD_LEVEL = 5
+# Tiingo recommends the consolidated Equity Realtime websocket for derived
+# real-time data. thresholdLevel=4 supplies liquidity bid/ask + reference price.
+DEFAULT_THRESHOLD_LEVEL = 4
 
 _LOCK = threading.RLock()
 _LATEST: dict[str, dict[str, Any]] = {}
@@ -56,7 +56,7 @@ def _record_message(payload: dict[str, Any]) -> None:
         return
 
     service = payload.get("service")
-    if service != "iex":
+    if service != "cons":
         return
 
     level = int(_STATUS.get("threshold_level") or DEFAULT_THRESHOLD_LEVEL)
@@ -64,7 +64,40 @@ def _record_message(payload: dict[str, Any]) -> None:
     if message_type != "A":
         return
 
-    # thresholdLevel=6: [timestamp, ticker, referencePrice]
+    # Consolidated liquidity message at thresholdLevel=4:
+    # [timestamp, ticker, lqSpread, lqBidSize, lqBidPrice,
+    #  referencePrice, lqAskPrice, lqAskSize]
+    if level == 4 and len(data) >= 8:
+        ts, ticker = data[0], data[1]
+        symbol = str(ticker).upper()
+        try:
+            reference_price = float(data[5])
+        except (TypeError, ValueError):
+            reference_price = None
+
+        with _LOCK:
+            current = copy.deepcopy(_LATEST.get(symbol, {}))
+            current.update({
+                "symbol": symbol,
+                "quote_timestamp": str(ts),
+                "received_at": _iso_now(),
+                "source": "tiingo_equity_websocket",
+            })
+            if data[3] is not None:
+                current["bid_size"] = data[3]
+            if data[4] is not None:
+                current["bid"] = data[4]
+            if reference_price is not None:
+                current["last"] = reference_price
+                current["mid"] = reference_price
+            if data[6] is not None:
+                current["ask"] = data[6]
+            if data[7] is not None:
+                current["ask_size"] = data[7]
+            _LATEST[symbol] = current
+        return
+
+    # Backward-compatible handling for IEX reference stream if configured.
     if level == 6 and len(data) >= 3:
         ts, ticker, ref_price = data[0], data[1], data[2]
         symbol = str(ticker).upper()
@@ -83,47 +116,6 @@ def _record_message(payload: dict[str, Any]) -> None:
             })
             _LATEST[symbol] = current
         return
-
-    # thresholdLevel=5/0:
-    # [type, timestamp, nanoseconds, ticker, bidSize, bidPrice, midPrice,
-    #  askPrice, askSize, lastPrice, lastSize, ...]
-    if len(data) < 10:
-        return
-
-    update_type, ts, _ns, ticker = data[:4]
-    symbol = str(ticker).upper()
-    with _LOCK:
-        current = copy.deepcopy(_LATEST.get(symbol, {}))
-        current["symbol"] = symbol
-        current["quote_timestamp"] = str(ts)
-        current["received_at"] = _iso_now()
-        current["source"] = "tiingo_iex_websocket"
-
-        if update_type == "Q":
-            if data[4] is not None:
-                current["bid_size"] = data[4]
-            if data[5] is not None:
-                current["bid"] = data[5]
-            if data[6] is not None:
-                current["mid"] = data[6]
-            if data[7] is not None:
-                current["ask"] = data[7]
-            if data[8] is not None:
-                current["ask_size"] = data[8]
-        elif update_type in ("T", "B"):
-            if data[9] is not None:
-                try:
-                    current["last"] = float(data[9])
-                except (TypeError, ValueError):
-                    pass
-            if data[10] is not None:
-                current["last_size"] = data[10]
-
-        if current.get("last") is None and current.get("mid") is not None:
-            current["last"] = current["mid"]
-
-        _LATEST[symbol] = current
-
 
 def _on_open(ws) -> None:
     token = os.getenv("TIINGO_API_KEY")
@@ -158,7 +150,7 @@ def _on_open(ws) -> None:
         _STATUS["last_error"] = None
     print(
         "PMSF-X TIINGO WS: CONNECTED",
-        {"symbols": tuple(symbols), "threshold_level": threshold},
+        {"url": STREAM_URL, "service": "cons", "symbols": tuple(symbols), "threshold_level": threshold},
     )
 
 
@@ -209,7 +201,7 @@ def _run() -> None:
 
         try:
             ws = websocket.WebSocketApp(
-                IEX_WS_URL,
+                STREAM_URL,
                 on_open=_on_open,
                 on_message=_on_message,
                 on_error=_on_error,
