@@ -29,7 +29,7 @@ TRAIN_STEPS = 160
 L2 = 0.02
 CACHE_SECONDS = 3600.0
 
-_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CACHE: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -208,8 +208,14 @@ def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[Tem
     regime = classify_regime([((x[0][0]) * 25.0) for x in samples[-40:]], [((x[0][2]) * 100.0) for x in samples[-40:]])
     return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'calibration_method':'PLATT','calibration_status':calibration_status,'calibrated_brier':round(calibrated_brier,5) if calibrated_brier is not None else None,'calibrated_log_loss':round(calibrated_logloss,5) if calibrated_logloss is not None else None,'regime':regime,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
 
-async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
-    cached = _CACHE.get(symbol)
+async def get_historical_forecast(
+    symbol: str,
+    token: str,
+    *,
+    evaluate: bool = True,
+) -> dict[str, Any]:
+    cache_key = (symbol, bool(evaluate))
+    cached = _CACHE.get(cache_key)
     if cached and __import__("time").time() - cached[0] < CACHE_SECONDS:
         return cached[1]
 
@@ -243,7 +249,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
                 "lookback_days": LOOKBACK_DAYS,
                 "error": f"Tiingo historical HTTP {response.status_code}",
             }
-            _CACHE[symbol] = (__import__("time").time(), result)
+            _CACHE[cache_key] = (__import__("time").time(), result)
             return result
 
         data = response.json()
@@ -251,7 +257,17 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
             data = data.get("data", []) if isinstance(data, dict) else []
 
         samples, temporal_samples, latest_x = _bars_to_samples(data[-MAX_ROWS:])
-        evaluation = _evaluate(samples, temporal_samples)
+        if evaluate:
+            evaluation = _evaluate(samples, temporal_samples)
+        else:
+            evaluation = {
+                "sample_count": len(samples),
+                "test_count": 0,
+                "fold_count": 0,
+                "validated": False,
+                "validation_reason": "LIVE_FORECAST_NO_RECALCULATION",
+                "validation_type": "LIVE_FAST_PATH",
+            }
         evaluation["cpcv_status"] = "RESEARCH_MODULE_READY"
         evaluation["pbo_status"] = "RESEARCH_MODULE_READY"
         evaluation["dsr_status"] = "RESEARCH_MODULE_READY"
@@ -266,7 +282,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
                 "lookback_days": LOOKBACK_DAYS,
                 "bars": len(data),
             }
-            _CACHE[symbol] = (__import__("time").time(), result)
+            _CACHE[cache_key] = (__import__("time").time(), result)
             return result
 
         weights = _fit(samples)
@@ -307,7 +323,7 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
             "lookback_days": LOOKBACK_DAYS,
             "bars": len(data),
         }
-        _CACHE[symbol] = (__import__("time").time(), result)
+        _CACHE[cache_key] = (__import__("time").time(), result)
         return result
     except Exception as exc:
         result = {
@@ -317,5 +333,5 @@ async def get_historical_forecast(symbol: str, token: str) -> dict[str, Any]:
             "model_id": "historical-logit-v1",
             "error": f"{type(exc).__name__}: {exc}",
         }
-        _CACHE[symbol] = (__import__("time").time(), result)
+        _CACHE[cache_key] = (__import__("time").time(), result)
         return result
