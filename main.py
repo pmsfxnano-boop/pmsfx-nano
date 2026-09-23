@@ -156,7 +156,10 @@ async def outcome_resolver_loop():
 async def collect_forecast_once(symbol: str):
     print("PMSF-X OUTCOME FORECAST COLLECTOR: ATTEMPT", {"symbol": symbol})
     try:
-        payload = await asyncio.wait_for(state(symbol), timeout=45.0)
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(lambda: asyncio.run(state(symbol))),
+            timeout=180.0,
+        )
         print(
             "PMSF-X OUTCOME FORECAST COLLECTOR:",
             {
