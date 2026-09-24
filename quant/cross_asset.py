@@ -157,9 +157,14 @@ def _peer_observation(
 
     t0 = peer_rows[j]["time"]
     t1 = peer_rows[j - 1]["time"]
+    t2 = peer_rows[j - 2]["time"]
     t3 = peer_rows[j - 3]["time"]
     expected = timedelta(minutes=5)
-    if t0 - t1 != expected or t1 - t3 != expected:
+    if (
+        t0 - t1 != expected
+        or t1 - t2 != expected
+        or t2 - t3 != expected
+    ):
         return None
 
     c0 = peer_rows[j]["close"]
