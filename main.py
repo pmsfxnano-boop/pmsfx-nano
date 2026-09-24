@@ -10,7 +10,8 @@ from fastapi.responses import FileResponse, Response
 
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
-from quant.specialists.historical import get_historical_forecast
+from quant.specialists.historical import get_historical_forecast, get_cached_bars
+from quant.cross_asset import get_cross_asset_forecast
 from quant.db import (
     get_outcome,
     init_db,
@@ -584,13 +585,57 @@ async def state(ticker: str):
         },
     )
 
-    # Historical price model is primary until live flow has its own validation.
+    cross_asset = {
+        "status": "SKIPPED",
+        "model_id": "cross-asset-leadlag-v1",
+        "forecast": None,
+        "evaluation": {},
+        "context": None,
+        "reason": "HISTORICAL_BARS_NOT_READY",
+    }
+    target_rows = get_cached_bars(symbol)
+    if token and healthy and target_rows:
+        try:
+            cross_asset = await asyncio.to_thread(
+                lambda: asyncio.run(
+                    get_cross_asset_forecast(
+                        symbol,
+                        token,
+                        target_rows=target_rows,
+                        evaluate=False,
+                    )
+                )
+            )
+        except Exception as exc:
+            cross_asset = {
+                "status": "ERROR",
+                "model_id": "cross-asset-leadlag-v1",
+                "forecast": None,
+                "evaluation": {},
+                "context": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+    print(
+        "PMSF-X FORECAST PIPELINE: CROSS_ASSET_READY",
+        {
+            "symbol": symbol,
+            "status": cross_asset.get("status"),
+            "samples": (cross_asset.get("evaluation") or {}).get("sample_count"),
+            "validated": bool((cross_asset.get("evaluation") or {}).get("validated")),
+        },
+    )
+
+    # Historical price model is primary until live flow and cross-asset
+    # specialists have their own validation evidence.
     hist_forecast = historical.get("forecast")
     flow_forecast = online.get("forecast")
+    cross_forecast = cross_asset.get("forecast")
     meta = combine_specialists(
         historical=hist_forecast,
         flow=flow_forecast,
         historical_evaluation=historical.get("evaluation", {}),
+        cross_asset=cross_forecast,
+        cross_asset_evaluation=cross_asset.get("evaluation", {}),
     )
 
     if meta["status"] == "READY":
@@ -719,6 +764,7 @@ async def state(ticker: str):
         "gatillazo": gatillazo_status,
         "specialists": {
             "flow": flow,
+            "cross_asset": cross_asset,
         },
         "model": {
             "id": forecast["model_id"] if forecast else None,
@@ -731,6 +777,12 @@ async def state(ticker: str):
         },
         "evaluation": evaluation,
         "multi_horizon": multi_horizon,
+        "cross_asset": {
+            "model_id": cross_asset.get("model_id"),
+            "status": cross_asset.get("status"),
+            "evaluation": cross_asset.get("evaluation") or {},
+            "context": cross_asset.get("context"),
+        },
         "rule": "NO DATA HEALTH OR MODEL HEALTH -> NO FORECAST -> NO GATILLAZO",
     }
     try:
@@ -762,12 +814,40 @@ async def backtest(ticker: str):
 
     result = await get_historical_forecast(symbol, token)
     evaluation = result.get("evaluation") or {}
+    target_rows = get_cached_bars(symbol)
+    cross_asset_backtest = {}
+    if target_rows:
+        try:
+            cross_asset_backtest = await asyncio.to_thread(
+                lambda: asyncio.run(
+                    get_cross_asset_forecast(
+                        symbol,
+                        token,
+                        target_rows=target_rows,
+                        evaluate=True,
+                    )
+                )
+            )
+        except Exception as exc:
+            cross_asset_backtest = {
+                "status": "ERROR",
+                "model_id": "cross-asset-leadlag-v1",
+                "forecast": None,
+                "evaluation": {},
+                "context": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
     payload = {
         "symbol": symbol,
         "model_id": result.get("model_id"),
         "lookback_days": result.get("lookback_days"),
         "bars": result.get("bars"),
         "evaluation": evaluation,
+        "cross_asset": {
+            "model_id": cross_asset_backtest.get("model_id"),
+            "status": cross_asset_backtest.get("status"),
+            "evaluation": cross_asset_backtest.get("evaluation") or {},
+        },
     }
     try:
         run_id = record_backtest(symbol, payload)
@@ -786,6 +866,7 @@ async def backtest(ticker: str):
         "lookback_days": result.get("lookback_days"),
         "bars": result.get("bars"),
         "metrics_oos": evaluation,
+        "cross_asset_backtest": cross_asset_backtest,
         "forecast_status": result.get("status"),
         "note": "Chronological holdout: first 80% train, final 20% OOS test. No future rows are used for fitting the OOS model.",
     }
