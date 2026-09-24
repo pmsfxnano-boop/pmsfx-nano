@@ -184,6 +184,24 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _eligibility_reason(
+    *,
+    p_up: Any,
+    forecast_direction: Any,
+    realized_direction: Any,
+    within_timing_tolerance: bool,
+) -> str:
+    if p_up is None:
+        return "MISSING_P_UP"
+    if forecast_direction not in ("UP", "DOWN"):
+        return "NON_BINARY_FORECAST_DIRECTION"
+    if realized_direction not in ("UP", "DOWN"):
+        return "REALIZED_MOVE_BELOW_THRESHOLD"
+    if not within_timing_tolerance:
+        return "TIMING_EXPIRED"
+    return "ELIGIBLE"
+
+
 def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: datetime | None = None) -> dict[str, Any]:
     resolved = resolved_at or datetime.now(timezone.utc)
     created = forecast["created_at"]
@@ -218,12 +236,13 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
 
     timing_slippage_seconds = max(0.0, elapsed - float(horizon))
     within_timing_tolerance = timing_slippage_seconds <= MAX_TIMING_SLIPPAGE_SECONDS
-    binary_eligible = (
-        forecast.get("p_up") is not None
-        and forecast_direction in ("UP", "DOWN")
-        and realized_direction in ("UP", "DOWN")
-        and within_timing_tolerance
+    eligibility_reason = _eligibility_reason(
+        p_up=forecast.get("p_up"),
+        forecast_direction=forecast_direction,
+        realized_direction=realized_direction,
+        within_timing_tolerance=within_timing_tolerance,
     )
+    binary_eligible = eligibility_reason == "ELIGIBLE"
     realized_label = 1.0 if realized_direction == "UP" else 0.0
     brier_loss = (
         (float(forecast["p_up"]) - realized_label) ** 2
@@ -260,6 +279,7 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
             "actual_elapsed_seconds": round(elapsed, 3),
             "timing_slippage_seconds": round(timing_slippage_seconds, 3),
             "timing_tolerance_seconds": MAX_TIMING_SLIPPAGE_SECONDS,
+            "eligibility_reason": eligibility_reason,
             "evaluation_eligible": binary_eligible,
         },
     }
