@@ -498,7 +498,18 @@ def outcome_summary() -> dict[str, Any]:
               AND forecast_direction IN ('UP', 'DOWN')
               AND realized_direction IN ('UP', 'DOWN')
               AND actual_elapsed_seconds <= target_horizon_seconds + 60
-        ) AS eligible_consistent_count
+        ) AS eligible_consistent_count,
+        COUNT(*) FILTER (
+            WHERE forecast_p_up IS NOT NULL
+              AND realized_direction IN ('UP', 'DOWN')
+              AND actual_elapsed_seconds <= target_horizon_seconds + 60
+        ) AS probabilistic_eligible_count,
+        COUNT(*) FILTER (
+            WHERE forecast_p_up IS NOT NULL
+              AND forecast_direction = 'NEUTRAL'
+              AND realized_direction IN ('UP', 'DOWN')
+              AND actual_elapsed_seconds <= target_horizon_seconds + 60
+        ) AS neutral_but_probabilistic_eligible_count
     FROM forecast_outcomes
     """
     try:
@@ -522,7 +533,10 @@ def outcome_summary() -> dict[str, Any]:
                 "REALIZED_MOVE_BELOW_THRESHOLD": int(row[7]),
                 "TIMING_EXPIRED": int(row[8]),
                 "ELIGIBLE_CONSISTENT": int(row[9]),
+                "PROBABILISTIC_ELIGIBLE": int(row[10]),
+                "NEUTRAL_BUT_PROBABILISTIC_ELIGIBLE": int(row[11]),
             },
+            "probabilistic_eligibility_rule": "p_up_present + realized_direction in {UP,DOWN} + timing_within_60s",
         }
     except Exception as exc:
         return {
