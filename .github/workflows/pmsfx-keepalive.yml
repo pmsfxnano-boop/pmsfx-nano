@@ -1,0 +1,14 @@
+name: PMSF-X keepalive
+
+on:
+  schedule:
+    - cron: "*/5 13-21 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  ping-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep main service awake during US session
+        run: |
+          curl --fail --silent --show-error --max-time 20             https://pmsfx-nano.onrender.com/health
