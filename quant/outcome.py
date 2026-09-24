@@ -193,8 +193,6 @@ def _eligibility_reason(
 ) -> str:
     if p_up is None:
         return "MISSING_P_UP"
-    if forecast_direction not in ("UP", "DOWN"):
-        return "NON_BINARY_FORECAST_DIRECTION"
     if realized_direction not in ("UP", "DOWN"):
         return "REALIZED_MOVE_BELOW_THRESHOLD"
     if not within_timing_tolerance:
