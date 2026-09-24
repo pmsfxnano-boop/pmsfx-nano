@@ -465,6 +465,7 @@ def outcome_summary() -> dict[str, Any]:
             "correct_count": None,
             "mean_realized_return_bps": None,
             "last_resolved_at": None,
+            "eligibility_breakdown": None,
         }
     sql = """
     SELECT
@@ -472,7 +473,32 @@ def outcome_summary() -> dict[str, Any]:
         COUNT(*) FILTER (WHERE binary_eligible) AS binary_eligible_count,
         COUNT(*) FILTER (WHERE prediction_correct IS TRUE) AS correct_count,
         AVG(realized_return_bps) AS mean_realized_return_bps,
-        MAX(resolved_at) AS last_resolved_at
+        MAX(resolved_at) AS last_resolved_at,
+        COUNT(*) FILTER (
+            WHERE forecast_p_up IS NULL
+        ) AS missing_p_up_count,
+        COUNT(*) FILTER (
+            WHERE forecast_p_up IS NOT NULL
+              AND (forecast_direction IS NULL OR forecast_direction NOT IN ('UP', 'DOWN'))
+        ) AS non_binary_forecast_direction_count,
+        COUNT(*) FILTER (
+            WHERE forecast_p_up IS NOT NULL
+              AND forecast_direction IN ('UP', 'DOWN')
+              AND (realized_direction IS NULL OR realized_direction NOT IN ('UP', 'DOWN'))
+        ) AS realized_move_below_threshold_count,
+        COUNT(*) FILTER (
+            WHERE forecast_p_up IS NOT NULL
+              AND forecast_direction IN ('UP', 'DOWN')
+              AND realized_direction IN ('UP', 'DOWN')
+              AND actual_elapsed_seconds > target_horizon_seconds + 60
+        ) AS timing_expired_count,
+        COUNT(*) FILTER (
+            WHERE binary_eligible
+              AND forecast_p_up IS NOT NULL
+              AND forecast_direction IN ('UP', 'DOWN')
+              AND realized_direction IN ('UP', 'DOWN')
+              AND actual_elapsed_seconds <= target_horizon_seconds + 60
+        ) AS eligible_consistent_count
     FROM forecast_outcomes
     """
     try:
@@ -490,6 +516,13 @@ def outcome_summary() -> dict[str, Any]:
             "correct_count": int(row[2]),
             "mean_realized_return_bps": round(float(row[3]), 4) if row[3] is not None else None,
             "last_resolved_at": row[4].isoformat() if row[4] is not None else None,
+            "eligibility_breakdown": {
+                "MISSING_P_UP": int(row[5]),
+                "NON_BINARY_FORECAST_DIRECTION": int(row[6]),
+                "REALIZED_MOVE_BELOW_THRESHOLD": int(row[7]),
+                "TIMING_EXPIRED": int(row[8]),
+                "ELIGIBLE_CONSISTENT": int(row[9]),
+            },
         }
     except Exception as exc:
         return {
@@ -500,5 +533,7 @@ def outcome_summary() -> dict[str, Any]:
             "correct_count": None,
             "mean_realized_return_bps": None,
             "last_resolved_at": None,
+            "eligibility_breakdown": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
