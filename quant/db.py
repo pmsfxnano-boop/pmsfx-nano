@@ -501,6 +501,55 @@ def get_outcome(forecast_id: int) -> dict[str, Any] | None:
         return None
 
 
+def eligible_outcomes(limit: int = 100) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+    limit = max(1, min(int(limit), 100))
+    sql = f"""
+    SELECT
+        id, forecast_id, resolved_at, symbol, forecast_created_at,
+        target_horizon_seconds, actual_elapsed_seconds,
+        forecast_direction, forecast_p_up, forecast_confidence,
+        entry_price, exit_price, realized_return_bps,
+        realized_direction, prediction_correct, binary_eligible,
+        brier_loss, resolution_source, metadata
+    FROM forecast_outcomes
+    WHERE binary_eligible = TRUE
+    ORDER BY resolved_at ASC, id ASC
+    LIMIT {limit}
+    """
+    with connection() as conn:
+        if conn is None:
+            return []
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "forecast_id": int(row[1]),
+            "resolved_at": row[2].isoformat(),
+            "symbol": row[3],
+            "forecast_created_at": row[4].isoformat(),
+            "target_horizon_seconds": int(row[5]),
+            "actual_elapsed_seconds": float(row[6]),
+            "forecast_direction": row[7],
+            "forecast_p_up": float(row[8]) if row[8] is not None else None,
+            "forecast_confidence": float(row[9]) if row[9] is not None else None,
+            "entry_price": float(row[10]) if row[10] is not None else None,
+            "exit_price": float(row[11]) if row[11] is not None else None,
+            "realized_return_bps": float(row[12]),
+            "realized_direction": row[13],
+            "prediction_correct": row[14],
+            "binary_eligible": bool(row[15]),
+            "brier_loss": float(row[16]) if row[16] is not None else None,
+            "resolution_source": row[17],
+            "metadata": row[18],
+        }
+        for row in rows
+    ]
+
+
 def outcome_summary() -> dict[str, Any]:
     if not database_url():
         return {
