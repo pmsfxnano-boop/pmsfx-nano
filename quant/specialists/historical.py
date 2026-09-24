@@ -29,6 +29,15 @@ TRAIN_STEPS = 160
 L2 = 0.02
 CACHE_SECONDS = 3600.0
 
+# Primary live horizon remains 300s for backward compatibility with the
+# existing outcome engine. These additional horizons are analytical only.
+MULTI_HORIZONS = (
+    (300, 1),
+    (900, 3),
+    (1800, 6),
+)
+MULTI_HORIZON_MODEL_ID = "historical-logit-multihorizon-v1"
+
 _CACHE: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
 
 
@@ -91,7 +100,11 @@ def _predict(w: list[float], x: list[float]) -> float:
     return _sigmoid(z)
 
 
-def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float], int]], list[TemporalSample], list[float] | None]:
+def _bars_to_samples(
+    rows: list[dict[str, Any]],
+    *,
+    horizon_bars: int = 1,
+) -> tuple[list[tuple[list[float], int]], list[TemporalSample], list[float] | None]:
     bars: list[dict[str, float]] = []
     for row in rows:
         o = _safe_float(row.get("open"))
@@ -106,11 +119,20 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
 
     bars.sort(key=lambda row: row["time"])
 
+    if horizon_bars < 1:
+        raise ValueError("HORIZON_BARS_MUST_BE_POSITIVE")
+
     samples: list[tuple[list[float], int]] = []
     temporal_samples: list[TemporalSample] = []
     expected_step = timedelta(minutes=5)
-    for i in range(3, len(bars) - 1):
-        if any(bars[j]["time"] - bars[j - 1]["time"] != expected_step for j in (i - 2, i - 1, i, i + 1)):
+    max_index = len(bars) - horizon_bars
+    for i in range(3, max_index):
+        required_indexes = range(i - 2, i + horizon_bars + 1)
+        if any(
+            bars[j]["time"] - bars[j - 1]["time"] != expected_step
+            for j in required_indexes
+            if j > 0
+        ):
             continue
         b0, b1, b3 = bars[i], bars[i - 1], bars[i - 3]
         c0 = b0["close"]
@@ -129,7 +151,7 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
             math.log1p(b0["volume"] + 1.0) - math.log1p(b1["volume"] + 1.0)
         )
 
-        future_return_bps = (bars[i + 1]["close"] / c0 - 1.0) * 10000.0
+        future_return_bps = (bars[i + horizon_bars]["close"] / c0 - 1.0) * 10000.0
         if abs(future_return_bps) < LABEL_THRESHOLD_BPS:
             continue
 
@@ -142,7 +164,14 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
         ]
         label = 1 if future_return_bps > 0 else 0
         samples.append((x, label))
-        temporal_samples.append(TemporalSample(event_time=b0['time'], label_end_time=bars[i + 1]['time'], features=x, label=label))
+        temporal_samples.append(
+            TemporalSample(
+                event_time=b0["time"],
+                label_end_time=bars[i + horizon_bars]["time"],
+                features=x,
+                label=label,
+            )
+        )
 
     latest_x: list[float] | None = None
     if len(bars) >= 4:
@@ -173,11 +202,23 @@ def _bars_to_samples(rows: list[dict[str, Any]]) -> tuple[list[tuple[list[float]
     return samples, temporal_samples, latest_x
 
 
-def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[TemporalSample]) -> dict[str, Any]:
+def _evaluate(
+    samples: list[tuple[list[float], int]],
+    temporal_samples: list[TemporalSample],
+    *,
+    horizon_minutes: int = 5,
+) -> dict[str, Any]:
     n = len(samples)
     if n < MIN_TRAIN_ROWS:
         return {'sample_count': n, 'test_count': 0, 'fold_count': 0, 'validated': False, 'validation_reason': 'INSUFFICIENT_SAMPLES'}
-    folds = walk_forward_splits(temporal_samples, train_size=300, test_size=60, purge=timedelta(minutes=5), embargo=timedelta(minutes=5))
+    horizon_delta = timedelta(minutes=horizon_minutes)
+    folds = walk_forward_splits(
+        temporal_samples,
+        train_size=300,
+        test_size=60,
+        purge=horizon_delta,
+        embargo=horizon_delta,
+    )
     if not folds:
         return {'sample_count': n, 'test_count': 0, 'fold_count': 0, 'validated': False, 'validation_reason': 'NO_VALID_WALK_FORWARD_FOLDS'}
     accs=[]; bs=[]; bbs=[]; lls=[]; blls=[]; total=0
@@ -206,7 +247,122 @@ def _evaluate(samples: list[tuple[list[float], int]], temporal_samples: list[Tem
             pass
     validated=accuracy>=0.55 and brier<baseline and len(accs)>=2
     regime = classify_regime([((x[0][0]) * 25.0) for x in samples[-40:]], [((x[0][2]) * 100.0) for x in samples[-40:]])
-    return {'sample_count':n,'test_count':total,'fold_count':len(accs),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'log_loss':round(ll,5),'baseline_log_loss':round(bll,5),'brier_skill':round(skill,5) if skill is not None else None,'calibration_method':'PLATT','calibration_status':calibration_status,'calibrated_brier':round(calibrated_brier,5) if calibrated_brier is not None else None,'calibrated_log_loss':round(calibrated_logloss,5) if calibrated_logloss is not None else None,'regime':regime,'validated':validated,'validation_reason':'PASS' if validated else 'METRICS_BELOW_THRESHOLD','validation_type':'walk_forward_purged_embargoed','purge_minutes':5,'embargo_minutes':5,'fold_test_size':60}
+    return {
+        'sample_count': n,
+        'test_count': total,
+        'fold_count': len(accs),
+        'accuracy': round(accuracy, 4),
+        'brier': round(brier, 5),
+        'baseline_brier': round(baseline, 5),
+        'log_loss': round(ll, 5),
+        'baseline_log_loss': round(bll, 5),
+        'brier_skill': round(skill, 5) if skill is not None else None,
+        'calibration_method': 'PLATT',
+        'calibration_status': calibration_status,
+        'calibrated_brier': round(calibrated_brier, 5) if calibrated_brier is not None else None,
+        'calibrated_log_loss': round(calibrated_logloss, 5) if calibrated_logloss is not None else None,
+        'regime': regime,
+        'validated': validated,
+        'validation_reason': 'PASS' if validated else 'METRICS_BELOW_THRESHOLD',
+        'validation_type': 'walk_forward_purged_embargoed',
+        'purge_minutes': horizon_minutes,
+        'embargo_minutes': horizon_minutes,
+        'fold_test_size': 60,
+    }
+
+def _build_horizon_forecast(
+    rows: list[dict[str, Any]],
+    *,
+    horizon_seconds: int,
+    horizon_bars: int,
+    evaluate: bool,
+) -> dict[str, Any]:
+    samples, temporal_samples, latest_x = _bars_to_samples(
+        rows,
+        horizon_bars=horizon_bars,
+    )
+    horizon_minutes = horizon_bars * 5
+    if evaluate:
+        evaluation = _evaluate(
+            samples,
+            temporal_samples,
+            horizon_minutes=horizon_minutes,
+        )
+    else:
+        evaluation = {
+            "sample_count": len(samples),
+            "test_count": 0,
+            "fold_count": 0,
+            "validated": False,
+            "validation_reason": "LIVE_FORECAST_NO_RECALCULATION",
+            "validation_type": "LIVE_FAST_PATH",
+            "purge_minutes": horizon_minutes,
+            "embargo_minutes": horizon_minutes,
+        }
+
+    if len(samples) < MIN_TRAIN_ROWS or latest_x is None:
+        return {
+            "status": "WARMUP",
+            "horizon_seconds": horizon_seconds,
+            "horizon_bars": horizon_bars,
+            "forecast": None,
+            "evaluation": evaluation,
+        }
+
+    weights = _fit(samples)
+    p_up = _predict(weights, latest_x)
+    p_down = 1.0 - p_up
+    confidence = abs(p_up - 0.5) * 2.0
+    direction = "UP" if p_up >= 0.55 else ("DOWN" if p_down >= 0.55 else "NEUTRAL")
+
+    return {
+        "status": "READY",
+        "horizon_seconds": horizon_seconds,
+        "horizon_bars": horizon_bars,
+        "forecast": {
+            "direction": direction,
+            "raw_probability_up": round(p_up, 4),
+            "raw_probability_down": round(p_down, 4),
+            "confidence_raw": round(confidence, 4),
+            "horizon_seconds": horizon_seconds,
+            "validated": bool(evaluation.get("validated")),
+            "calibrated": False,
+        },
+        "evaluation": evaluation,
+    }
+
+
+def _build_multi_horizon(rows: list[dict[str, Any]], *, evaluate: bool) -> dict[str, Any]:
+    horizons: dict[str, Any] = {}
+    for horizon_seconds, horizon_bars in MULTI_HORIZONS:
+        result = _build_horizon_forecast(
+            rows,
+            horizon_seconds=horizon_seconds,
+            horizon_bars=horizon_bars,
+            evaluate=evaluate,
+        )
+        horizons[str(horizon_seconds)] = result
+
+    ready = {
+        key: value
+        for key, value in horizons.items()
+        if value.get("forecast") is not None
+    }
+    return {
+        "status": "READY" if ready else "WARMUP",
+        "model_id": MULTI_HORIZON_MODEL_ID,
+        "horizons_seconds": [x[0] for x in MULTI_HORIZONS],
+        "primary_horizon_seconds": 300,
+        "forecast_vector": {
+            key: value["forecast"]
+            for key, value in ready.items()
+        },
+        "evaluation": {
+            key: value["evaluation"]
+            for key, value in horizons.items()
+        },
+    }
+
 
 async def get_historical_forecast(
     symbol: str,
@@ -256,9 +412,10 @@ async def get_historical_forecast(
         if not isinstance(data, list):
             data = data.get("data", []) if isinstance(data, dict) else []
 
-        samples, temporal_samples, latest_x = _bars_to_samples(data[-MAX_ROWS:])
+        rows = data[-MAX_ROWS:]
+        samples, temporal_samples, latest_x = _bars_to_samples(rows, horizon_bars=1)
         if evaluate:
-            evaluation = _evaluate(samples, temporal_samples)
+            evaluation = _evaluate(samples, temporal_samples, horizon_minutes=5)
         else:
             evaluation = {
                 "sample_count": len(samples),
@@ -268,6 +425,12 @@ async def get_historical_forecast(
                 "validation_reason": "LIVE_FORECAST_NO_RECALCULATION",
                 "validation_type": "LIVE_FAST_PATH",
             }
+        multi_horizon = _build_multi_horizon(
+            rows,
+            evaluate=evaluate,
+        )
+        evaluation["multi_horizon_status"] = multi_horizon["status"]
+        evaluation["multi_horizon_model_id"] = MULTI_HORIZON_MODEL_ID
         evaluation["cpcv_status"] = "RESEARCH_MODULE_READY"
         evaluation["pbo_status"] = "RESEARCH_MODULE_READY"
         evaluation["dsr_status"] = "RESEARCH_MODULE_READY"
@@ -281,6 +444,7 @@ async def get_historical_forecast(
                 "model_id": "historical-logit-v1",
                 "lookback_days": LOOKBACK_DAYS,
                 "bars": len(data),
+                "multi_horizon": multi_horizon,
             }
             _CACHE[cache_key] = (__import__("time").time(), result)
             return result
@@ -322,6 +486,7 @@ async def get_historical_forecast(
             "model_id": "historical-logit-v1",
             "lookback_days": LOOKBACK_DAYS,
             "bars": len(data),
+            "multi_horizon": multi_horizon,
         }
         _CACHE[cache_key] = (__import__("time").time(), result)
         return result
