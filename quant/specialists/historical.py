@@ -39,6 +39,17 @@ MULTI_HORIZONS = (
 MULTI_HORIZON_MODEL_ID = "historical-logit-multihorizon-v1"
 
 _CACHE: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
+_BARS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def get_cached_bars(symbol: str, *, max_age_seconds: float = CACHE_SECONDS) -> list[dict[str, Any]] | None:
+    cached = _BARS_CACHE.get(symbol.upper())
+    if not cached:
+        return None
+    if __import__("time").time() - cached[0] >= max_age_seconds:
+        return None
+    return cached[1]
+
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -413,6 +424,7 @@ async def get_historical_forecast(
             data = data.get("data", []) if isinstance(data, dict) else []
 
         rows = data[-MAX_ROWS:]
+        _BARS_CACHE[symbol.upper()] = (__import__("time").time(), rows)
         samples, temporal_samples, latest_x = _bars_to_samples(rows, horizon_bars=1)
         if evaluate:
             evaluation = _evaluate(samples, temporal_samples, horizon_minutes=5)
