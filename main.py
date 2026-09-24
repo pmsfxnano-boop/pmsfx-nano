@@ -1,7 +1,8 @@
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -51,6 +52,32 @@ OUTCOME_FORECAST_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
 OUTCOME_FORECAST_INTERVAL_SECONDS = 600.0
+US_EASTERN = ZoneInfo("America/New_York")
+MARKET_OPEN = time(9, 30)
+MARKET_LAST_FORECAST = time(15, 59, 30)
+MARKET_CLOSE = time(16, 0)
+
+
+def is_us_equity_session(now: datetime | None = None) -> bool:
+    current = (now or datetime.now(timezone.utc)).astimezone(US_EASTERN)
+    if current.weekday() >= 5:
+        return False
+    return MARKET_OPEN <= current.time() <= MARKET_LAST_FORECAST
+
+
+def market_session_state(now: datetime | None = None) -> dict[str, object]:
+    current = (now or datetime.now(timezone.utc)).astimezone(US_EASTERN)
+    return {
+        "timezone": "America/New_York",
+        "local_time": current.isoformat(),
+        "weekday": current.weekday(),
+        "open": is_us_equity_session(current),
+        "forecast_window": {
+            "open": MARKET_OPEN.isoformat(),
+            "last_forecast": MARKET_LAST_FORECAST.isoformat(),
+            "close": MARKET_CLOSE.isoformat(),
+        },
+    }
 
 
 def normalize_ticker(value: str) -> str:
@@ -185,6 +212,10 @@ async def outcome_forecast_loop():
             await asyncio.sleep(OUTCOME_FORECAST_INTERVAL_SECONDS)
             continue
 
+        if not is_us_equity_session():
+            await asyncio.sleep(OUTCOME_FORECAST_INTERVAL_SECONDS)
+            continue
+
         symbol = COLLECTOR_SYMBOLS[index % len(COLLECTOR_SYMBOLS)]
         index += 1
         await collect_forecast_once(symbol)
@@ -264,6 +295,7 @@ def health():
         "db_ready": DB_READY,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "market_stream": stream_status(),
+        "market_session": market_session_state(),
     }
 
 
