@@ -12,6 +12,7 @@ from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast, get_cached_bars
 from quant.cross_asset import get_cross_asset_forecast
+from quant.horizon_consensus import build_horizon_consensus
 from quant.db import (
     get_outcome,
     init_db,
@@ -625,6 +626,22 @@ async def state(ticker: str):
         },
     )
 
+    multi_horizon = historical.get("multi_horizon") or {}
+    horizon_consensus = build_horizon_consensus(
+        multi_horizon,
+        cross_asset=cross_asset,
+    )
+    print(
+        "PMSF-X FORECAST PIPELINE: HORIZON_CONSENSUS_READY",
+        {
+            "symbol": symbol,
+            "status": horizon_consensus.get("status"),
+            "horizon_count": horizon_consensus.get("horizon_count"),
+            "confluence_index": horizon_consensus.get("confluence_index"),
+            "production_eligible": horizon_consensus.get("production_eligible"),
+        },
+    )
+
     # Historical price model is primary until live flow and cross-asset
     # specialists have their own validation evidence.
     hist_forecast = historical.get("forecast")
@@ -715,10 +732,12 @@ async def state(ticker: str):
     )
 
     evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
-    multi_horizon = historical.get("multi_horizon") or {}
     if multi_horizon:
         evaluation = dict(evaluation)
         evaluation["multi_horizon"] = multi_horizon
+    if horizon_consensus:
+        evaluation = dict(evaluation)
+        evaluation["horizon_consensus"] = horizon_consensus
     forecast_status = forecast["status"] if forecast else selected_status
     model_health = assess_model_health(data_health=data_health, evaluation=evaluation, forecast=forecast)
     registry_record = build_registry_record(model_id=model_id or "none", version="v1", status="ACTIVE" if not model_health["safe_mode"] else "SAFE_MODE", evaluation=evaluation)
@@ -777,6 +796,7 @@ async def state(ticker: str):
         },
         "evaluation": evaluation,
         "multi_horizon": multi_horizon,
+        "horizon_consensus": horizon_consensus,
         "cross_asset": {
             "model_id": cross_asset.get("model_id"),
             "status": cross_asset.get("status"),
@@ -837,12 +857,19 @@ async def backtest(ticker: str):
                 "context": None,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+    multi_horizon = result.get("multi_horizon") or {}
+    horizon_consensus = build_horizon_consensus(
+        multi_horizon,
+        cross_asset=cross_asset_backtest,
+    )
     payload = {
         "symbol": symbol,
         "model_id": result.get("model_id"),
         "lookback_days": result.get("lookback_days"),
         "bars": result.get("bars"),
         "evaluation": evaluation,
+        "multi_horizon": multi_horizon,
+        "horizon_consensus": horizon_consensus,
         "cross_asset": {
             "model_id": cross_asset_backtest.get("model_id"),
             "status": cross_asset_backtest.get("status"),
@@ -866,6 +893,8 @@ async def backtest(ticker: str):
         "lookback_days": result.get("lookback_days"),
         "bars": result.get("bars"),
         "metrics_oos": evaluation,
+        "multi_horizon": multi_horizon,
+        "horizon_consensus": horizon_consensus,
         "cross_asset_backtest": cross_asset_backtest,
         "forecast_status": result.get("status"),
         "note": "Chronological holdout: first 80% train, final 20% OOS test. No future rows are used for fitting the OOS model.",
