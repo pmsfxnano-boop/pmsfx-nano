@@ -14,6 +14,7 @@ from quant.specialists.historical import get_historical_forecast
 from quant.db import (
     get_outcome,
     init_db,
+    repair_probabilistic_outcomes,
     outcome_summary,
     pending_due_forecasts,
     persistence_summary,
@@ -123,6 +124,9 @@ async def initialize_persistence():
     global DB_READY
     try:
         DB_READY = bool(init_db())
+        if DB_READY:
+            repaired = repair_probabilistic_outcomes()
+            print("PMSF-X OUTCOME ELIGIBILITY REPAIR:", {"rows_updated": repaired})
         print("PMSF-X DB:", "READY" if DB_READY else "NOT_CONFIGURED")
     except Exception as exc:
         DB_READY = False
