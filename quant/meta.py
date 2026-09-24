@@ -14,6 +14,8 @@ def combine_specialists(
     historical: dict[str, Any] | None,
     flow: dict[str, Any] | None,
     historical_evaluation: dict[str, Any] | None,
+    cross_asset: dict[str, Any] | None = None,
+    cross_asset_evaluation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidates: list[tuple[str, float, float]] = []
 
@@ -28,6 +30,21 @@ def combine_specialists(
         # Flow is currently an unvalidated baseline, so it receives lower weight.
         weight = 0.35 if not flow.get("validated") else 1.0
         candidates.append(("flow", float(flow["raw_probability_up"]), weight))
+
+    # Cross-asset is deliberately gated: it can be surfaced and audited before
+    # it is allowed to alter the production probability.
+    cross_asset_allowed = bool(
+        cross_asset
+        and cross_asset.get("raw_probability_up") is not None
+        and cross_asset.get("validated")
+        and (cross_asset_evaluation or {}).get("validated")
+    )
+    if cross_asset_allowed:
+        weight = 1.0
+        brier_skill = (cross_asset_evaluation or {}).get("brier_skill")
+        if brier_skill is not None:
+            weight += max(0.0, min(1.0, float(brier_skill)))
+        candidates.append(("cross_asset", float(cross_asset["raw_probability_up"]), weight))
 
     if not candidates:
         return {
@@ -49,4 +66,5 @@ def combine_specialists(
         "weights": {name: round(weight / total_weight, 4) for name, _, weight in candidates},
         "agreement": round(agreement, 4),
         "specialists_used": [name for name, _, _ in candidates],
+        "cross_asset_gate": "ACTIVE" if cross_asset_allowed else "RESEARCH_ONLY",
     }
