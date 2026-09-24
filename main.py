@@ -670,6 +670,10 @@ async def state(ticker: str):
     )
 
     evaluation = historical.get("evaluation", {}) or online.get("evaluation", {}) or {}
+    multi_horizon = historical.get("multi_horizon") or {}
+    if multi_horizon:
+        evaluation = dict(evaluation)
+        evaluation["multi_horizon"] = multi_horizon
     forecast_status = forecast["status"] if forecast else selected_status
     model_health = assess_model_health(data_health=data_health, evaluation=evaluation, forecast=forecast)
     registry_record = build_registry_record(model_id=model_id or "none", version="v1", status="ACTIVE" if not model_health["safe_mode"] else "SAFE_MODE", evaluation=evaluation)
@@ -726,6 +730,7 @@ async def state(ticker: str):
             "historical_bars": historical.get("bars"),
         },
         "evaluation": evaluation,
+        "multi_horizon": multi_horizon,
         "rule": "NO DATA HEALTH OR MODEL HEALTH -> NO FORECAST -> NO GATILLAZO",
     }
     try:
