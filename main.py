@@ -16,6 +16,7 @@ from quant.db import (
     init_db,
     repair_probabilistic_outcomes,
     outcome_summary,
+    eligible_outcomes,
     pending_due_forecasts,
     persistence_summary,
     record_backtest,
@@ -320,6 +321,28 @@ def outcome_summary_endpoint():
         "service": "pmsfx-nano",
         "version": "0.4.0",
         **outcome_summary(),
+    }
+
+
+@app.get("/api/outcome/eligible")
+def eligible_outcomes_endpoint(limit: int = 100):
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+    rows = eligible_outcomes(limit=limit)
+    losses = [row["brier_loss"] for row in rows if row["brier_loss"] is not None]
+    directional = [
+        row["prediction_correct"]
+        for row in rows
+        if row["forecast_direction"] in ("UP", "DOWN")
+        and row["realized_direction"] in ("UP", "DOWN")
+        and row["prediction_correct"] is not None
+    ]
+    return {
+        "service": "pmsfx-nano",
+        "count": len(rows),
+        "mean_brier": round(sum(losses) / len(losses), 6) if losses else None,
+        "directional_accuracy": round(sum(1 for x in directional if x) / len(directional), 4) if directional else None,
+        "rows": rows,
     }
 
 
