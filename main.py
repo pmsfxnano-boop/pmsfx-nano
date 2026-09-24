@@ -128,6 +128,30 @@ async def initialize_persistence():
         if DB_READY:
             repaired = repair_probabilistic_outcomes()
             print("PMSF-X OUTCOME ELIGIBILITY REPAIR:", {"rows_updated": repaired})
+            audit_rows = eligible_outcomes(limit=100)
+            audit_losses = [row["brier_loss"] for row in audit_rows if row["brier_loss"] is not None]
+            print(
+                "PMSF-X OUTCOME QUALITY AUDIT:",
+                {
+                    "eligible_count": len(audit_rows),
+                    "mean_brier": round(sum(audit_losses) / len(audit_losses), 6) if audit_losses else None,
+                    "eligible_rows": [
+                        {
+                            "outcome_id": row["id"],
+                            "forecast_id": row["forecast_id"],
+                            "symbol": row["symbol"],
+                            "p_up": row["forecast_p_up"],
+                            "direction": row["forecast_direction"],
+                            "realized_direction": row["realized_direction"],
+                            "return_bps": row["realized_return_bps"],
+                            "brier": row["brier_loss"],
+                            "elapsed_s": row["actual_elapsed_seconds"],
+                            "horizon_s": row["target_horizon_seconds"],
+                        }
+                        for row in audit_rows
+                    ],
+                },
+            )
         print("PMSF-X DB:", "READY" if DB_READY else "NOT_CONFIGURED")
     except Exception as exc:
         DB_READY = False
