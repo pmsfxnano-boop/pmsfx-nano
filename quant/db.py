@@ -367,6 +367,52 @@ def pending_due_forecasts(limit: int = 20) -> list[dict[str, Any]]:
         return []
 
 
+def repair_probabilistic_outcomes() -> int:
+    """Backfill the probabilistic eligibility definition for persisted outcomes."""
+    if not database_url():
+        return 0
+    sql = """
+    UPDATE forecast_outcomes
+    SET
+        binary_eligible = (
+            forecast_p_up IS NOT NULL
+            AND realized_direction IN ('UP', 'DOWN')
+            AND actual_elapsed_seconds <= target_horizon_seconds + 60
+        ),
+        brier_loss = CASE
+            WHEN forecast_p_up IS NOT NULL
+             AND realized_direction IN ('UP', 'DOWN')
+             AND actual_elapsed_seconds <= target_horizon_seconds + 60
+            THEN (
+                forecast_p_up
+                - CASE WHEN realized_direction = 'UP' THEN 1.0 ELSE 0.0 END
+            ) ^ 2
+            ELSE NULL
+        END,
+        metadata = jsonb_set(
+            COALESCE(metadata, '{}'::jsonb),
+            '{eligibility_reason}',
+            to_jsonb(
+                CASE
+                    WHEN forecast_p_up IS NULL THEN 'MISSING_P_UP'
+                    WHEN realized_direction NOT IN ('UP', 'DOWN') THEN 'REALIZED_MOVE_BELOW_THRESHOLD'
+                    WHEN actual_elapsed_seconds > target_horizon_seconds + 60 THEN 'TIMING_EXPIRED'
+                    ELSE 'ELIGIBLE'
+                END
+            )
+        )
+    WHERE TRUE
+    """
+    with connection() as conn:
+        if conn is None:
+            return 0
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            updated = cur.rowcount
+        conn.commit()
+        return int(updated)
+
+
 def record_outcome(outcome: dict[str, Any]) -> int | None:
     if not database_url():
         return None
