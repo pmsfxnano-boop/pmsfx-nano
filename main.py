@@ -53,6 +53,7 @@ from quant.trigger import evaluate_trigger
 from quant.outcome import resolve_forecast
 from quant.online import observe_online, evaluate_temporal_cohort, ENGINE as ONLINE_ENGINE
 from quant.market_stream import get_quote as get_stream_quote, start_stream, stop_stream, stream_status
+from quant.v0_ofi import run_v0_research
 
 APP_DIR = Path(__file__).resolve().parent
 TIINGO_IEX_URL = "https://api.tiingo.com/iex"
@@ -339,6 +340,33 @@ async def online_cohort_loop():
                 print("PMSF-X ONLINE COHORT ERROR:", {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
         print("PMSF-X ONLINE COHORT HEARTBEAT:", iteration_stats)
         await asyncio.sleep(ONLINE_COHORT_INTERVAL_SECONDS)
+
+
+@app.get("/api/research/v0-ofi/{ticker}")
+async def v0_ofi_research(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+    try:
+        rows = get_cached_bars(symbol)
+        source = "cache"
+        if not rows:
+            source = "tiingo_history"
+            rows = await asyncio.wait_for(get_historical_bars(symbol, token), timeout=30.0)
+        if not rows:
+            raise HTTPException(status_code=503, detail="Historical bars unavailable")
+        result = await asyncio.to_thread(run_v0_research, rows, symbol=symbol)
+        result["history_source"] = source
+        print("PMSF-X V0 OFI RESEARCH RESULT:", {"symbol": symbol, "bars": result.get("bars_used"), "status": result.get("status"), "summary": result.get("validation_summary")})
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print("PMSF-X V0 OFI RESEARCH ERROR:", {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
 
 @app.get("/api/research/online-cohort")
