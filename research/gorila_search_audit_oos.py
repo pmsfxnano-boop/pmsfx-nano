@@ -17,7 +17,7 @@ import statistics
 import time
 from itertools import combinations
 
-from gorila_nested_pairwise_rank_oos import (
+from research.gorila_nested_pairwise_rank_oos import (
     COSTS_BPS,
     FEATURE_GROUPS,
     INNER_MIN_TRAIN,
