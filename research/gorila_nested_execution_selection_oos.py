@@ -144,8 +144,7 @@ def non_overlapping(rows, horizon):
     return chosen
 
 
-def apply_candidate(rows, prob_model, candidate):
-    name, hi, lo = candidate
+def apply_candidate(rows, prob_model):
     scored = []
     for row in rows:
         p = predict(prob_model, row["x"])
@@ -203,7 +202,7 @@ def select_candidate(outer_train, horizon):
         return "flat", None, None, {"selection_status": "SINGLE_CLASS"}
 
     model = fit([r["x"] for r in inner_fit], y)
-    scored = apply_candidate(inner_val, model, CANDIDATES)
+    scored = apply_candidate(inner_val, model)
     scored = non_overlapping(scored, horizon)
 
     evaluations = []
@@ -256,7 +255,7 @@ def run_symbol(series, symbol, horizon):
         selection_counts[str(candidate)] = selection_counts.get(str(candidate), 0) + 1
 
         model = fit([r["x"] for r in outer_train], [r["y"] for r in outer_train])
-        scored = apply_candidate(outer_test, model, candidate)
+        scored = apply_candidate(outer_test, model)
         scored = non_overlapping(scored, horizon)
         tagged = [{**row, "candidate": candidate} for row in scored]
         outer_results.append({"candidate": candidate, "rows": tagged, "selection": selection[3]})
