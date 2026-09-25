@@ -1063,6 +1063,16 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
             timeout=60.0,
         )
         target_rows = historical.get("__bars_rows") or []
+        print(
+            "PMSF-X CROSS-ASSET TARGET HISTORY:",
+            {
+                "symbol": symbol,
+                "status": historical.get("status"),
+                "bars": historical.get("bars"),
+                "rows": len(target_rows),
+                "fetch_meta": historical.get("__research_fetch_meta"),
+            },
+        )
         if not target_rows:
             raise RuntimeError("Historical target bars unavailable")
 
@@ -1085,6 +1095,17 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
                     timeout=60.0,
                 )
                 peer_bars = peer_result.get("__bars_rows") or []
+                print(
+                    "PMSF-X CROSS-ASSET PEER HISTORY:",
+                    {
+                        "symbol": symbol,
+                        "peer": peer_symbol,
+                        "status": peer_result.get("status"),
+                        "bars": peer_result.get("bars"),
+                        "rows": len(peer_bars),
+                        "fetch_meta": peer_result.get("__research_fetch_meta"),
+                    },
+                )
                 if peer_bars:
                     peer_rows[peer_symbol] = peer_bars
             except Exception as peer_exc:
