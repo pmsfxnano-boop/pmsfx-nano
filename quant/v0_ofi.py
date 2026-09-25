@@ -151,14 +151,10 @@ def _prepare_bars(rows: Iterable[dict[str, Any]]) -> list[Bar]:
         bars.append(Bar(ts, o, h, low, c, max(0.0, v)))
     bars.sort(key=lambda x: x.event_time)
 
-    # Enforce 5-minute regularity. This prevents overnight/weekend gaps from
-    # becoming artificial one-step returns or labels.
-    clean: list[Bar] = []
-    step = timedelta(minutes=BAR_MINUTES)
-    for bar in bars:
-        if not clean or bar.event_time - clean[-1].event_time == step:
-            clean.append(bar)
-    return clean
+    # Keep every valid session. Overnight/weekend gaps are expected and must
+    # not delete all later sessions. Temporal continuity is enforced locally
+    # when constructing each supervised sample.
+    return bars
 
 
 def _feature_row(bars: Sequence[Bar], i: int) -> tuple[list[float], dict[str, float]]:
@@ -215,9 +211,21 @@ def _dataset(
 ) -> tuple[list[TemporalSample], list[dict[str, float]]]:
     samples: list[TemporalSample] = []
     diagnostics: list[dict[str, float]] = []
-    # Require enough prior data for the rolling normalizers.
+    # Require a fully contiguous 5-minute window inside one trading session.
+    # This prevents overnight/weekend gaps from leaking into returns/labels.
     start = max(3, ROLLING_WINDOW)
+    step = timedelta(minutes=BAR_MINUTES)
     for i in range(start, len(bars) - horizon_bars):
+        window_start = i - ROLLING_WINDOW
+        window_end = i + horizon_bars
+        session_dates = {bars[j].event_time.date() for j in range(window_start, window_end + 1)}
+        if len(session_dates) != 1:
+            continue
+        if any(
+            bars[j].event_time - bars[j - 1].event_time != step
+            for j in range(window_start + 1, window_end + 1)
+        ):
+            continue
         x, diag = _feature_row(bars, i)
         future_return_bps = (bars[i + horizon_bars].close / bars[i].close - 1.0) * 10000.0
         if abs(future_return_bps) < threshold_bps:
