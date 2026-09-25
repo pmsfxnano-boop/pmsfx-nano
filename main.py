@@ -991,7 +991,7 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
             symbol,
             {
                 "model_id": "multihorizon-meta-research-v1",
-                "lookback_days": LOOKBACK_DAYS,
+                "lookback_days": None,
                 "bars": len(rows),
                 "evaluation": validation,
             },
