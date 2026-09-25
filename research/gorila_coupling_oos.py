@@ -97,7 +97,7 @@ def evaluate(samples):
     for name,idx in [("baseline",0),("advanced",1)]:
         X=[fs[idx] for fs,_ in tr]; y=[label for _,label in tr]
         m=fit(X,y)
-        probs=[predict(m,a[idx]) for a in te]
+        probs=[predict(m,fs[idx]) for fs,_ in te]
         labels=[b for _,b in te]
         acc=sum((p>=.5)==bool(y) for p,y in zip(probs,labels))/len(labels)
         brier=sum((p-y)**2 for p,y in zip(probs,labels))/len(labels)
