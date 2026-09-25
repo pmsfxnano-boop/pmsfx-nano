@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: gorila-argentum-robustness-gate
+  group: gorila-argentum-global-research
   cancel-in-progress: true
 
 env:
