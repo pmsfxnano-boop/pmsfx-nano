@@ -959,14 +959,10 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
             raise RuntimeError("Historical bars unavailable")
 
         print(
-            "PMSF-X CROSS-ASSET PRELOAD:",
+            "PMSF-X MULTIHORIZON DATA READY:",
             {
                 "symbol": symbol,
-                "target_rows": len(target_rows),
-                "peer_rows": {
-                    peer: len(rows)
-                    for peer, rows in peer_rows.items()
-                },
+                "target_rows": len(rows),
             },
         )
 
