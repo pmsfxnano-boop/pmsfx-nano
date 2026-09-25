@@ -247,19 +247,19 @@ def run_horizon(series,horizon):
 
 
 if __name__ == "__main__":
-series={s:yahoo(s) for s in SYMBOLS}
-results={str(h):run_horizon(series,h) for h in HORIZONS}
-print(json.dumps({
-    "status":"COMPLETE",
-    "method":"nested-purged-pairwise-ranking-feature-selection-v1",
-    "symbols":SYMBOLS,
-    "horizons":HORIZONS,
-    "costs_bps_roundtrip":COSTS_BPS,
-    "outer_train_min":OUTER_TRAIN_MIN,
-    "outer_test_size":OUTER_TEST_SIZE,
-    "inner_test_size":INNER_TEST_SIZE,
-    "feature_groups":FEATURE_GROUPS,
-    "l2_values":L2_VALUES,
-    "generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),
-    "results":results,
-},indent=2))
+    series={s:yahoo(s) for s in SYMBOLS}
+    results={str(h):run_horizon(series,h) for h in HORIZONS}
+    print(json.dumps({
+        "status":"COMPLETE",
+        "method":"nested-purged-pairwise-ranking-feature-selection-v1",
+        "symbols":SYMBOLS,
+        "horizons":HORIZONS,
+        "costs_bps_roundtrip":COSTS_BPS,
+        "outer_train_min":OUTER_TRAIN_MIN,
+        "outer_test_size":OUTER_TEST_SIZE,
+        "inner_test_size":INNER_TEST_SIZE,
+        "feature_groups":FEATURE_GROUPS,
+        "l2_values":L2_VALUES,
+        "generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),
+        "results":results,
+    },indent=2))
