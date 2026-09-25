@@ -297,10 +297,10 @@ def build_dataset(series, horizon):
     return features
 
 
-def chronological_metrics(rows):
+def chronological_metrics(rows, horizon):
     rows = sorted(rows, key=lambda r: r["date"])
     split = int(len(rows) * 0.8)
-    train = rows[:split]
+    train = rows[:max(0, split - horizon)]
     test = rows[split:]
     if len(train) < 100 or len(test) < 20:
         return None
@@ -341,7 +341,7 @@ for horizon in HORIZONS:
         for d, per in data.items():
             if s in per:
                 rows.append({"date": d, **per[s]})
-        results[str(horizon)][s] = chronological_metrics(rows)
+        results[str(horizon)][s] = chronological_metrics(rows, horizon)
 
 print(json.dumps({
     "status": "COMPLETE",
