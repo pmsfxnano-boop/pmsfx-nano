@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from .storage import Store
 from .ingest import run_batch
 from .coupling import build_matrix
