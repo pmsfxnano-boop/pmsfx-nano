@@ -144,9 +144,9 @@ def pair_rows(data, ds, idxs):
     return X,y
 
 
-def choose(data, train_dates, horizon):
+def choose(data, train_dates, horizon, lag):
     end=max(INNER_MIN,len(train_dates)-2*INNER_TEST)
-    inner_train=train_dates[:max(1,end-horizon)]
+    inner_train=train_dates[:max(1,end-horizon-lag)]
     inner_test=train_dates[end:end+INNER_TEST]
     best=None
     for group,idxs in FEATURES.items():
@@ -176,9 +176,9 @@ def run(series,horizon,lag):
     while start+TEST_SIZE<=len(dates):
         train_dates=dates[:start]
         test_dates=dates[start:start+TEST_SIZE]
-        group,l2=choose(data,train_dates,horizon)
+        group,l2=choose(data,train_dates,horizon,lag)
         idxs=FEATURES[group]
-        X,y=pair_rows(data,train_dates[:-horizon],idxs)
+        X,y=pair_rows(data,train_dates[:max(1,len(train_dates)-horizon-lag)],idxs)
         if len(X)<1000 or len(set(y))<2:
             start+=TEST_SIZE
             continue
