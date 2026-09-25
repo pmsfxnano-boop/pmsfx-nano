@@ -22,7 +22,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt pytest
       - name: Unit tests
-        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py
+        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py
       - name: Import smoke
         run: python -c "from gorila_argentum.app import app; print(app.title, app.version)"
       - name: Core Argentine OOS research
