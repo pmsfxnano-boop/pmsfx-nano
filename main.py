@@ -26,6 +26,8 @@ from quant.db import (
     record_forecast,
     record_model_registry,
     record_outcome,
+    active_research_run,
+    recover_stale_research_runs,
     create_research_run,
     update_research_run,
     get_research_run,
@@ -134,7 +136,12 @@ async def initialize_persistence():
         DB_READY = bool(init_db())
         if DB_READY:
             repaired = repair_probabilistic_outcomes()
+            recovered = recover_stale_research_runs(stale_after_minutes=30)
             print("PMSF-X OUTCOME ELIGIBILITY REPAIR:", {"rows_updated": repaired})
+            print(
+                "PMSF-X RESEARCH STALE RECOVERY:",
+                {"rows_recovered": recovered, "stale_after_minutes": 30},
+            )
             audit_rows = eligible_outcomes(limit=100)
             audit_losses = [row["brier_loss"] for row in audit_rows if row["brier_loss"] is not None]
             print(
@@ -1004,6 +1011,26 @@ async def start_multihorizon_research(ticker: str):
     if not DB_READY:
         raise HTTPException(status_code=503, detail="Database is not ready")
 
+    existing = active_research_run(symbol)
+    if existing is not None:
+        print(
+            "PMSF-X MULTIHORIZON RESEARCH DEDUP:",
+            {
+                "symbol": symbol,
+                "run_id": existing.get("run_id"),
+                "status": existing.get("status"),
+            },
+        )
+        return {
+            "service": "pmsfx-nano",
+            "symbol": symbol,
+            "run_id": existing["run_id"],
+            "status": existing["status"],
+            "poll": f"/api/research/run/{existing['run_id']}",
+            "validation_type": "cross_fitted_walk_forward_purged_embargoed",
+            "deduplicated": True,
+        }
+
     run_id = create_research_run(symbol)
     if not run_id:
         raise HTTPException(status_code=503, detail="Unable to create research run")
@@ -1016,6 +1043,7 @@ async def start_multihorizon_research(ticker: str):
         "status": "QUEUED",
         "poll": f"/api/research/run/{run_id}",
         "validation_type": "cross_fitted_walk_forward_purged_embargoed",
+        "deduplicated": False,
     }
 
 
