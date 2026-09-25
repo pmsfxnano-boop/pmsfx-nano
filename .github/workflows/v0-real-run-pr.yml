@@ -1,0 +1,26 @@
+name: V0 real historical OOS PR
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  v0-real-historical:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render deployment
+        run: sleep 60
+      - name: Run V0 against real Render/Tiingo history
+        shell: bash
+        run: |
+          set -u
+          base="https://pmsfx-nano.onrender.com/api/research/v0-ofi"
+          for symbol in AAPL MSFT NVDA TSLA; do
+            echo "========== BEGIN $symbol =========="
+            tmp="/tmp/$symbol.json"
+            code=$(curl -sS -o "$tmp" -w "%{http_code}" --max-time 300 "$base/$symbol" || echo "CURL_ERROR")
+            echo "HTTP_CODE=$code"
+            cat "$tmp" || true
+            echo
+            echo "========== END $symbol =========="
+          done
