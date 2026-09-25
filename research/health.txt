@@ -31,3 +31,5 @@ ablation_evidence_print=2026-09-25T02:17:10Z
 2026-09-25T02:56:00Z Re-run AAPL with fresh nonempty-cache protection.
 
 2026-09-25T03:01:00Z AAPL cross-asset validation after session-gap fix and proven historical row path.
+
+2026-09-25T03:05:20Z Diagnostic AAPL cross-asset after research fetch instrumentation.
