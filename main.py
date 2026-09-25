@@ -17,6 +17,7 @@ from quant.specialists.historical import get_historical_forecast, get_cached_bar
 from quant.cross_asset import get_cross_asset_forecast
 from quant.horizon_consensus import build_horizon_consensus
 from quant.multihorizon_meta import validate_multi_horizon_meta
+from quant.cross_asset_validation import validate_cross_asset_symbol
 from quant.db import (
     get_outcome,
     init_db,
@@ -1021,6 +1022,150 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
         )
 
 
+async def _run_cross_asset_research_job(run_id: str, symbol: str):
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        update_research_run(
+            run_id,
+            status="ERROR",
+            error="TIINGO_API_KEY is not configured",
+            finished_at=datetime.now(timezone.utc),
+        )
+        return
+
+    started_at = datetime.now(timezone.utc)
+    update_research_run(run_id, status="RUNNING", started_at=started_at)
+    print(
+        "PMSF-X CROSS-ASSET RESEARCH JOB START:",
+        {"run_id": run_id, "symbol": symbol},
+    )
+
+    try:
+        historical = await asyncio.wait_for(
+            get_historical_forecast(symbol, token, evaluate=False),
+            timeout=60.0,
+        )
+        target_rows = get_cached_bars(symbol)
+        if not target_rows:
+            raise RuntimeError("Historical target bars unavailable")
+
+        loop = asyncio.get_running_loop()
+        validation = await asyncio.wait_for(
+            loop.run_in_executor(
+                RESEARCH_PROCESS_POOL,
+                partial(
+                    validate_cross_asset_symbol,
+                    symbol,
+                    token,
+                    target_rows,
+                ),
+            ),
+            timeout=900.0,
+        )
+
+        research_backtest_id = record_backtest(
+            symbol,
+            {
+                "model_id": "cross-asset-leadlag-research-v1",
+                "lookback_days": historical.get("lookback_days"),
+                "bars": historical.get("bars"),
+                "evaluation": validation,
+            },
+        )
+
+        finished_at = datetime.now(timezone.utc)
+        result = {
+            "service": "pmsfx-nano",
+            "symbol": symbol,
+            "historical_model_id": historical.get("model_id"),
+            "historical_bars": historical.get("bars"),
+            "research_run_id": run_id,
+            "research_backtest_id": research_backtest_id,
+            "validation": validation,
+        }
+        update_research_run(
+            run_id,
+            status="COMPLETED",
+            result=result,
+            finished_at=finished_at,
+        )
+        print(
+            "PMSF-X CROSS-ASSET RESEARCH JOB COMPLETE:",
+            {
+                "run_id": run_id,
+                "symbol": symbol,
+                "status": validation.get("status"),
+                "validated": validation.get("validated"),
+                "usable_folds": validation.get("usable_fold_count"),
+                "oos_count": validation.get("oos_count"),
+                "brier_skill": (validation.get("metrics") or {}).get("brier_skill"),
+                "research_backtest_id": research_backtest_id,
+            },
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        error = f"{type(exc).__name__}: {exc}"
+        update_research_run(
+            run_id,
+            status="ERROR",
+            error=error,
+            finished_at=finished_at,
+        )
+        print(
+            "PMSF-X CROSS-ASSET RESEARCH JOB ERROR:",
+            {"run_id": run_id, "symbol": symbol, "error": error},
+        )
+
+
+@app.post("/api/research/cross-asset/{ticker}", status_code=202)
+async def start_cross_asset_research(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    if symbol not in ("AAPL", "MSFT", "NVDA", "TSLA"):
+        raise HTTPException(status_code=400, detail="Unsupported cross-asset ticker")
+    if not os.getenv("TIINGO_API_KEY"):
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+    if not DB_READY:
+        raise HTTPException(status_code=503, detail="Database is not ready")
+
+    model_id = "cross-asset-leadlag-research-v1"
+    existing = active_research_run(symbol, model_id=model_id)
+    if existing is not None:
+        print(
+            "PMSF-X CROSS-ASSET RESEARCH DEDUP:",
+            {
+                "symbol": symbol,
+                "run_id": existing.get("run_id"),
+                "status": existing.get("status"),
+            },
+        )
+        return {
+            "service": "pmsfx-nano",
+            "symbol": symbol,
+            "run_id": existing["run_id"],
+            "status": existing["status"],
+            "poll": f"/api/research/run/{existing['run_id']}",
+            "validation_type": "cross_asset_walk_forward_purged_embargoed",
+            "deduplicated": True,
+        }
+
+    run_id = create_research_run(symbol, model_id=model_id)
+    if not run_id:
+        raise HTTPException(status_code=503, detail="Unable to create research run")
+
+    asyncio.create_task(_run_cross_asset_research_job(run_id, symbol))
+    return {
+        "service": "pmsfx-nano",
+        "symbol": symbol,
+        "run_id": run_id,
+        "status": "QUEUED",
+        "poll": f"/api/research/run/{run_id}",
+        "validation_type": "cross_asset_walk_forward_purged_embargoed",
+        "deduplicated": False,
+    }
+
+
 @app.post("/api/research/multihorizon/{ticker}", status_code=202)
 async def start_multihorizon_research(ticker: str):
     symbol = normalize_ticker(ticker)
@@ -1087,6 +1232,21 @@ def research_run_status(run_id: str):
     )
     return {
         "service": "pmsfx-nano",
+        **result,
+    }
+
+
+@app.get("/api/research/cross-asset/{ticker}")
+def latest_cross_asset_research(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    result = latest_research_run(symbol)
+    if result is None or result.get("model_id") != "cross-asset-leadlag-research-v1":
+        raise HTTPException(status_code=404, detail="No cross-asset research run found")
+    return {
+        "service": "pmsfx-nano",
+        "symbol": symbol,
         **result,
     }
 
