@@ -20,6 +20,7 @@ from quant.cross_asset import (
     _fetch_rows,
     _fit,
     _normalize_rows,
+    _looks_like_five_minute_series,
     _predict,
     PEERS,
 )
