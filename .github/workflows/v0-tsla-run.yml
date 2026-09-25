@@ -1,0 +1,50 @@
+name: V0 TSLA real historical OOS
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  v0-tsla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone current main scoring code
+        run: git clone --depth 1 https://github.com/${{ github.repository }}.git scoring
+      - name: Run V0 against raw TSLA history
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sS --fail --max-time 300 "https://pmsfx-nano.onrender.com/api/research/v0-ofi/raw/TSLA" -o /tmp/TSLA.json
+          python - <<'PY'
+import json,sys
+sys.path.insert(0,"scoring")
+from quant.v0_ofi import run_v0_research
+p=json.load(open("/tmp/TSLA.json"))
+r=run_v0_research(p["rows"], symbol="TSLA")
+print(json.dumps({
+ "symbol":"TSLA",
+ "raw_row_count":p.get("row_count"),
+ "raw_first_bar":p.get("first_bar"),
+ "raw_last_bar":p.get("last_bar"),
+ "bars_used":r.get("bars_used"),
+ "validation_summary":r.get("validation_summary"),
+ "horizons":{
+   h:{
+     "sample_count":v.get("sample_count"),
+     "oos_count":(v.get("evaluation") or {}).get("oos_count"),
+     "fold_count":(v.get("evaluation") or {}).get("fold_count"),
+     "accuracy":(v.get("evaluation") or {}).get("accuracy"),
+     "auc":(v.get("evaluation") or {}).get("auc"),
+     "brier":(v.get("evaluation") or {}).get("brier"),
+     "baseline_brier":(v.get("evaluation") or {}).get("baseline_brier"),
+     "brier_skill":(v.get("evaluation") or {}).get("brier_skill"),
+     "log_loss":(v.get("evaluation") or {}).get("log_loss"),
+     "baseline_log_loss":(v.get("evaluation") or {}).get("baseline_log_loss"),
+     "log_loss_improvement":(v.get("evaluation") or {}).get("log_loss_improvement"),
+     "ece":(v.get("evaluation") or {}).get("ece"),
+     "validated":(v.get("evaluation") or {}).get("validated"),
+     "reason":(v.get("evaluation") or {}).get("validation_reason")
+   } for h,v in r.get("horizons",{}).items()
+ }
+}, indent=2))
+PY
