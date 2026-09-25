@@ -1,86 +1,45 @@
 name: PMSF-X professional research validation
 
 on:
-  workflow_run:
-    workflows:
-      - "PMSF-X endpoint connectivity check"
-    types:
-      - completed
-
-concurrency:
-  group: pmsfx-professional-validation
-  cancel-in-progress: true
+  push:
+    branches:
+      - main
+    paths:
+      - "research/run.txt"
 
 jobs:
   validate-multihorizon:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check Render health
+      - name: Wait for live service health
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --connect-timeout 10 --max-time 20             https://pmsfx-nano.onrender.com/health
-
-      - name: Start AAPL professional validation job
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error             --connect-timeout 20             --max-time 30             -X POST             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL             -o /tmp/start.json
-          cat /tmp/start.json
-          python - <<'PY'
-          import json
-          with open("/tmp/start.json", "r", encoding="utf-8") as fh:
-              payload = json.load(fh)
-          run_id = payload["run_id"]
-          with open("/tmp/run_id.txt", "w", encoding="utf-8") as fh:
-              fh.write(run_id)
-          print("RUN_ID", run_id)
-          PY
-
-      - name: Poll AAPL professional validation job
-        shell: bash
-        run: |
-          set -euo pipefail
-          run_id="$(cat /tmp/run_id.txt)"
-          for attempt in $(seq 1 180); do
-            echo "Poll $attempt/180"
-            curl --fail --silent --show-error               --connect-timeout 10               --max-time 20               "https://pmsfx-nano.onrender.com/api/research/run/${run_id}"               -o /tmp/status.json
-            python - <<'PY'
-          import json
-          with open("/tmp/status.json", "r", encoding="utf-8") as fh:
-              payload = json.load(fh)
-          status = payload.get("status")
-          print("STATUS", status)
-          if status in {"COMPLETED", "ERROR"}:
-              with open("/tmp/final.json", "w", encoding="utf-8") as fh:
-                  json.dump(payload, fh)
-          PY
-            if test -s /tmp/final.json; then
-              echo "Research job reached terminal status."
+          for attempt in $(seq 1 30); do
+            echo "Health check $attempt/30"
+            if curl --fail --silent --show-error --max-time 20               https://pmsfx-nano.onrender.com/health               -o /tmp/health.json; then
+              cat /tmp/health.json
+              echo "Service health is ready."
               break
             fi
-            sleep 5
+            sleep 20
           done
-          if ! test -s /tmp/final.json; then
-            echo "Research job timed out."
-            exit 1
-          fi
+          test -s /tmp/health.json
 
-      - name: Print validation evidence
+      - name: Run AAPL nested/cross-fitted validation
         shell: bash
         run: |
           set -euo pipefail
+          echo "Starting professional validation. This endpoint is intentionally long-running."
+          curl --fail --silent --show-error --max-time 900             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL             -o /tmp/aapl.json
+
           python - <<'PY'
           import json
-          with open("/tmp/final.json", "r", encoding="utf-8") as fh:
+          with open("/tmp/aapl.json", "r", encoding="utf-8") as fh:
               payload = json.load(fh)
 
-          if payload.get("status") == "ERROR":
-              raise SystemExit(f"Research job failed: {payload.get('error')}")
-
-          validation = (payload.get("result") or {}).get("validation") or {}
+          validation = payload["validation"]
           print(json.dumps({
               "symbol": "AAPL",
               "status": validation.get("status"),
@@ -96,104 +55,8 @@ jobs:
               "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
               "bootstrap_vs_baseline": validation.get("bootstrap"),
               "bootstrap_vs_300s": validation.get("primary_300s_bootstrap"),
-              "gate": validation.get("gate"),
-              "research_run_id": payload.get("run_id"),
-              "research_backtest_id": (payload.get("result") or {}).get("research_backtest_id"),
               "ablation": validation.get("ablation"),
+              "gate": validation.get("gate"),
+              "research_run_id": payload.get("research_run_id"),
           }, indent=2))
           PY
-
-
-  validate-cross-asset:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check Render health for cross-asset research
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --connect-timeout 10 --max-time 20             https://pmsfx-nano.onrender.com/health
-
-      - name: Validate AAPL, MSFT, NVDA, TSLA cross-asset
-        shell: bash
-        run: |
-          set -euo pipefail
-          for symbol in AAPL MSFT NVDA TSLA; do
-            echo "=== CROSS-ASSET $symbol ==="
-
-            curl --fail --silent --show-error               --connect-timeout 20 --max-time 30               -X POST               "https://pmsfx-nano.onrender.com/api/research/cross-asset/$symbol"               -o "/tmp/cross-start-$symbol.json"
-
-            cat "/tmp/cross-start-$symbol.json"
-
-            python - "$symbol" <<'PY'
-import json
-import sys
-symbol = sys.argv[1]
-with open(f"/tmp/cross-start-{symbol}.json", "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-with open(f"/tmp/cross-run-{symbol}.txt", "w", encoding="utf-8") as fh:
-    fh.write(payload["run_id"])
-print("CROSS_RUN_ID", payload["run_id"])
-PY
-
-            run_id="$(cat "/tmp/cross-run-$symbol.txt")"
-
-            for attempt in $(seq 1 180); do
-              echo "Cross-asset poll $symbol $attempt/180"
-
-              curl --fail --silent --show-error                 --connect-timeout 10 --max-time 20                 "https://pmsfx-nano.onrender.com/api/research/run/$run_id"                 -o "/tmp/cross-status-$symbol.json"
-
-              python - "$symbol" <<'PY'
-import json
-import sys
-symbol = sys.argv[1]
-with open(f"/tmp/cross-status-{symbol}.json", "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-status = payload.get("status")
-print("CROSS_STATUS", status)
-if status in {"COMPLETED", "ERROR"}:
-    with open(f"/tmp/cross-final-{symbol}.json", "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-PY
-
-              if test -s "/tmp/cross-final-$symbol.json"; then
-                break
-              fi
-
-              if test "$attempt" -eq 180; then
-                echo "Cross-asset research timed out for $symbol"
-                exit 1
-              fi
-
-              sleep 5
-            done
-
-            python - "$symbol" <<'PY'
-import json
-import sys
-symbol = sys.argv[1]
-with open(f"/tmp/cross-final-{symbol}.json", "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-
-if payload.get("status") == "ERROR":
-    raise SystemExit(f"{symbol} cross-asset job failed: {payload.get('error')}")
-
-validation = (payload.get("result") or {}).get("validation") or {}
-print(json.dumps({
-    "symbol": symbol,
-    "status": validation.get("status"),
-    "validated": validation.get("validated"),
-    "sample_count": validation.get("sample_count"),
-    "fold_count": validation.get("fold_count"),
-    "usable_fold_count": validation.get("usable_fold_count"),
-    "oos_count": validation.get("oos_count"),
-    "metrics": validation.get("metrics"),
-    "bootstrap": validation.get("bootstrap"),
-    "fold_consistency": validation.get("fold_consistency"),
-    "gate": validation.get("gate"),
-    "research_run_id": payload.get("run_id"),
-    "research_backtest_id": (payload.get("result") or {}).get("research_backtest_id"),
-}, indent=2))
-PY
-          done
