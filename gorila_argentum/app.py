@@ -3,6 +3,8 @@ from .storage import Store
 from .ingest import run_batch
 from .coupling import build_matrix
 from .config import settings
+from .signal import compose_signal
+from .regime import classify_regime
 from .state import build_market_state
 from .features import build_features
 
@@ -31,6 +33,10 @@ def ingest():
 @app.get("/api/features/{symbol}")
 def features(symbol: str):
     return build_features(symbol)
+
+@app.get("/api/signal/{symbol}")
+def signal(symbol: str, probability_up: float, horizon_seconds: int = 900, regime: str = "UNKNOWN"):
+    return compose_signal(symbol, probability_up, horizon_seconds, regime=regime)
 
 @app.post("/api/coupling")
 def coupling():
