@@ -184,7 +184,7 @@ def run_horizon(series,horizon):
         # Build date-level null labels by permuting complete forward-return vectors across training dates.
         perm_briers=[]
         perm_accs=[]
-        train_fwd={d:data[d]["fwd"] for d in train_dates[:-horizon]}
+        train_fwd={d:data[d]["fwd"] for d in train_dates}
         dates_train=list(train_fwd)
         for _ in range(N_PERM):
             shuffled=dates_train[:]
