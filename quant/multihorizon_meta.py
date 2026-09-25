@@ -276,6 +276,73 @@ def _paired_block_bootstrap(
 ) -> dict[str, float | int | None]:
     n = len(labels)
     if n < BLOCK_LENGTH:
+        return {
+            "iterations": 0,
+            "delta_brier_ci_low": None,
+            "delta_brier_ci_high": None,
+        }
+    rng = random.Random(seed)
+    deltas: list[float] = []
+    block_count = math.ceil(n / BLOCK_LENGTH)
+    starts = list(range(n))
+    for _ in range(BOOTSTRAPS):
+        indices: list[int] = []
+        for _ in range(block_count):
+            start = rng.choice(starts)
+            indices.extend((start + k) % n for k in range(BLOCK_LENGTH))
+        indices = indices[:n]
+        model_brier = sum(
+            (probabilities[i] - labels[i]) ** 2 for i in indices
+        ) / n
+        base_brier = sum(
+            (baseline[i] - labels[i]) ** 2 for i in indices
+        ) / n
+        deltas.append(base_brier - model_brier)
+    deltas.sort()
+    return {
+        "iterations": BOOTSTRAPS,
+        "delta_brier_ci_low": deltas[int(0.025 * len(deltas))],
+        "delta_brier_ci_high": deltas[int(0.975 * len(deltas)) - 1],
+    }
+
+
+def _paired_block_bootstrap_vs_model(
+    model_a: list[float],
+    model_b: list[float],
+    labels: list[int],
+    *,
+    seed: int,
+) -> dict[str, float | int | None]:
+    n = len(labels)
+    if n < BLOCK_LENGTH:
+        return {
+            "iterations": 0,
+            "delta_brier_ci_low": None,
+            "delta_brier_ci_high": None,
+        }
+    rng = random.Random(seed)
+    deltas: list[float] = []
+    block_count = math.ceil(n / BLOCK_LENGTH)
+    starts = list(range(n))
+    for _ in range(BOOTSTRAPS):
+        indices: list[int] = []
+        for _ in range(block_count):
+            start = rng.choice(starts)
+            indices.extend((start + k) % n for k in range(BLOCK_LENGTH))
+        indices = indices[:n]
+        brier_a = sum((model_a[i] - labels[i]) ** 2 for i in indices) / n
+        brier_b = sum((model_b[i] - labels[i]) ** 2 for i in indices) / n
+        deltas.append(brier_b - brier_a)
+    deltas.sort()
+    return {
+        "iterations": BOOTSTRAPS,
+        "delta_brier_ci_low": deltas[int(0.025 * len(deltas))],
+        "delta_brier_ci_high": deltas[int(0.975 * len(deltas)) - 1],
+    }
+
+
+    n = len(labels)
+    if n < BLOCK_LENGTH:
         return {"iterations": 0, "delta_brier_ci_low": None, "delta_brier_ci_high": None}
     rng = random.Random(seed)
     deltas: list[float] = []
@@ -537,6 +604,12 @@ def validate_multi_horizon_meta(
         baselines,
         seed=bootstrap_seed,
     )
+    primary_bootstrap = _paired_block_bootstrap_vs_model(
+        probabilities,
+        specialist_300,
+        labels,
+        seed=bootstrap_seed + 1,
+    )
 
     improvement_over_300 = specialist_metrics["brier"] - metrics["brier"]
     gate_reasons = []
@@ -553,8 +626,11 @@ def validate_multi_horizon_meta(
         gate_reasons.append("NO_LOGLOSS_IMPROVEMENT")
     if metrics["ece"] is None or metrics["ece"] > 0.05:
         gate_reasons.append("ECE_ABOVE_0_05")
-    if improvement_over_300 <= 0:
-        gate_reasons.append("NO_IMPROVEMENT_VS_PRIMARY_300S")
+    if (
+        primary_bootstrap["delta_brier_ci_low"] is None
+        or primary_bootstrap["delta_brier_ci_low"] <= 0
+    ):
+        gate_reasons.append("BOOTSTRAP_CI_VS_PRIMARY_300S_INCLUDES_ZERO")
 
     validated = not gate_reasons
 
@@ -575,6 +651,7 @@ def validate_multi_horizon_meta(
         "primary_300s_metrics": specialist_metrics,
         "delta_brier_vs_300s": improvement_over_300,
         "bootstrap": bootstrap,
+        "primary_300s_bootstrap": primary_bootstrap,
         "folds": [
             {
                 "fold": fold["fold"],
