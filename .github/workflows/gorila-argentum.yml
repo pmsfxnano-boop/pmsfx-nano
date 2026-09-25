@@ -42,6 +42,8 @@ jobs:
         run: set -o pipefail; python research/gorila_nested_execution_selection_oos.py | tee gorila-nested-execution-selection-oos.json
       - name: Cross-sectional relative OOS research
         run: set -o pipefail; python research/gorila_cross_sectional_oos.py | tee gorila-cross-sectional-oos.json
+      - name: Pairwise ranking OOS research
+        run: set -o pipefail; python research/gorila_pairwise_rank_oos.py | tee gorila-pairwise-rank-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -81,3 +83,4 @@ jobs:
             gorila-execution-robustness-oos.json
             gorila-nested-execution-selection-oos.json
             gorila-cross-sectional-oos.json
+            gorila-pairwise-rank-oos.json
