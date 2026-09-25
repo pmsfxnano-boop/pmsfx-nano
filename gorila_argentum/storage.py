@@ -48,6 +48,12 @@ class Store:
         if self.pg:
             import psycopg
             self.conn = psycopg.connect(os.environ["DATABASE_URL"])
+            schema=os.getenv("GORILA_DB_SCHEMA","gorila_argentum").strip()
+            if not schema.replace("_","").isalnum():
+                raise ValueError("invalid_database_schema")
+            with self.conn.cursor() as cur:
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                cur.execute(f'SET search_path TO "{schema}"')
             return self.conn
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
