@@ -72,3 +72,39 @@ def build_matrix(pairs):
         edges.append(e)
     store.save_coupling("V0",matrix,{"edges":len(edges),"method":"aligned-log-return-lagged-pearson-v1"})
     return {"matrix":matrix,"edges":edges,"status":"READY" if edges else "WAITING_FOR_DEPTH"}
+
+
+def current_coupling_state(pairs):
+    store=Store(); store.init()
+    edges=[]
+    for a,af,b,bf in pairs:
+        sa=store.recent_series(a,af)
+        sb=store.recent_series(b,bf)
+        aa,bb=_align_by_date(sa,sb)
+        if len(aa)<10 or len(bb)<10:
+            continue
+        ra=_returns(aa); rb=_returns(bb)
+        n=min(len(ra),len(rb))
+        if n<8:
+            continue
+        fit=_lagged(ra[-n:],rb[-n:],max_lag=5)
+        if fit is None:
+            continue
+        edges.append({
+            "from":a,
+            "to":b,
+            "coupling":round(fit["corr"],4),
+            "lag":fit["lag"],
+            "n":fit["n"]
+        })
+    abs_mean=(sum(abs(e["coupling"]) for e in edges)/len(edges)) if edges else 0.0
+    signed_mean=(sum(e["coupling"] for e in edges)/len(edges)) if edges else 0.0
+    return {
+        "status":"READY" if edges else "WAITING_FOR_DEPTH",
+        "edge_count":len(edges),
+        "mean_abs_coupling":round(abs_mean,4),
+        "mean_signed_coupling":round(signed_mean,4),
+        "structural_state":"HIGH_SYNCHRONIZATION" if abs_mean>=0.55 else "NORMAL",
+        "edges":sorted(edges,key=lambda e:abs(e["coupling"]),reverse=True)[:12],
+        "method":"aligned-log-return-lagged-pearson-v1"
+    }
