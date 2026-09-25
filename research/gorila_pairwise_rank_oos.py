@@ -83,12 +83,20 @@ def fit(X, y, epochs=60, lr=0.035, l2=0.002):
     return means, scales, w, b
 
 
-def score(model, row):
+def pair_score(model, row):
     means, scales, w, b = model
     return b + sum(
         a * (v - mean) / scale
         for a, v, mean, scale in zip(w, row, means, scales)
     )
+
+
+def rank_score(model, row):
+    _means, scales, w, _b = model
+    # Pairwise training is performed on x_a - x_b. For ranking individual
+    # symbols, all pairwise centering constants cancel, leaving the linear
+    # normalized score sum(w_j * x_j / scale_j).
+    return sum(a * v / scale for a, v, scale in zip(w, row, scales))
 
 
 def build_dates(series):
@@ -196,7 +204,7 @@ def run_horizon(series, horizon):
             continue
         model = fit(X, y)
         for d in test_dates:
-            scores = {s: score(model, data[d]["x"][s]) for s in SYMBOLS}
+            scores = {s: rank_score(model, data[d]["x"][s]) for s in SYMBOLS}
             oos[d] = {
                 s: {
                     "score": scores[s],
@@ -206,7 +214,8 @@ def run_horizon(series, horizon):
                 for s in SYMBOLS
             }
             for a, b in combinations(SYMBOLS, 2):
-                pred = scores[a] > scores[b]
+                pair_probability = sigmoid(pair_score(model, [u - v for u, v in zip(data[d]["x"][a], data[d]["x"][b])]))
+                pred = pair_probability >= 0.5
                 actual = data[d]["fwd"][a] > data[d]["fwd"][b]
                 pairwise_hits.append(pred == actual)
         folds += 1
