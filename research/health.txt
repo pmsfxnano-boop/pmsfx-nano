@@ -1,2 +1,4 @@
 2026-09-25T00:24:45Z
 final=2026-09-25T00:36:45Z
+process_isolation=2026-09-25T02:05:00Z
+trigger=professional_validation
