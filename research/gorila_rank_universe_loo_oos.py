@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json, math, statistics, time
+import json, math, os, statistics, time
 from itertools import combinations
 import httpx
 
 ALL_SYMBOLS=["GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"]
-HORIZONS=[5,10]
+HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 UNIVERSES={"full":ALL_SYMBOLS,**{f"minus_{s}":[x for x in ALL_SYMBOLS if x!=s] for s in ALL_SYMBOLS}}
 TRAIN_MIN=504
 TEST_SIZE=126
