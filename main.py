@@ -1,5 +1,6 @@
 import asyncio
 import os
+import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from datetime import datetime, time, timezone
@@ -65,7 +66,10 @@ OUTCOME_FORECAST_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
 OUTCOME_FORECAST_INTERVAL_SECONDS = 600.0
-RESEARCH_PROCESS_POOL = ProcessPoolExecutor(max_workers=1)
+RESEARCH_PROCESS_POOL = ProcessPoolExecutor(
+    max_workers=1,
+    mp_context=mp.get_context("spawn"),
+)
 US_EASTERN = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
 MARKET_LAST_FORECAST = time(15, 59, 30)
