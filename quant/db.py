@@ -362,10 +362,7 @@ def recover_incomplete_research_runs() -> int:
             if conn is None:
                 return 0
             with conn.cursor() as cur:
-                cur.execute(
-                    sql,
-                    {"stale_after_minutes": int(stale_after_minutes)},
-                )
+                cur.execute(sql)
                 updated = cur.rowcount
             conn.commit()
         return int(updated)
