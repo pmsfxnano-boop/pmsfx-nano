@@ -22,6 +22,8 @@ jobs:
         run: pytest -q tests/test_gorila_math.py tests/test_prediction.py
       - name: Import smoke
         run: python -c "from gorila_argentum.app import app; print(app.title, app.version)"
+      - name: Core Argentine OOS research
+        run: python research/gorila_oos.py | tee gorila-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -36,3 +38,8 @@ jobs:
               r.raise_for_status()
               print("PUBLIC_SOURCE_OK", url, r.status_code, len(r.content))
           PY
+      - name: Upload OOS evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-argentum-oos
+          path: gorila-oos.json
