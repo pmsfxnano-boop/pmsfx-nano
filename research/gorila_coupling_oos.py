@@ -95,7 +95,7 @@ def evaluate(samples):
         pass
     out={}
     for name,idx in [("baseline",0),("advanced",1)]:
-        X=[a[idx] for a in tr]; y=[b for _,b in tr]
+        X=[fs[idx] for fs,_ in tr]; y=[label for _,label in tr]
         m=fit(X,y)
         probs=[predict(m,a[idx]) for a in te]
         labels=[b for _,b in te]
