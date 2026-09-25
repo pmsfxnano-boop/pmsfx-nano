@@ -6,7 +6,7 @@ Current batch:
 - L00 foundation: FastAPI + storage + health.
 - L01 data fabric: ArgentinaDatos FX/EMBI+, BCRA adapter, optional Twelve Data, explicit BYMA state.
 - L02 fast ingestion: concurrent batch execution, deduplication, source health and latency.
-- L04 first coupling matrix: persisted structural-correlation snapshots.
+- L04 coupling matrix: persisted dynamic structural-correlation state.
 
 Runtime:
 uvicorn gorila_argentum.app:app --host 0.0.0.0 --port $PORT
@@ -34,7 +34,7 @@ Using 5 years of public daily history for the six core symbols, chronological 80
 
 These are research measurements, not a production signal.
 
-### Coupling experiment
+### Coupling experiment: direct predictor
 The first direct coupling augmentation used point-in-time peer pressure + FX return + EMBI delta. On 1,135 samples per symbol with 908 train / 227 test, the advanced vector increased test Brier for all six core symbols relative to the baseline vector:
 - GGAL +0.00265
 - BMA +0.00068
@@ -43,10 +43,22 @@ The first direct coupling augmentation used point-in-time peer pressure + FX ret
 - TGSU2 +0.00065
 - CEPU +0.00375
 
-Therefore the coupling matrix is not promoted into the directional predictor V0.
+Decision: do not use this coupling vector in the directional predictor V0.
 
-### Engineering decision
-The coupling engine is retained as a structural state engine. The next research path is:
-coupling level -> coupling change -> synchronisation regime -> regime-conditioned predictor.
+### Coupling experiment: structural-regime features
+A second point-in-time OOS test added five rolling coupling-state features to the same baseline predictor. It also degraded performance on all six symbols:
+- GGAL: delta accuracy -0.07240, delta Brier +0.09505
+- BMA: delta accuracy -0.02262, delta Brier +0.07007
+- YPFD: delta accuracy +0.00000, delta Brier +0.05268
+- PAMP: delta accuracy -0.02262, delta Brier +0.02642
+- TGSU2: delta accuracy -0.00452, delta Brier +0.03950
+- CEPU: delta accuracy -0.02715, delta Brier +0.02013
 
-The CI is configured with pipefail, so research-script failures cannot be masked by tee.
+Decision: structural coupling is not promoted into the V0 predictor either. It remains an observable market-state layer until a separate OOS test demonstrates a defensible use.
+
+### Current engineering position
+Coupling is therefore treated as diagnostic / state information, not as an automatic predictive feature.
+
+The valid next question is narrower: does the coupling state separate periods in which the existing baseline model behaves differently, such that it could support confidence gating or signal suppression without changing the predictor? That is being tested separately with point-in-time OOS terciles.
+
+The CI uses pipefail, so research-script failures cannot be masked by tee.
