@@ -1,0 +1,115 @@
+name: PMSF-X cross-asset professional validation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "research/run_cross_asset.txt"
+
+jobs:
+  validate-cross-asset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check Render health
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error             --connect-timeout 10 --max-time 20             https://pmsfx-nano.onrender.com/health
+
+      - name: Validate symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for symbol in AAPL MSFT NVDA TSLA; do
+            echo "=== $symbol ==="
+
+            curl --fail --silent --show-error               --connect-timeout 20 --max-time 30               -X POST               "https://pmsfx-nano.onrender.com/api/research/cross-asset/$symbol"               -o "/tmp/start-$symbol.json"
+
+            cat "/tmp/start-$symbol.json"
+
+            python - "$symbol" <<'PY'
+import json
+import sys
+
+symbol = sys.argv[1]
+with open(f"/tmp/start-{symbol}.json", "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+with open(f"/tmp/run-{symbol}.txt", "w", encoding="utf-8") as fh:
+    fh.write(payload["run_id"])
+
+print("RUN_ID", payload["run_id"])
+PY
+
+            run_id="$(cat "/tmp/run-$symbol.txt")"
+            completed=0
+
+            for attempt in $(seq 1 180); do
+              echo "Poll $symbol $attempt/180"
+
+              curl --fail --silent --show-error                 --connect-timeout 10 --max-time 20                 "https://pmsfx-nano.onrender.com/api/research/run/$run_id"                 -o "/tmp/status-$symbol.json"
+
+              python - "$symbol" <<'PY'
+import json
+import sys
+
+symbol = sys.argv[1]
+with open(f"/tmp/status-{symbol}.json", "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+print("STATUS", payload.get("status"))
+
+if payload.get("status") in {"COMPLETED", "ERROR"}:
+    with open(f"/tmp/final-{symbol}.json", "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+PY
+
+              if test -s "/tmp/final-$symbol.json"; then
+                completed=1
+                break
+              fi
+              sleep 5
+            done
+
+            if test "$completed" -ne 1; then
+              echo "Timed out waiting for $symbol"
+              exit 1
+            fi
+
+            python - "$symbol" <<'PY'
+import json
+import sys
+
+symbol = sys.argv[1]
+with open(f"/tmp/final-{symbol}.json", "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+if payload.get("status") == "ERROR":
+    raise SystemExit(
+        f"{symbol} cross-asset research job failed: {payload.get('error')}"
+    )
+
+validation = (payload.get("result") or {}).get("validation") or {}
+
+print(json.dumps({
+    "symbol": symbol,
+    "status": validation.get("status"),
+    "validated": validation.get("validated"),
+    "sample_count": validation.get("sample_count"),
+    "fold_count": validation.get("fold_count"),
+    "usable_fold_count": validation.get("usable_fold_count"),
+    "oos_count": validation.get("oos_count"),
+    "metrics": validation.get("metrics"),
+    "bootstrap": validation.get("bootstrap"),
+    "fold_consistency": validation.get("fold_consistency"),
+    "gate": validation.get("gate"),
+    "research_run_id": payload.get("run_id"),
+    "research_backtest_id": (
+        payload.get("result") or {}
+    ).get("research_backtest_id"),
+}, indent=2))
+PY
+          done
