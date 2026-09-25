@@ -48,6 +48,8 @@ jobs:
         run: set -o pipefail; python research/gorila_us_v0_oos.py | tee gorila-us-v0-oos.json
       - name: Jacobian nonequilibrium OOS research
         run: set -o pipefail; python research/gorila_jacobian_noneq_oos.py | tee gorila-jacobian-noneq-oos.json
+      - name: Jacobian nonequilibrium feature ablation
+        run: set -o pipefail; python research/gorila_jacobian_ablation_oos.py | tee gorila-jacobian-ablation-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -90,3 +92,4 @@ jobs:
             gorila-pairwise-rank-oos.json
             gorila-us-v0-oos.json
             gorila-jacobian-noneq-oos.json
+            gorila-jacobian-ablation-oos.json
