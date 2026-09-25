@@ -10,7 +10,7 @@ from itertools import combinations
 import httpx
 
 SYMBOLS=["GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"]
-HORIZONS=[5,10]
+HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 TRAIN_MIN=504
 TEST_SIZE=126
 INNER_TEST=63
