@@ -26,6 +26,8 @@ jobs:
             sleep 20
           done
           test -s /tmp/health.json
+          echo "Waiting for Render rollout to settle before queuing the job..."
+          sleep 120
 
       - name: Queue professional validation
         shell: bash
