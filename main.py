@@ -13,6 +13,7 @@ from quant.online import observe_online
 from quant.specialists.historical import get_historical_forecast, get_cached_bars
 from quant.cross_asset import get_cross_asset_forecast
 from quant.horizon_consensus import build_horizon_consensus
+from quant.multihorizon_meta import validate_multi_horizon_meta
 from quant.db import (
     get_outcome,
     init_db,
@@ -822,6 +823,59 @@ async def state(ticker: str):
         registry_id = None
     response_payload["model_registry_id"] = registry_id
     return response_payload
+
+@app.get("/api/research/multihorizon/{ticker}")
+async def multihorizon_research(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+
+    result = await get_historical_forecast(symbol, token, evaluate=False)
+    rows = get_cached_bars(symbol)
+    if not rows:
+        raise HTTPException(status_code=503, detail="Historical bars unavailable")
+
+    try:
+        validation = await asyncio.to_thread(
+            validate_multi_horizon_meta,
+            rows,
+            symbol=symbol,
+        )
+    except Exception as exc:
+        print(
+            "PMSF-X MULTIHORIZON RESEARCH ERROR:",
+            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Multihorizon research validation failed: {type(exc).__name__}",
+        )
+
+    print(
+        "PMSF-X MULTIHORIZON RESEARCH:",
+        {
+            "symbol": symbol,
+            "status": validation.get("status"),
+            "validated": validation.get("validated"),
+            "usable_folds": validation.get("usable_fold_count"),
+            "oos_count": validation.get("oos_count"),
+            "brier_skill": (validation.get("metrics") or {}).get("brier_skill"),
+            "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
+            "delta_brier_ci_low": (validation.get("bootstrap") or {}).get("delta_brier_ci_low"),
+            "ece": (validation.get("metrics") or {}).get("ece"),
+        },
+    )
+    return {
+        "service": "pmsfx-nano",
+        "symbol": symbol,
+        "historical_model_id": result.get("model_id"),
+        "historical_bars": result.get("bars"),
+        "validation": validation,
+    }
+
 
 @app.get("/api/backtest/{ticker}")
 async def backtest(ticker: str):
