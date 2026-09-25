@@ -16,5 +16,6 @@ class Settings:
     argentina_datos_fx_url: str = os.getenv("ARGENTINA_DATOS_FX_URL","https://api.argentinadatos.com/v1/cotizaciones/dolares").strip()
     argentina_datos_risk_url: str = os.getenv("ARGENTINA_DATOS_RISK_URL","https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais").strip()
     byma_url: str = os.getenv("BYMA_MARKET_DATA_URL","").strip()
+    core_symbols: Tuple[str,...] = ("GGAL","BMA","YPFD","PAMP","TGSU2","CEPU")
 
 settings = Settings()
