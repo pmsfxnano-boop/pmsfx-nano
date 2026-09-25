@@ -149,8 +149,8 @@ def commutator_non_normality(A):
 
 
 def jacobian_noneq_features(ret_rows):
-    X = [r[:-1] for r in ret_rows]
-    Y = [r[1:] for r in ret_rows]
+    X = ret_rows[:-1]
+    Y = ret_rows[1:]
     Ymat = [list(y) for y in Y]
     B = ridge_solve(X, Ymat, RIDGE)
     A = mat_transpose(B)
