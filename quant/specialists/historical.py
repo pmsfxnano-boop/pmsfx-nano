@@ -442,11 +442,13 @@ async def get_historical_forecast(
     token: str,
     *,
     evaluate: bool = True,
+    include_rows: bool = False,
 ) -> dict[str, Any]:
     cache_key = (symbol, bool(evaluate))
-    cached = _CACHE.get(cache_key)
-    if cached and __import__("time").time() - cached[0] < CACHE_SECONDS:
-        return cached[1]
+    if not include_rows:
+        cached = _CACHE.get(cache_key)
+        if cached and __import__("time").time() - cached[0] < CACHE_SECONDS:
+            return cached[1]
 
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=LOOKBACK_DAYS)
@@ -478,7 +480,13 @@ async def get_historical_forecast(
                 "lookback_days": LOOKBACK_DAYS,
                 "error": f"Tiingo historical HTTP {response.status_code}",
             }
-            _CACHE[cache_key] = (__import__("time").time(), result)
+            if include_rows:
+                result["__bars_rows"] = rows
+            else:
+                if include_rows:
+                result["__bars_rows"] = rows
+            else:
+                _CACHE[cache_key] = (__import__("time").time(), result)
             return result
 
         data = response.json()
@@ -562,7 +570,11 @@ async def get_historical_forecast(
             "bars": len(data),
             "multi_horizon": multi_horizon,
         }
-        _CACHE[cache_key] = (__import__("time").time(), result)
+        if include_rows:
+            result["__bars_rows"] = rows
+        else:
+            if not include_rows:
+            _CACHE[cache_key] = (__import__("time").time(), result)
         return result
     except Exception as exc:
         result = {
