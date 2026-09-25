@@ -54,11 +54,26 @@ A second point-in-time OOS test added five rolling coupling-state features to th
 - TGSU2: delta accuracy -0.00452, delta Brier +0.03950
 - CEPU: delta accuracy -0.02715, delta Brier +0.02013
 
-Decision: structural coupling is not promoted into the V0 predictor either. It remains an observable market-state layer until a separate OOS test demonstrates a defensible use.
+Decision: structural coupling is not promoted into the V0 predictor.
+
+### Coupling experiment: gating the existing predictor
+A third point-in-time OOS test left the baseline predictor unchanged and only partitioned its test behavior by coupling-score terciles learned from the training period.
+
+The high-versus-low coupling-state Brier difference was:
+- GGAL: +0.01589
+- BMA: -0.00860
+- YPFD: -0.00059
+- PAMP: -0.01663
+- TGSU2: -0.01452
+- CEPU: -0.01225
+
+The sign is mixed across assets, and the high-sync test subsets were small (29–41 observations per symbol). This is not enough evidence for a universal confidence gate, signal suppression rule, or threshold.
+
+Decision: coupling remains diagnostic/state information only. It is not part of the V0 directional predictor or its signal-gating logic.
 
 ### Current engineering position
-Coupling is therefore treated as diagnostic / state information, not as an automatic predictive feature.
+The experiments have now answered the first coupling question: coupling is observable and operational, but the tested formulations do not add robust OOS predictive value.
 
-The valid next question is narrower: does the coupling state separate periods in which the existing baseline model behaves differently, such that it could support confidence gating or signal suppression without changing the predictor? That is being tested separately with point-in-time OOS terciles.
+The next work should therefore move away from forcing coupling into prediction and focus on the components that can be measured directly against the final objective: stronger point-in-time feature construction, purged walk-forward validation, multi-horizon evaluation, calibration, and realistic execution-aware metrics. Coupling can remain in the command center as context and as a future research variable.
 
-The CI uses pipefail, so research-script failures cannot be masked by tee.
+The CI uses pipefail, all four research artifacts are uploaded, and the latest Gorila Argentum CI run completed successfully.
