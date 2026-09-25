@@ -167,6 +167,26 @@ def non_overlapping(rows, horizon):
     return chosen
 
 
+def baseline_long_metrics(rows, cost_bps, horizon):
+    trades = [r["forward_return"] - cost_bps / 10000.0 for r in rows]
+    if not trades:
+        return {"trades": 0, "net_return": 0.0, "cagr": None, "max_drawdown": 0.0}
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for r in trades:
+        equity *= 1.0 + r
+        peak = max(peak, equity)
+        max_dd = max(max_dd, (peak - equity) / peak)
+    cagr = equity ** (252.0 / (len(trades) * horizon)) - 1.0 if equity > 0 else -1.0
+    return {
+        "trades": len(trades),
+        "net_return": equity - 1.0,
+        "cagr": cagr,
+        "max_drawdown": max_dd,
+    }
+
+
 def trade_metrics(rows, threshold_pair, cost_bps, horizon, mode):
     lo, hi = threshold_pair
     trades = []
@@ -232,6 +252,16 @@ for symbol in SYMBOLS:
         horizon_result = {
             "test_observations": len(preds),
             "execution_observations": len(exec_rows),
+            "baselines": {
+                "always_long": {
+                    str(cost): baseline_long_metrics(exec_rows, cost, horizon)
+                    for cost in COSTS_BPS
+                },
+                "always_flat": {
+                    str(cost): {"trades": 0, "net_return": 0.0, "cagr": 0.0, "max_drawdown": 0.0}
+                    for cost in COSTS_BPS
+                },
+            },
             "modes": {},
         }
         for mode in ["long_only", "long_short"]:
