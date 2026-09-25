@@ -21,3 +21,5 @@ ablation_evidence_print=2026-09-25T02:17:10Z
 2026-09-25T02:41:00Z Re-run AAPL cross-asset after five-minute target fix.
 
 2026-09-25T02:44:00Z Re-run AAPL after validator import fix.
+
+2026-09-25T02:46:00Z Re-run AAPL cross-asset with coverage diagnostics.
