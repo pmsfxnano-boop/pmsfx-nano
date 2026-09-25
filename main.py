@@ -299,11 +299,14 @@ async def online_cohort_loop():
         if not DB_READY or not os.getenv("TIINGO_API_KEY") or not is_us_equity_session():
             await asyncio.sleep(ONLINE_COHORT_INTERVAL_SECONDS)
             continue
+        iteration_stats = {"quotes": 0, "observations": 0, "new_samples": 0, "db_saved": 0, "missing_quotes": 0, "errors": 0}
         for symbol in COLLECTOR_SYMBOLS:
             try:
                 q = get_stream_quote(symbol)
                 if not q:
+                    iteration_stats["missing_quotes"] += 1
                     continue
+                iteration_stats["quotes"] += 1
                 bid = q.get("bidPrice")
                 ask = q.get("askPrice")
                 last = q.get("last")
@@ -321,15 +324,20 @@ async def online_cohort_loop():
                     spread_bps=spread_bps,
                     microprice=mid,
                 )
+                iteration_stats["observations"] += 1
                 for sample in result.get("newly_resolved", []):
+                    iteration_stats["new_samples"] += 1
                     from datetime import datetime as _dt
                     event_time = _dt.fromtimestamp(float(sample["event_time"]), tz=timezone.utc)
                     label_end_time = _dt.fromtimestamp(float(sample["label_end_time"]), tz=timezone.utc)
                     sample["event_time"] = event_time
                     sample["label_end_time"] = label_end_time
-                    record_online_cohort_sample(sample)
+                    if record_online_cohort_sample(sample):
+                        iteration_stats["db_saved"] += 1
             except Exception as exc:
+                iteration_stats["errors"] += 1
                 print("PMSF-X ONLINE COHORT ERROR:", {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
+        print("PMSF-X ONLINE COHORT HEARTBEAT:", iteration_stats)
         await asyncio.sleep(ONLINE_COHORT_INTERVAL_SECONDS)
 
 
