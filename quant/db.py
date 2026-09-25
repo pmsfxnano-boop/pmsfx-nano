@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -102,6 +103,25 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     validated BOOLEAN NOT NULL DEFAULT FALSE,
     metrics JSONB
 );
+
+CREATE TABLE IF NOT EXISTS research_runs (
+    id UUID PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    result JSONB,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_runs_symbol_created
+ON research_runs(symbol, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_research_runs_status_created
+ON research_runs(status, created_at DESC);
 """
 
 
@@ -283,6 +303,140 @@ def record_backtest(symbol: str, result: dict[str, Any]) -> int | None:
             result_row = cur.fetchone()
         conn.commit()
         return int(result_row[0])
+
+
+def create_research_run(symbol: str, model_id: str = "multihorizon-meta-research-v1") -> str | None:
+    if not database_url():
+        return None
+
+    run_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    sql = """
+    INSERT INTO research_runs (
+        id, created_at, updated_at, symbol, model_id, status
+    ) VALUES (
+        %(id)s, %(created_at)s, %(updated_at)s, %(symbol)s, %(model_id)s, 'QUEUED'
+    )
+    """
+    with connection() as conn:
+        if conn is None:
+            return None
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                {
+                    "id": run_id,
+                    "created_at": now,
+                    "updated_at": now,
+                    "symbol": symbol,
+                    "model_id": model_id,
+                },
+            )
+        conn.commit()
+    return run_id
+
+
+def update_research_run(
+    run_id: str,
+    *,
+    status: str,
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+) -> bool:
+    if not database_url():
+        return False
+
+    sql = """
+    UPDATE research_runs
+    SET
+        updated_at = %(updated_at)s,
+        status = %(status)s,
+        result = %(result)s::jsonb,
+        error = %(error)s,
+        started_at = COALESCE(%(started_at)s, started_at),
+        finished_at = COALESCE(%(finished_at)s, finished_at)
+    WHERE id = %(id)s
+    """
+    with connection() as conn:
+        if conn is None:
+            return False
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                {
+                    "id": run_id,
+                    "updated_at": datetime.now(timezone.utc),
+                    "status": status,
+                    "result": json.dumps(result) if result is not None else None,
+                    "error": error,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                },
+            )
+            updated = cur.rowcount
+        conn.commit()
+    return bool(updated)
+
+
+def get_research_run(run_id: str) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    sql = """
+    SELECT
+        id, created_at, updated_at, symbol, model_id, status,
+        started_at, finished_at, result, error
+    FROM research_runs
+    WHERE id = %(id)s
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(sql, {"id": run_id})
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": str(row[0]),
+            "created_at": row[1].isoformat(),
+            "updated_at": row[2].isoformat(),
+            "symbol": row[3],
+            "model_id": row[4],
+            "status": row[5],
+            "started_at": row[6].isoformat() if row[6] is not None else None,
+            "finished_at": row[7].isoformat() if row[7] is not None else None,
+            "result": row[8],
+            "error": row[9],
+        }
+    except Exception:
+        return None
+
+
+def latest_research_run(symbol: str) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    sql = """
+    SELECT id
+    FROM research_runs
+    WHERE symbol = %(symbol)s
+    ORDER BY created_at DESC
+    LIMIT 1
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(sql, {"symbol": symbol})
+                row = cur.fetchone()
+        return get_research_run(str(row[0])) if row else None
+    except Exception:
+        return None
 
 
 def record_model_registry(record: dict[str, Any]) -> int | None:
