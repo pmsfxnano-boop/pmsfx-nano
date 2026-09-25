@@ -159,3 +159,5 @@ jobs:
         with:
           name: gorila-formal-validation-manifest
           path: gorila-formal-validation-manifest.json
+
+# Triggered after closing the search-validation implementation gap.
