@@ -1,0 +1,19 @@
+name: PMSF-X endpoint connectivity check
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "research/health.txt"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Render health
+        shell: bash
+        run: |
+          set -euxo pipefail
+          date -u
+          curl -v --connect-timeout 15 --max-time 30 https://pmsfx-nano.onrender.com/health
