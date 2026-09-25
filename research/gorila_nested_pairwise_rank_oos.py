@@ -246,6 +246,7 @@ def run_horizon(series,horizon):
             "selected_groups":[f["selected_group"] for f in outer]}
 
 
+if __name__ == "__main__":
 series={s:yahoo(s) for s in SYMBOLS}
 results={str(h):run_horizon(series,h) for h in HORIZONS}
 print(json.dumps({
