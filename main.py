@@ -1062,7 +1062,7 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
             timeout=60.0,
         )
         target_rows = await asyncio.wait_for(
-            get_historical_bars(symbol, token),
+            get_historical_bars(symbol, token, force_refresh=True),
             timeout=60.0,
         )
         if not target_rows:
@@ -1078,7 +1078,7 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
         for peer_symbol in peer_symbols:
             try:
                 peer_bars = await asyncio.wait_for(
-                    get_historical_bars(peer_symbol, token),
+                    get_historical_bars(peer_symbol, token, force_refresh=True),
                     timeout=60.0,
                 )
                 if peer_bars:
