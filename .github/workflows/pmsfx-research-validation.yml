@@ -48,7 +48,7 @@ jobs:
             echo "Poll $attempt/180"
             curl --fail --silent --show-error               --connect-timeout 10               --max-time 20               "https://pmsfx-nano.onrender.com/api/research/run/${run_id}"               -o /tmp/status.json
             python - <<'PY'
-          import json, sys
+          import json
           with open("/tmp/status.json", "r", encoding="utf-8") as fh:
               payload = json.load(fh)
           status = payload.get("status")
@@ -56,12 +56,17 @@ jobs:
           if status in {"COMPLETED", "ERROR"}:
               with open("/tmp/final.json", "w", encoding="utf-8") as fh:
                   json.dump(payload, fh)
-              sys.exit(0)
           PY
+            if test -s /tmp/final.json; then
+              echo "Research job reached terminal status."
+              break
+            fi
             sleep 5
           done
-          echo "Research job timed out."
-          exit 1
+          if ! test -s /tmp/final.json; then
+            echo "Research job timed out."
+            exit 1
+          fi
 
       - name: Print validation evidence
         shell: bash
