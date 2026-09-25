@@ -1058,13 +1058,15 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
 
     try:
         historical = await asyncio.wait_for(
-            get_historical_forecast(symbol, token, evaluate=False),
+            get_historical_forecast(
+                symbol,
+                token,
+                evaluate=False,
+                include_rows=True,
+            ),
             timeout=60.0,
         )
-        target_rows = await asyncio.wait_for(
-            get_historical_bars(symbol, token, force_refresh=True),
-            timeout=60.0,
-        )
+        target_rows = historical.get("__bars_rows") or []
         if not target_rows:
             raise RuntimeError("Historical target bars unavailable")
 
@@ -1077,10 +1079,16 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
         }.get(symbol, ())
         for peer_symbol in peer_symbols:
             try:
-                peer_bars = await asyncio.wait_for(
-                    get_historical_bars(peer_symbol, token, force_refresh=True),
+                peer_result = await asyncio.wait_for(
+                    get_historical_forecast(
+                        peer_symbol,
+                        token,
+                        evaluate=False,
+                        include_rows=True,
+                    ),
                     timeout=60.0,
                 )
+                peer_bars = peer_result.get("__bars_rows") or []
                 if peer_bars:
                     peer_rows[peer_symbol] = peer_bars
             except Exception as peer_exc:
