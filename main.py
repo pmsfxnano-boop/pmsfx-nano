@@ -1,5 +1,7 @@
 import asyncio
 import os
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from datetime import datetime, time, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -63,6 +65,7 @@ OUTCOME_FORECAST_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
 OUTCOME_FORECAST_INTERVAL_SECONDS = 600.0
+RESEARCH_PROCESS_POOL = ProcessPoolExecutor(max_workers=1)
 US_EASTERN = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
 MARKET_LAST_FORECAST = time(15, 59, 30)
@@ -361,6 +364,15 @@ async def outcome_collector_startup():
             "task_mode": "independent_background_tasks",
         },
     )
+
+
+@app.on_event("shutdown")
+async def research_process_pool_shutdown():
+    RESEARCH_PROCESS_POOL.shutdown(
+        wait=False,
+        cancel_futures=True,
+    )
+    print("PMSF-X RESEARCH PROCESS POOL: STOPPED")
 
 
 @app.on_event("shutdown")
@@ -937,11 +949,15 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
         if not rows:
             raise RuntimeError("Historical bars unavailable")
 
+        loop = asyncio.get_running_loop()
         validation = await asyncio.wait_for(
-            asyncio.to_thread(
-                validate_multi_horizon_meta,
-                rows,
-                symbol=symbol,
+            loop.run_in_executor(
+                RESEARCH_PROCESS_POOL,
+                partial(
+                    validate_multi_horizon_meta,
+                    rows,
+                    symbol=symbol,
+                ),
             ),
             timeout=900.0,
         )
