@@ -227,6 +227,21 @@ class OnlineFlowEngine:
             "validation_reason": "PASS" if validated else "METRICS_BELOW_THRESHOLD",
         }
 
+    def restore(self, symbol: str, samples: list[dict[str, Any]]) -> None:
+        resolved = self._resolved[symbol]
+        for sample in samples:
+            try:
+                resolved.append(
+                    ResolvedSample(
+                        created_at=float(sample["event_time"].timestamp()),
+                        features=[float(x) for x in sample["features"]],
+                        label=int(sample["label"]),
+                        future_return_bps=float(sample["future_return_bps"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+
     def observe(
         self,
         *,
@@ -272,6 +287,7 @@ class OnlineFlowEngine:
         pending = self._pending[symbol]
         still_pending: deque[PendingSample] = deque(maxlen=MAX_SAMPLES)
         resolved = self._resolved[symbol]
+        newly_resolved: list[dict[str, Any]] = []
 
         for sample in pending:
             if now - sample.created_at < HORIZON_SECONDS:
@@ -280,13 +296,25 @@ class OnlineFlowEngine:
 
             future_return_bps = (mid - sample.mid) / sample.mid * 10000.0
             if abs(future_return_bps) >= LABEL_THRESHOLD_BPS:
+                label = 1 if future_return_bps > 0 else 0
                 resolved.append(
                     ResolvedSample(
                         created_at=sample.created_at,
                         features=sample.features,
-                        label=1 if future_return_bps > 0 else 0,
+                        label=label,
                         future_return_bps=future_return_bps,
                     )
+                )
+                newly_resolved.append(
+                    {
+                        "symbol": symbol,
+                        "event_time": sample.created_at,
+                        "label_end_time": now,
+                        "features": sample.features,
+                        "label": label,
+                        "future_return_bps": future_return_bps,
+                        "cohort_tag": "online-flow-v1",
+                    }
                 )
         self._pending[symbol] = still_pending
 
@@ -304,7 +332,10 @@ class OnlineFlowEngine:
                 status="WARMUP",
                 forecast=None,
                 evaluation=evaluation,
-                extra={"pending_samples": len(self._pending[symbol])},
+                extra={
+                    "pending_samples": len(self._pending[symbol]),
+                    "newly_resolved": newly_resolved,
+                },
             )
 
         weights = self._fit(resolved_list)
@@ -357,6 +388,7 @@ class OnlineFlowEngine:
             extra={
                 "pending_samples": len(self._pending[symbol]),
                 "armed": armed,
+                "newly_resolved": newly_resolved,
             },
         )
 
