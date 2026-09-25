@@ -33,6 +33,8 @@ jobs:
         run: set -o pipefail; python research/gorila_coupling_regime_oos.py | tee gorila-coupling-regime-oos.json
       - name: Coupling gate OOS research
         run: set -o pipefail; python research/gorila_coupling_gate_oos.py | tee gorila-coupling-gate-oos.json
+      - name: Multi-horizon purged walk-forward OOS research
+        run: set -o pipefail; python research/gorila_multihorizon_wfo.py | tee gorila-multihorizon-wfo.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -56,3 +58,4 @@ jobs:
             gorila-coupling-oos.json
             gorila-coupling-regime-oos.json
             gorila-coupling-gate-oos.json
+            gorila-multihorizon-wfo.json
