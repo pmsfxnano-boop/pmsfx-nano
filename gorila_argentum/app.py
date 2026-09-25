@@ -4,6 +4,7 @@ from .ingest import run_batch
 from .coupling import build_matrix
 from .config import settings
 from .state import build_market_state
+from .features import build_features
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -26,6 +27,10 @@ def live_state():
 @app.post("/api/ingest")
 def ingest():
     return run_batch()
+
+@app.get("/api/features/{symbol}")
+def features(symbol: str):
+    return build_features(symbol)
 
 @app.post("/api/coupling")
 def coupling():
