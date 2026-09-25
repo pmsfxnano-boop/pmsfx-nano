@@ -77,10 +77,14 @@ def brier_for_candidate(data, train_dates, test_dates, group, l2):
     return sum((p - y) ** 2 for p, y in zip(probs, labels)) / len(labels)
 
 
-def strategy_returns(data, test_dates, model, group, cost_bps):
+def strategy_returns(data, test_dates, model, group, cost_bps, horizon):
     idxs = FEATURE_GROUPS[group]
     returns = []
+    position = {d: i for i, d in enumerate(test_dates)}
+    last = -10**9
     for d in test_dates:
+        if position[d] - last < horizon:
+            continue
         scores = {
             s: rank_score(model, [data[d]["x"][s][i] for i in idxs])
             for s in SYMBOLS
@@ -91,6 +95,7 @@ def strategy_returns(data, test_dates, model, group, cost_bps):
             0.5 * (data[d]["fwd"][lo] - data[d]["fwd"][sh])
             - cost_bps / 10000.0
         )
+        last = position[d]
     return returns
 
 
@@ -157,7 +162,7 @@ def run_horizon(series, horizon):
         )
         model = fit(x_train, y_train, l2=winner[1])
         rets = strategy_returns(
-            data, test_dates, model, winner[0], DEFAULT_COST_BPS
+            data, test_dates, model, winner[0], DEFAULT_COST_BPS, horizon
         )
         selected_returns.extend(rets)
 
