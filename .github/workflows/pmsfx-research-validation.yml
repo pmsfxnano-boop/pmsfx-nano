@@ -18,9 +18,7 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 30); do
             echo "Health check $attempt/30"
-            if curl --fail --silent --show-error --max-time 20 \
-              https://pmsfx-nano.onrender.com/health \
-              -o /tmp/health.json; then
+            if curl --fail --silent --show-error --max-time 20               https://pmsfx-nano.onrender.com/health               -o /tmp/health.json; then
               cat /tmp/health.json
               echo "Service health is ready."
               break
@@ -33,25 +31,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 30 \
-            -X POST \
-            https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL \
-            -o /tmp/start.json
-
+          curl --fail --silent --show-error --max-time 30             -X POST             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL             -o /tmp/start.json
           cat /tmp/start.json
 
-          python - <<'PY'
-          import json
-          with open("/tmp/start.json", "r", encoding="utf-8") as fh:
-              payload = json.load(fh)
-
-          run_id = payload.get("run_id")
-          if not run_id:
-              raise SystemExit(f"Missing run_id in response: {payload}")
-
-          with open("/tmp/run_id.txt", "w", encoding="utf-8") as fh:
-              fh.write(run_id)
-          PY
+          run_id="$(python -c 'import json; print(json.load(open("/tmp/start.json", encoding="utf-8")).get("run_id",""))')"
+          test -n "$run_id"
+          printf "%s" "$run_id" > /tmp/run_id.txt
 
       - name: Poll professional validation
         shell: bash
@@ -60,22 +45,10 @@ jobs:
           run_id="$(cat /tmp/run_id.txt)"
           for attempt in $(seq 1 90); do
             echo "Validation poll $attempt/90: $run_id"
-            curl --fail --silent --show-error --max-time 30 \
-              "https://pmsfx-nano.onrender.com/api/research/run/$run_id" \
-              -o /tmp/status.json
+            curl --fail --silent --show-error --max-time 30               "https://pmsfx-nano.onrender.com/api/research/run/$run_id"               -o /tmp/status.json
 
-            python - <<'PY' > /tmp/status_line.txt
-            import json
-            with open("/tmp/status.json", "r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-            status = payload.get("status")
-            error = payload.get("error")
-            print(status or "")
-            print(error or "")
-            PY
-
-            status="$(sed -n '1p' /tmp/status_line.txt)"
-            error="$(sed -n '2p' /tmp/status_line.txt)"
+            status="$(python -c 'import json; print(json.load(open("/tmp/status.json", encoding="utf-8")).get("status",""))')"
+            error="$(python -c 'import json; print(json.load(open("/tmp/status.json", encoding="utf-8")).get("error",""))')"
             echo "status=$status error=$error"
 
             if [ "$status" = "COMPLETED" ]; then
@@ -98,30 +71,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python -c '
           import json
-          with open("/tmp/final.json", "r", encoding="utf-8") as fh:
-              payload = json.load(fh)
-
-          validation = payload["result"]["validation"]
-          print(json.dumps({
-              "symbol": payload.get("symbol"),
-              "run_id": payload.get("run_id"),
-              "status": validation.get("status"),
-              "validated": validation.get("validated"),
-              "sample_counts": validation.get("sample_counts"),
-              "specialist_oos_counts": validation.get("specialist_oos_counts"),
-              "cross_fitted_meta_count": validation.get("cross_fitted_meta_count"),
-              "meta_fold_count": validation.get("meta_fold_count"),
-              "usable_fold_count": validation.get("usable_fold_count"),
-              "oos_count": validation.get("oos_count"),
-              "metrics": validation.get("metrics"),
-              "primary_300s_metrics": validation.get("primary_300s_metrics"),
-              "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
-              "bootstrap_vs_baseline": validation.get("bootstrap"),
-              "bootstrap_vs_300s": validation.get("primary_300s_bootstrap"),
-              "ablation": validation.get("ablation"),
-              "gate": validation.get("gate"),
-              "research_backtest_id": payload["result"].get("research_backtest_id"),
-          }, indent=2))
-          PY
+          payload=json.load(open("/tmp/final.json",encoding="utf-8"))
+          validation=payload["result"]["validation"]
+          evidence={
+              "symbol":payload.get("symbol"),
+              "run_id":payload.get("run_id"),
+              "status":validation.get("status"),
+              "validated":validation.get("validated"),
+              "sample_counts":validation.get("sample_counts"),
+              "specialist_oos_counts":validation.get("specialist_oos_counts"),
+              "cross_fitted_meta_count":validation.get("cross_fitted_meta_count"),
+              "meta_fold_count":validation.get("meta_fold_count"),
+              "usable_fold_count":validation.get("usable_fold_count"),
+              "oos_count":validation.get("oos_count"),
+              "metrics":validation.get("metrics"),
+              "primary_300s_metrics":validation.get("primary_300s_metrics"),
+              "delta_brier_vs_300s":validation.get("delta_brier_vs_300s"),
+              "bootstrap_vs_baseline":validation.get("bootstrap"),
+              "bootstrap_vs_300s":validation.get("primary_300s_bootstrap"),
+              "ablation":validation.get("ablation"),
+              "gate":validation.get("gate"),
+              "research_backtest_id":payload["result"].get("research_backtest_id")
+          }
+          print(json.dumps(evidence,indent=2))
+          '
