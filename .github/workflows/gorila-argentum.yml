@@ -56,6 +56,8 @@ jobs:
         run: set -o pipefail; python research/gorila_nested_rank_stress_oos.py | tee gorila-nested-rank-stress-oos.json
       - name: Nested ranking temporal placebo and rank IC
         run: set -o pipefail; python research/gorila_nested_rank_placebo_oos.py | tee gorila-nested-rank-placebo-oos.json
+      - name: True leave-one-universe-out nested ranking
+        run: set -o pipefail; python research/gorila_rank_universe_loo_oos.py | tee gorila-rank-universe-loo-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -102,3 +104,4 @@ jobs:
             gorila-nested-pairwise-rank-oos.json
             gorila-nested-rank-stress-oos.json
             gorila-nested-rank-placebo-oos.json
+            gorila-rank-universe-loo-oos.json
