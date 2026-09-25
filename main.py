@@ -40,6 +40,9 @@ from quant.db import (
     update_research_run,
     get_research_run,
     latest_research_run,
+    record_online_cohort_sample,
+    load_online_cohort_samples,
+    online_cohort_summary,
 )
 from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
@@ -48,6 +51,7 @@ from quant.model_registry import build_registry_record
 from quant.meta import combine_specialists
 from quant.trigger import evaluate_trigger
 from quant.outcome import resolve_forecast
+from quant.online import observe_online, evaluate_temporal_cohort, ENGINE as ONLINE_ENGINE
 from quant.market_stream import get_quote as get_stream_quote, start_stream, stop_stream, stream_status
 
 APP_DIR = Path(__file__).resolve().parent
@@ -71,6 +75,7 @@ OUTCOME_FORECAST_TASK = None
 COLLECTOR_SYMBOLS = ("AAPL", "MSFT", "NVDA", "TSLA")
 OUTCOME_RESOLVER_INTERVAL_SECONDS = 60.0
 OUTCOME_FORECAST_INTERVAL_SECONDS = 600.0
+ONLINE_COHORT_INTERVAL_SECONDS = 5.0
 RESEARCH_PROCESS_POOL = ProcessPoolExecutor(
     max_workers=1,
     mp_context=mp.get_context("spawn"),
@@ -149,6 +154,11 @@ async def initialize_persistence():
         if DB_READY:
             repaired = repair_probabilistic_outcomes()
             recovered = recover_incomplete_research_runs()
+            for _symbol in COLLECTOR_SYMBOLS:
+                restored = load_online_cohort_samples(_symbol, limit=600)
+                if restored:
+                    ONLINE_ENGINE.restore(_symbol, restored)
+                    print("PMSF-X ONLINE COHORT RESTORED:", {"symbol": _symbol, "samples": len(restored)})
             print("PMSF-X OUTCOME ELIGIBILITY REPAIR:", {"rows_updated": repaired})
             print(
                 "PMSF-X RESEARCH STALE RECOVERY:",
@@ -280,6 +290,58 @@ async def tiingo_startup_check():
     else:
         print("PMSF-X SELFTEST AAPL: WS CACHE NOT_READY")
 
+
+
+async def online_cohort_loop():
+    """Capture high-frequency WS samples for the online-flow research cohort."""
+    print("PMSF-X ONLINE COHORT: LOOP_ENTERED", {"interval_s": ONLINE_COHORT_INTERVAL_SECONDS})
+    while True:
+        if not DB_READY or not os.getenv("TIINGO_API_KEY") or not is_us_equity_session():
+            await asyncio.sleep(ONLINE_COHORT_INTERVAL_SECONDS)
+            continue
+        for symbol in COLLECTOR_SYMBOLS:
+            try:
+                q = get_stream_quote(symbol)
+                if not q:
+                    continue
+                bid = q.get("bidPrice")
+                ask = q.get("askPrice")
+                last = q.get("last")
+                if bid is None or ask is None:
+                    continue
+                mid = (float(bid) + float(ask)) / 2.0
+                spread_bps = (float(ask) - float(bid)) / mid * 10000.0 if mid > 0 else None
+                result = observe_online(
+                    symbol=symbol,
+                    last=last if last is not None else mid,
+                    bid=bid,
+                    ask=ask,
+                    bid_size=q.get("bidSize") or 0,
+                    ask_size=q.get("askSize") or 0,
+                    spread_bps=spread_bps,
+                    microprice=mid,
+                )
+                for sample in result.get("newly_resolved", []):
+                    from datetime import datetime as _dt
+                    event_time = _dt.fromtimestamp(float(sample["event_time"]), tz=timezone.utc)
+                    label_end_time = _dt.fromtimestamp(float(sample["label_end_time"]), tz=timezone.utc)
+                    sample["event_time"] = event_time
+                    sample["label_end_time"] = label_end_time
+                    record_online_cohort_sample(sample)
+            except Exception as exc:
+                print("PMSF-X ONLINE COHORT ERROR:", {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
+        await asyncio.sleep(ONLINE_COHORT_INTERVAL_SECONDS)
+
+
+@app.get("/api/research/online-cohort")
+def online_cohort_status():
+    summary = online_cohort_summary()
+    payload = {"service": "pmsfx-nano", "cohort": summary, "symbols": {}}
+    for symbol in COLLECTOR_SYMBOLS:
+        rows = load_online_cohort_samples(symbol, limit=600)
+        payload["symbols"][symbol] = evaluate_temporal_cohort(rows)
+    return payload
+
 async def outcome_resolver_loop():
     while True:
         if not DB_READY or not os.getenv("TIINGO_API_KEY"):
@@ -361,6 +423,8 @@ async def outcome_collector_startup():
         return
     OUTCOME_RESOLVER_TASK = asyncio.create_task(outcome_resolver_loop())
     OUTCOME_FORECAST_TASK = asyncio.create_task(outcome_forecast_loop())
+    if os.getenv("PMSFX_ONLINE_COHORT", "1") != "0":
+        asyncio.create_task(online_cohort_loop())
     OUTCOME_COLLECTOR_TASK = OUTCOME_FORECAST_TASK
     print(
         "PMSF-X OUTCOME COLLECTOR: STARTED",
