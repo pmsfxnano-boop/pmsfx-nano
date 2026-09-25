@@ -26,3 +26,5 @@ jobs:
           done
 
 # rerun after forcing fresh historical Tiingo bars
+
+# rerun after session-boundary preprocessing fix
