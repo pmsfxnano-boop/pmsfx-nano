@@ -24,3 +24,5 @@ jobs:
             echo
             echo "========== END $symbol =========="
           done
+
+# rerun after forcing fresh historical Tiingo bars
