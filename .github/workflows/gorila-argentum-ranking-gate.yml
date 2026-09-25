@@ -8,10 +8,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  group: gorila-argentum-ranking-gate
-  cancel-in-progress: true
-
-env:
   PYTHONPATH: .
 
 jobs:
