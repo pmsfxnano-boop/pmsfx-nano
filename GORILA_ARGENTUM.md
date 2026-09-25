@@ -129,3 +129,20 @@ Se añadió `research/gorila_jacobian_ablation_oos.py` para identificar si exist
 - conjunto completo.
 
 El criterio de promoción será OOS, no significación aparente in-sample. Si ningún componente muestra mejora consistente, toda la rama Jacobiana se conserva únicamente como diagnóstico de régimen/estado y se abandona como variable predictiva.
+
+
+### Research gate — nested relative ranking
+
+Following the failure of the aggregate Jacobian predictor, the next predictive branch is a nested relative-ranking experiment. Feature-group and L2 selection are performed strictly inside each outer training window; the outer test block is untouched until evaluation.
+
+Outer design:
+- expanding train window: 504 observations minimum;
+- 126-observation OOS blocks;
+- horizon purge;
+- inner validation contained entirely inside the outer train window;
+- candidate feature groups: momentum, base+vol/z, cross-sectional relative features, full set;
+- L2 candidates: 0.001, 0.002, 0.01;
+- execution evaluated at 25/50/100 bps round-trip;
+- fold-level positive-delta counts versus momentum are reported.
+
+Promotion criterion: no promotion from aggregate return alone. The candidate must show stable outer-fold behavior and remain viable under increased cost. 
