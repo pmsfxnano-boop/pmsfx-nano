@@ -29,7 +29,7 @@ from quant.db import (
     record_model_registry,
     record_outcome,
     active_research_run,
-    recover_stale_research_runs,
+    recover_incomplete_research_runs,
     create_research_run,
     update_research_run,
     get_research_run,
@@ -139,11 +139,11 @@ async def initialize_persistence():
         DB_READY = bool(init_db())
         if DB_READY:
             repaired = repair_probabilistic_outcomes()
-            recovered = recover_stale_research_runs(stale_after_minutes=30)
+            recovered = recover_incomplete_research_runs()
             print("PMSF-X OUTCOME ELIGIBILITY REPAIR:", {"rows_updated": repaired})
             print(
                 "PMSF-X RESEARCH STALE RECOVERY:",
-                {"rows_recovered": recovered, "stale_after_minutes": 30},
+                {"rows_recovered": recovered},
             )
             audit_rows = eligible_outcomes(limit=100)
             audit_losses = [row["brier_loss"] for row in audit_rows if row["brier_loss"] is not None]
