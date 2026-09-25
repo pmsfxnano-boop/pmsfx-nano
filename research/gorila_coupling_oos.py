@@ -65,7 +65,7 @@ def features_for(target,series,fx,risk,dates,i):
             prev=ret(series[peer],dates,i-1,1)
             if prev is not None: peer_terms.append(c*prev)
     peer_pressure=sum(peer_terms)/max(1.0,sum(abs(x) for x in peer_terms)) if peer_terms else 0.0
-    fxr=ret(fx,dates,i-1,1) if fx else 0.0
+    fxr=(ret(fx,dates,i-1,1) or 0.0) if fx else 0.0
     embi_delta=(risk.get(dates[i-1],0.0)-risk.get(dates[i-2],0.0)) if risk and i>=2 and dates[i-1] in risk and dates[i-2] in risk else 0.0
     baseline=[own[0],own[1],own[2],vol,z]
     advanced=baseline+[peer_pressure,fxr,embi_delta/100.0]
