@@ -1,0 +1,65 @@
+name: V0 real historical OOS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  v0-real-historical:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render deploy
+        run: sleep 90
+      - name: Run V0 on real Tiingo history
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://pmsfx-nano.onrender.com/api/research/v0-ofi"
+          mkdir -p results
+          for symbol in AAPL MSFT NVDA TSLA; do
+            echo "=== $symbol ==="
+            ok=0
+            for i in {1..8}; do
+              code=$(curl -sS -o "results/$symbol.json" -w "%{http_code}" --max-time 180 "$base/$symbol" || true)
+              if [ "$code" = "200" ]; then ok=1; break; fi
+              sleep 15
+            done
+            if [ "$ok" != "1" ]; then
+              echo "V0 request failed for $symbol"
+              cat "results/$symbol.json" || true
+              exit 1
+            fi
+            python - "$symbol" <<'PY'
+import json, sys
+s=sys.argv[1]
+d=json.load(open(f"results/{s}.json"))
+print(json.dumps({
+  "symbol":s,
+  "status":d.get("status"),
+  "bars_used":d.get("bars_used"),
+  "validation_summary":d.get("validation_summary"),
+  "horizons":{
+    h:{
+      "sample_count":v.get("sample_count"),
+      "oos_count":(v.get("evaluation") or {}).get("oos_count"),
+      "fold_count":(v.get("evaluation") or {}).get("fold_count"),
+      "accuracy":(v.get("evaluation") or {}).get("accuracy"),
+      "auc":(v.get("evaluation") or {}).get("auc"),
+      "brier":(v.get("evaluation") or {}).get("brier"),
+      "baseline_brier":(v.get("evaluation") or {}).get("baseline_brier"),
+      "brier_skill":(v.get("evaluation") or {}).get("brier_skill"),
+      "log_loss":(v.get("evaluation") or {}).get("log_loss"),
+      "baseline_log_loss":(v.get("evaluation") or {}).get("baseline_log_loss"),
+      "log_loss_improvement":(v.get("evaluation") or {}).get("log_loss_improvement"),
+      "ece":(v.get("evaluation") or {}).get("ece"),
+      "validated":(v.get("evaluation") or {}).get("validated")
+    } for h,v in (d.get("horizons") or {}).items()
+  }
+}, indent=2))
+PY
+          done
+      - name: Upload raw V0 results
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0-real-historical-results
+          path: results/
