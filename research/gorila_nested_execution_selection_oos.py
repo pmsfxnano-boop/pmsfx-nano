@@ -258,7 +258,7 @@ def run_symbol(series, symbol, horizon):
         model = fit([r["x"] for r in outer_train], [r["y"] for r in outer_train])
         scored = apply_candidate(outer_test, model, candidate)
         scored = non_overlapping(scored, horizon)
-        outer_results.append({"candidate": candidate, "rows": scored, "selection": selection[3]})
+        tagged = [{**row, "candidate": candidate} for row in scored]\n        outer_results.append({"candidate": candidate, "rows": tagged, "selection": selection[3]})
         start += TEST_SIZE
 
     all_rows = []
