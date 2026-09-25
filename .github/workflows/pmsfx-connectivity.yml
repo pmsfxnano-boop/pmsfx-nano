@@ -1,4 +1,4 @@
-name: PMSF-X endpoint connectivity and research validation
+name: PMSF-X endpoint connectivity and cross-asset validation
 
 on:
   push:
@@ -8,43 +8,29 @@ on:
       - "research/health.txt"
 
 jobs:
-  check:
+  validate:
     runs-on: ubuntu-latest
-    outputs:
-      health_ok: ${{ steps.health.outputs.ok }}
-    steps:
-      - name: Check Render health
-        id: health
-        shell: bash
-        run: |
-          set -euxo pipefail
-          date -u
-          body="$(curl --fail --silent --show-error --connect-timeout 15 --max-time 30 https://pmsfx-nano.onrender.com/health)"
-          echo "$body"
-          echo "ok=true" >> "$GITHUB_OUTPUT"
+    timeout-minutes: 40
 
-  crossasset:
-    needs: check
-    if: ${{ needs.check.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
     steps:
-      - name: Validate cross-asset research on AAPL, MSFT, NVDA, TSLA
+      - name: Health gate and cross-asset validation
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "=== HEALTH ==="
+          curl --fail --silent --show-error             --connect-timeout 15             --max-time 30             https://pmsfx-nano.onrender.com/health
+
           for symbol in AAPL MSFT NVDA TSLA; do
             echo "=== CROSS-ASSET $symbol ==="
 
-            curl --fail --silent --show-error               --connect-timeout 20 --max-time 30               -X POST               "https://pmsfx-nano.onrender.com/api/research/cross-asset/$symbol"               -o "/tmp/start-$symbol.json"
+            curl --fail --silent --show-error               --connect-timeout 20               --max-time 30               -X POST               "https://pmsfx-nano.onrender.com/api/research/cross-asset/$symbol"               -o "/tmp/start-$symbol.json"
 
             cat "/tmp/start-$symbol.json"
 
             run_id="$(python - "$symbol" <<'PY'
 import json
 import sys
-
 symbol = sys.argv[1]
 with open(f"/tmp/start-{symbol}.json", "r", encoding="utf-8") as fh:
     payload = json.load(fh)
@@ -57,12 +43,11 @@ PY
             for attempt in $(seq 1 240); do
               echo "Poll $symbol $attempt/240"
 
-              curl --fail --silent --show-error                 --connect-timeout 10 --max-time 20                 "https://pmsfx-nano.onrender.com/api/research/run/$run_id"                 -o "/tmp/status-$symbol.json"
+              curl --fail --silent --show-error                 --connect-timeout 10                 --max-time 20                 "https://pmsfx-nano.onrender.com/api/research/run/$run_id"                 -o "/tmp/status-$symbol.json"
 
               status="$(python - "$symbol" <<'PY'
 import json
 import sys
-
 symbol = sys.argv[1]
 with open(f"/tmp/status-{symbol}.json", "r", encoding="utf-8") as fh:
     payload = json.load(fh)
@@ -73,7 +58,6 @@ PY
               echo "STATUS=$status"
 
               if [ "$status" = "COMPLETED" ] || [ "$status" = "ERROR" ]; then
-                cp "/tmp/status-$symbol.json" "/tmp/final-$symbol.json"
                 break
               fi
 
@@ -90,12 +74,12 @@ import json
 import sys
 
 symbol = sys.argv[1]
-with open(f"/tmp/final-{symbol}.json", "r", encoding="utf-8") as fh:
+with open(f"/tmp/status-{symbol}.json", "r", encoding="utf-8") as fh:
     payload = json.load(fh)
 
 if payload.get("status") == "ERROR":
     raise SystemExit(
-        f"{symbol} cross-asset job failed: {payload.get('error')}"
+        f"{symbol} cross-asset research failed: {payload.get('error')}"
     )
 
 validation = (payload.get("result") or {}).get("validation") or {}
