@@ -70,11 +70,16 @@ def _looks_like_five_minute_series(rows: list[dict[str, Any]]) -> bool:
     if len(normalized) < 120:
         return False
     expected = timedelta(minutes=5)
+    session_gap = timedelta(minutes=15)
     exact = 0
     compared = 0
     for left, right in zip(normalized, normalized[1:]):
         delta = right["time"] - left["time"]
         if delta <= timedelta(0):
+            continue
+        # Ignore overnight/weekend/session boundaries. Only compare bars
+        # within the same continuous intraday segment.
+        if delta > session_gap:
             continue
         compared += 1
         if delta == expected:
