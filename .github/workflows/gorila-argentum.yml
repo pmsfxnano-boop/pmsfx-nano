@@ -1,0 +1,38 @@
+name: Gorila Argentum CI
+
+on:
+  push:
+    branches: [gorila-argentum-v0]
+  pull_request:
+    branches: [gorila-argentum-v0]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - name: Unit tests
+        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py
+      - name: Import smoke
+        run: python -c "from gorila_argentum.app import app; print(app.title, app.version)"
+      - name: Public endpoint smoke
+        run: |
+          python - <<'PY'
+          import httpx
+          urls = [
+            "https://api.argentinadatos.com/v1/cotizaciones/dolares",
+            "https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais",
+            "https://api.bcra.gob.ar/estadisticascambiarias/v1.0/Cotizaciones",
+          ]
+          for url in urls:
+              r=httpx.get(url,timeout=20,headers={"User-Agent":"Gorila-Argentum-CI/0.1"})
+              r.raise_for_status()
+              print("PUBLIC_SOURCE_OK", url, r.status_code, len(r.content))
+          PY
