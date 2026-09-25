@@ -53,15 +53,18 @@ def _price_fields(source: str, row: dict[str, Any]) -> dict[str, Any]:
 
 
 
-async def _fetch_future_bar(symbol: str, token: str, due_at: datetime) -> dict[str, Any] | None:
+async def _fetch_future_bars_day(
+    symbol: str,
+    token: str,
+    day,
+) -> list[tuple[datetime, float]]:
     headers = {
         "Authorization": f"Token {token}",
         "Content-Type": "application/json",
     }
-    start_date = due_at.date()
-    end_date = start_date + timedelta(days=1)
+    end_date = day + timedelta(days=1)
     params = {
-        "startDate": start_date.isoformat(),
+        "startDate": day.isoformat(),
         "endDate": end_date.isoformat(),
         "resampleFreq": OUTCOME_RESAMPLE_FREQ,
         "columns": "close",
@@ -79,19 +82,38 @@ async def _fetch_future_bar(symbol: str, token: str, due_at: datetime) -> dict[s
     if not isinstance(data, list):
         data = data.get("data", []) if isinstance(data, dict) else []
 
-    candidates: list[tuple[datetime, float]] = []
+    bars: list[tuple[datetime, float]] = []
     for row in data:
         if not isinstance(row, dict):
             continue
         ts = _parse_datetime(row.get("date") or row.get("timestamp"))
         close = row.get("close")
-        if ts is None or close is None or ts < due_at:
+        if ts is None or close is None:
             continue
         try:
-            candidates.append((ts, float(close)))
+            bars.append((ts, float(close)))
         except (TypeError, ValueError):
             continue
 
+    bars.sort(key=lambda item: item[0])
+    return bars
+
+
+async def _fetch_future_bar(
+    symbol: str,
+    token: str,
+    due_at: datetime,
+    cache: dict[tuple[str, str], list[tuple[datetime, float]]] | None = None,
+) -> dict[str, Any] | None:
+    cache_key = (symbol, due_at.date().isoformat())
+    if cache is not None and cache_key in cache:
+        bars = cache[cache_key]
+    else:
+        bars = await _fetch_future_bars_day(symbol, token, due_at.date())
+        if cache is not None:
+            cache[cache_key] = bars
+
+    candidates = [(ts, price) for ts, price in bars if ts >= due_at]
     if not candidates:
         return None
 
@@ -182,6 +204,50 @@ def _parse_datetime(value: Any) -> datetime | None:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+async def repair_timing_expired_forecast(
+    forecast: dict[str, Any],
+    token: str,
+    historical_cache: dict[tuple[str, str], list[tuple[datetime, float]]] | None = None,
+) -> dict[str, Any]:
+    created = forecast["created_at"]
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+
+    horizon = int(forecast["horizon_seconds"])
+    due_at = created + timedelta(seconds=horizon)
+    quote = await _fetch_future_bar(
+        str(forecast["symbol"]),
+        token,
+        due_at,
+        cache=historical_cache,
+    )
+    if quote is None:
+        return {
+            "status": "HISTORICAL_REPAIR_UNAVAILABLE",
+            "forecast_id": int(forecast["id"]),
+            "symbol": forecast["symbol"],
+            "due_at": due_at.isoformat(),
+        }
+
+    quote_timestamp = _parse_datetime(
+        quote.get("quote_timestamp") or quote.get("timestamp")
+    )
+    if quote_timestamp is None or quote_timestamp < due_at:
+        return {
+            "status": "HISTORICAL_REPAIR_INVALID_TIMESTAMP",
+            "forecast_id": int(forecast["id"]),
+            "symbol": forecast["symbol"],
+            "due_at": due_at.isoformat(),
+        }
+
+    outcome = build_outcome(forecast, quote, resolved_at=quote_timestamp)
+    outcome["metadata"]["resolution_mode"] = "tiingo_equity_intraday_1min_historical_repair"
+    outcome["metadata"]["market_event_timestamp"] = quote_timestamp.isoformat()
+    outcome["metadata"]["historical_repair"] = True
+    outcome["status"] = "RESOLVED"
+    return outcome
 
 
 def _eligibility_reason(
