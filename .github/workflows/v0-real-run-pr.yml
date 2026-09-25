@@ -2,7 +2,7 @@ name: V0 real historical OOS PR
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 jobs:
   v0-real-historical:
