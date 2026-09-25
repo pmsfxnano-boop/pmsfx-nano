@@ -65,6 +65,23 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _looks_like_five_minute_series(rows: list[dict[str, Any]]) -> bool:
+    normalized = _normalize_rows(rows)
+    if len(normalized) < 120:
+        return False
+    expected = timedelta(minutes=5)
+    exact = 0
+    compared = 0
+    for left, right in zip(normalized, normalized[1:]):
+        delta = right["time"] - left["time"]
+        if delta <= timedelta(0):
+            continue
+        compared += 1
+        if delta == expected:
+            exact += 1
+    return compared >= 100 and exact / compared >= 0.90
+
+
 def _normalize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -369,7 +386,7 @@ async def get_cross_asset_forecast(
         }
 
     try:
-        if target_rows is None:
+        if target_rows is None or not _looks_like_five_minute_series(target_rows):
             target_rows = _fetch_rows(symbol, token)
 
         peer_rows = {peer: _fetch_rows(peer, token) for peer in peers}
