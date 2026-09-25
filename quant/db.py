@@ -126,6 +126,23 @@ ON research_runs(symbol, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_research_runs_status_created
 ON research_runs(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS online_cohort_samples (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    event_time TIMESTAMPTZ NOT NULL,
+    label_end_time TIMESTAMPTZ NOT NULL,
+    features JSONB NOT NULL,
+    label SMALLINT NOT NULL,
+    future_return_bps DOUBLE PRECISION NOT NULL,
+    cohort_tag TEXT NOT NULL DEFAULT 'online-flow-v1'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_online_cohort_sample
+ON online_cohort_samples(symbol, event_time, cohort_tag);
+
+CREATE INDEX IF NOT EXISTS idx_online_cohort_symbol_event
+ON online_cohort_samples(symbol, event_time DESC);
 """
 
 
@@ -917,3 +934,104 @@ def outcome_summary() -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
+
+
+def record_online_cohort_sample(sample: dict[str, Any]) -> bool:
+    if not database_url():
+        return False
+    sql = """
+    INSERT INTO online_cohort_samples (
+        symbol, event_time, label_end_time, features, label,
+        future_return_bps, cohort_tag
+    ) VALUES (
+        %(symbol)s, %(event_time)s, %(label_end_time)s, %(features)s::jsonb,
+        %(label)s, %(future_return_bps)s, %(cohort_tag)s
+    )
+    ON CONFLICT (symbol, event_time, cohort_tag) DO NOTHING
+    """
+    row = {
+        "symbol": sample["symbol"],
+        "event_time": sample["event_time"],
+        "label_end_time": sample["label_end_time"],
+        "features": json.dumps(sample["features"]),
+        "label": int(sample["label"]),
+        "future_return_bps": float(sample["future_return_bps"]),
+        "cohort_tag": sample.get("cohort_tag") or "online-flow-v1",
+    }
+    try:
+        with connection() as conn:
+            if conn is None:
+                return False
+            with conn.cursor() as cur:
+                cur.execute(sql, row)
+                changed = cur.rowcount
+            conn.commit()
+        return bool(changed)
+    except Exception:
+        return False
+
+
+def load_online_cohort_samples(symbol: str, limit: int = 600) -> list[dict[str, Any]]:
+    if not database_url():
+        return []
+    limit = max(1, min(int(limit), 2000))
+    sql = f"""
+    SELECT event_time, label_end_time, features, label, future_return_bps, cohort_tag
+    FROM online_cohort_samples
+    WHERE symbol = %(symbol)s
+    ORDER BY event_time ASC
+    LIMIT {limit}
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return []
+            with conn.cursor() as cur:
+                cur.execute(sql, {"symbol": symbol})
+                rows = cur.fetchall()
+        return [
+            {
+                "event_time": row[0],
+                "label_end_time": row[1],
+                "features": row[2],
+                "label": int(row[3]),
+                "future_return_bps": float(row[4]),
+                "cohort_tag": row[5],
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def online_cohort_summary() -> dict[str, Any]:
+    if not database_url():
+        return {"ready": False}
+    sql = """
+    SELECT
+        COUNT(*) AS n,
+        COUNT(*) FILTER (WHERE label = 1) AS up,
+        COUNT(*) FILTER (WHERE label = 0) AS down,
+        MIN(event_time) AS first_event,
+        MAX(label_end_time) AS last_label,
+        AVG(future_return_bps) AS mean_return_bps
+    FROM online_cohort_samples
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return {"ready": False}
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+        return {
+            "ready": True,
+            "count": int(row[0]),
+            "up": int(row[1]),
+            "down": int(row[2]),
+            "first_event": row[3].isoformat() if row[3] else None,
+            "last_label": row[4].isoformat() if row[4] else None,
+            "mean_return_bps": round(float(row[5]), 5) if row[5] is not None else None,
+        }
+    except Exception as exc:
+        return {"ready": False, "error": f"{type(exc).__name__}: {exc}"}
