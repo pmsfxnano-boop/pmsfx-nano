@@ -175,3 +175,7 @@ For every outer fold the nested ranking procedure is evaluated on:
 The placebo preserves the cross-sectional structure within each date while destroying temporal alignment between features and future returns.
 
 A candidate must demonstrate OOS rank information that is systematically stronger than the temporal-placebo distribution before it can be considered for V1.
+
+
+### Advanced CI isolation
+The advanced research suite is executed in a dedicated CI workflow to reduce iteration latency and keep hypothesis testing isolated from legacy benchmarks.
