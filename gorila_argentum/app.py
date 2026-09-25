@@ -3,6 +3,7 @@ from .storage import Store
 from .ingest import run_batch
 from .coupling import build_matrix
 from .config import settings
+from .state import build_market_state
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -17,6 +18,10 @@ def health():
 @app.get("/api/state")
 def state():
     return {"sources":Store().health(),"symbols":list(settings.symbols)}
+
+@app.get("/api/state/live")
+def live_state():
+    return build_market_state()
 
 @app.post("/api/ingest")
 def ingest():
