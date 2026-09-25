@@ -351,11 +351,14 @@ async def v0_ofi_research(ticker: str):
     if not token:
         raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
     try:
-        rows = get_cached_bars(symbol)
-        source = "cache"
-        if not rows:
-            source = "tiingo_history"
-            rows = await asyncio.wait_for(get_historical_bars(symbol, token), timeout=30.0)
+        # V0 measurement must use a fresh point-in-time historical pull.
+        # Do not silently fall back to the live-bar cache, which may contain
+        # only a small recent window and would invalidate the OOS sample size.
+        source = "tiingo_history_force_refresh"
+        rows = await asyncio.wait_for(
+            get_historical_bars(symbol, token, force_refresh=True),
+            timeout=120.0,
+        )
         if not rows:
             raise HTTPException(status_code=503, detail="Historical bars unavailable")
         result = await asyncio.to_thread(run_v0_research, rows, symbol=symbol)
