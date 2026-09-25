@@ -471,6 +471,7 @@ async def get_historical_forecast(
                 headers=headers,
                 params=params,
             )
+
         if response.status_code >= 400:
             result = {
                 "status": "HISTORICAL_UNAVAILABLE",
@@ -480,24 +481,31 @@ async def get_historical_forecast(
                 "lookback_days": LOOKBACK_DAYS,
                 "error": f"Tiingo historical HTTP {response.status_code}",
             }
-            if include_rows:
-                result["__bars_rows"] = rows
-            else:
-                if include_rows:
-                result["__bars_rows"] = rows
-            else:
+            if not include_rows:
                 _CACHE[cache_key] = (__import__("time").time(), result)
             return result
 
         data = response.json()
         if not isinstance(data, list):
             data = data.get("data", []) if isinstance(data, dict) else []
+        if not isinstance(data, list):
+            data = []
 
         rows = data[-MAX_ROWS:]
-        _BARS_CACHE[symbol.upper()] = (__import__("time").time(), rows)
-        samples, temporal_samples, latest_x = _bars_to_samples(rows, horizon_bars=1)
+        if rows:
+            _BARS_CACHE[symbol.upper()] = (__import__("time").time(), rows)
+
+        samples, temporal_samples, latest_x = _bars_to_samples(
+            rows,
+            horizon_bars=1,
+        )
+
         if evaluate:
-            evaluation = _evaluate(samples, temporal_samples, horizon_minutes=5)
+            evaluation = _evaluate(
+                samples,
+                temporal_samples,
+                horizon_minutes=5,
+            )
         else:
             evaluation = {
                 "sample_count": len(samples),
@@ -507,6 +515,7 @@ async def get_historical_forecast(
                 "validation_reason": "LIVE_FORECAST_NO_RECALCULATION",
                 "validation_type": "LIVE_FAST_PATH",
             }
+
         multi_horizon = _build_multi_horizon(
             rows,
             evaluate=evaluate,
@@ -516,7 +525,10 @@ async def get_historical_forecast(
         evaluation["cpcv_status"] = "RESEARCH_MODULE_READY"
         evaluation["pbo_status"] = "RESEARCH_MODULE_READY"
         evaluation["dsr_status"] = "RESEARCH_MODULE_READY"
-        evaluation["search_ledger"] = {"trials": 1, "selection_rule": "record_only"}
+        evaluation["search_ledger"] = {
+            "trials": 1,
+            "selection_rule": "record_only",
+        }
 
         if len(samples) < MIN_TRAIN_ROWS or latest_x is None:
             result = {
@@ -528,12 +540,14 @@ async def get_historical_forecast(
                 "bars": len(data),
                 "multi_horizon": multi_horizon,
             }
-            _CACHE[cache_key] = (__import__("time").time(), result)
+            if include_rows:
+                result["__bars_rows"] = rows
+            else:
+                _CACHE[cache_key] = (__import__("time").time(), result)
             return result
 
         weights = _fit(samples)
-        x_last = latest_x
-        p_up = _predict(weights, x_last)
+        p_up = _predict(weights, latest_x)
         p_down = 1.0 - p_up
         confidence = abs(p_up - 0.5) * 2.0
 
@@ -557,11 +571,11 @@ async def get_historical_forecast(
                 "horizon_seconds": 300,
                 "label_threshold_bps": LABEL_THRESHOLD_BPS,
                 "features": {
-                    "return_1bar_scaled": round(x_last[0], 4),
-                    "return_3bar_scaled": round(x_last[1], 4),
-                    "range_scaled": round(x_last[2], 4),
-                    "close_position": round(x_last[3], 4),
-                    "volume_change_scaled": round(x_last[4], 4),
+                    "return_1bar_scaled": round(latest_x[0], 4),
+                    "return_3bar_scaled": round(latest_x[1], 4),
+                    "range_scaled": round(latest_x[2], 4),
+                    "close_position": round(latest_x[3], 4),
+                    "volume_change_scaled": round(latest_x[4], 4),
                 },
             },
             "evaluation": evaluation,
@@ -573,7 +587,6 @@ async def get_historical_forecast(
         if include_rows:
             result["__bars_rows"] = rows
         else:
-            if not include_rows:
             _CACHE[cache_key] = (__import__("time").time(), result)
         return result
     except Exception as exc:
@@ -584,5 +597,7 @@ async def get_historical_forecast(
             "model_id": "historical-logit-v1",
             "error": f"{type(exc).__name__}: {exc}",
         }
-        _CACHE[cache_key] = (__import__("time").time(), result)
+        if not include_rows:
+            _CACHE[cache_key] = (__import__("time").time(), result)
         return result
+
