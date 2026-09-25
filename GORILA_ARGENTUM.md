@@ -179,3 +179,7 @@ A candidate must demonstrate OOS rank information that is systematically stronge
 
 ### Advanced CI isolation
 The advanced research suite is executed in a dedicated CI workflow to reduce iteration latency and keep hypothesis testing isolated from legacy benchmarks.
+
+
+### Ranking Gate CI
+A focused workflow isolates the nested relative-ranking validation from the legacy and Jacobian research stages.
