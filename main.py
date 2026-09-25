@@ -342,6 +342,37 @@ async def online_cohort_loop():
         await asyncio.sleep(ONLINE_COHORT_INTERVAL_SECONDS)
 
 
+@app.get("/api/research/v0-ofi/raw/{ticker}")
+async def v0_ofi_raw_history(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+    try:
+        rows = await asyncio.wait_for(
+            get_historical_bars(symbol, token, force_refresh=True),
+            timeout=120.0,
+        )
+        if not rows:
+            raise HTTPException(status_code=503, detail="Historical bars unavailable")
+        first_ts = (rows[0].get("date") or rows[0].get("timestamp"))
+        last_ts = (rows[-1].get("date") or rows[-1].get("timestamp"))
+        return {
+            "service": "pmsfx-nano",
+            "symbol": symbol,
+            "row_count": len(rows),
+            "first_bar": first_ts,
+            "last_bar": last_ts,
+            "rows": rows,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
 @app.get("/api/research/v0-ofi/{ticker}")
 async def v0_ofi_research(ticker: str):
     symbol = normalize_ticker(ticker)
