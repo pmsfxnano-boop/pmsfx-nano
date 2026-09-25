@@ -523,10 +523,25 @@ async def get_historical_forecast(
                 "validation_type": "LIVE_FAST_PATH",
             }
 
-        multi_horizon = _build_multi_horizon(
-            rows,
-            evaluate=evaluate,
-        )
+        if evaluate:
+            multi_horizon = _build_multi_horizon(
+                rows,
+                evaluate=True,
+            )
+        else:
+            # The live path must remain low-latency and must not depend on
+            # research-only multi-horizon computation. The 900s/1800s models
+            # are validated separately by the research endpoint.
+            multi_horizon = {
+                "status": "RESEARCH_DECOUPLED",
+                "model_id": MULTI_HORIZON_MODEL_ID,
+                "horizons_seconds": [x[0] for x in MULTI_HORIZONS],
+                "primary_horizon_seconds": 300,
+                "forecast_vector": {},
+                "evaluation": {},
+                "research_only": True,
+                "production_eligible": False,
+            }
         evaluation["multi_horizon_status"] = multi_horizon["status"]
         evaluation["multi_horizon_model_id"] = MULTI_HORIZON_MODEL_ID
         evaluation["cpcv_status"] = "RESEARCH_MODULE_READY"
