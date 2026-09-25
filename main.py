@@ -217,19 +217,7 @@ async def research_validation_runner():
                         {"symbol": symbol},
                     )
                     continue
-                print(
-            "PMSF-X CROSS-ASSET PRELOAD:",
-            {
-                "symbol": symbol,
-                "target_rows": len(target_rows),
-                "peer_rows": {
-                    peer: len(rows)
-                    for peer, rows in peer_rows.items()
-                },
-            },
-        )
-
-        validation = await asyncio.wait_for(
+                validation = await asyncio.wait_for(
                     asyncio.to_thread(
                         validate_multi_horizon_meta,
                         rows,
@@ -969,6 +957,18 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
         rows = get_cached_bars(symbol)
         if not rows:
             raise RuntimeError("Historical bars unavailable")
+
+        print(
+            "PMSF-X CROSS-ASSET PRELOAD:",
+            {
+                "symbol": symbol,
+                "target_rows": len(target_rows),
+                "peer_rows": {
+                    peer: len(rows)
+                    for peer, rows in peer_rows.items()
+                },
+            },
+        )
 
         loop = asyncio.get_running_loop()
         validation = await asyncio.wait_for(
