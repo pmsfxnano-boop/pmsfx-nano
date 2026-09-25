@@ -120,31 +120,73 @@ def covariance(rows):
     return C
 
 
-def eigvals_qr(A, iters=80):
-    # Small dense real matrix. QR iteration with Gram-Schmidt; sufficient for
-    # regime diagnostics, where only spectral scale is required.
-    n = len(A)
-    M = [row[:] for row in A]
-    for _ in range(iters):
-        Q = [[0.0] * n for _ in range(n)]
-        R = [[0.0] * n for _ in range(n)]
-        cols = [[M[i][j] for i in range(n)] for j in range(n)]
-        for j in range(n):
-            v = cols[j][:]
-            for k in range(j):
-                r = sum(Q[i][k] * v[i] for i in range(n))
-                R[k][j] = r
-                for i in range(n):
-                    v[i] -= r * Q[i][k]
-            norm = math.sqrt(sum(vv * vv for vv in v))
-            if norm < 1e-12:
-                continue
-            R[j][j] = norm
-            for i in range(n):
-                Q[i][j] = v[i] / norm
-        M = matmul(R, Q)
-    return [M[i][i] for i in range(n)]
+def frob(A):
+    return math.sqrt(sum(v * v for row in A for v in row))
 
+
+def spectral_norm_power(A, iters=80):
+    # Largest singular value via power iteration on A^T A.
+    AT = mat_transpose(A)
+    B = matmul(AT, A)
+    n = len(B)
+    x = [1.0 / math.sqrt(n)] * n
+    for _ in range(iters):
+        y = matvec(B, x)
+        norm = math.sqrt(sum(v * v for v in y))
+        if norm < 1e-15:
+            return 0.0
+        x = [v / norm for v in y]
+    return math.sqrt(max(0.0, sum(v * v for v in matvec(A, x))))
+
+
+def commutator_non_normality(A):
+    AT = mat_transpose(A)
+    ATA = matmul(AT, A)
+    AAT = matmul(A, AT)
+    num = frob([[AAT[i][j] - ATA[i][j] for j in range(len(A))] for i in range(len(A))])
+    den = max(1e-12, frob(A) ** 2)
+    return num / den
+
+
+def jacobian_noneq_features(ret_rows):
+    X = [r[:-1] for r in ret_rows]
+    Y = [r[1:] for r in ret_rows]
+    Ymat = [list(y) for y in Y]
+    B = ridge_solve(X, Ymat, RIDGE)
+    A = mat_transpose(B)
+    expansion = spectral_norm_power(A)
+    trace = sum(A[i][i] for i in range(len(A)))
+    non_normality = commutator_non_normality(A)
+
+    # Time-reversal asymmetry of lagged cross-covariance: a dimensionless
+    # irreversibility proxy, not a literal thermodynamic entropy production.
+    d = len(SYMBOLS)
+    C1 = [[0.0 for _ in SYMBOLS] for _ in SYMBOLS]
+    for t in range(1, len(ret_rows)):
+        a = ret_rows[t - 1]
+        b = ret_rows[t]
+        for i in range(d):
+            for j in range(d):
+                C1[i][j] += a[i] * b[j] / max(1, len(ret_rows) - 1)
+    antisym = math.sqrt(sum((C1[i][j] - C1[j][i]) ** 2 for i in range(d) for j in range(d)))
+    norm_c1 = math.sqrt(sum(C1[i][j] ** 2 for i in range(d) for j in range(d)))
+    irreversibility = antisym / max(1e-12, norm_c1)
+
+    pred = [matvec(A, x) for x in X]
+    innovations = [[Y[i][j] - pred[i][j] for j in range(d)] for i in range(len(Y))]
+    innovation_energy = statistics.mean(sum(v * v for v in e) for e in innovations)
+    total_energy = statistics.mean(sum(v * v for v in y) for y in Y)
+    innovation_fraction = innovation_energy / max(1e-12, total_energy)
+    dissipative_proxy = math.log1p(max(0.0, innovation_fraction))
+
+    return [
+        expansion,
+        trace,
+        non_normality,
+        irreversibility,
+        innovation_fraction,
+        dissipative_proxy,
+    ]
 
 def jacobian_noneq_features(ret_rows):
     X = [r[:-1] for r in ret_rows]
@@ -309,12 +351,12 @@ print(json.dumps({
     "window": WINDOW,
     "ridge": RIDGE,
     "dynamic_features": [
-        "spectral_radius",
-        "max_real_eigenvalue",
+        "local_expansion_sigma_max",
         "trace_J",
+        "non_normality",
         "lag-covariance_irreversibility_proxy",
-        "innovation_energy",
-        "log1p_innovation_energy",
+        "innovation_fraction",
+        "dissipative_proxy_log1p",
     ],
     "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "results": results,
