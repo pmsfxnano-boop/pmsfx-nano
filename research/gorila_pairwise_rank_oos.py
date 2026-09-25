@@ -193,6 +193,8 @@ def run_horizon(series, horizon):
     usable = sorted(data)
     oos = {}
     pairwise_hits = []
+    fold_execution = {str(c): [] for c in COSTS_BPS}
+    fold_top_bottom_hits = []
     folds = 0
     start = TRAIN_MIN_DATES
     while start + TEST_SIZE_DATES <= len(usable):
@@ -203,9 +205,10 @@ def run_horizon(series, horizon):
             start += TEST_SIZE_DATES
             continue
         model = fit(X, y)
+        fold_oos = {}
         for d in test_dates:
             scores = {s: rank_score(model, data[d]["x"][s]) for s in SYMBOLS}
-            oos[d] = {
+            fold_oos[d] = {
                 s: {
                     "score": scores[s],
                     "momentum": data[d]["x"][s][2],
@@ -218,6 +221,21 @@ def run_horizon(series, horizon):
                 pred = pair_probability >= 0.5
                 actual = data[d]["fwd"][a] > data[d]["fwd"][b]
                 pairwise_hits.append(pred == actual)
+        fold_top = []
+        for d in sorted(fold_oos):
+            rows = fold_oos[d]
+            ranked = sorted(SYMBOLS, key=lambda s: rows[s]["score"])
+            fold_top.append(rows[ranked[-1]]["fwd"] > rows[ranked[0]]["fwd"])
+        fold_top_bottom_hits.append(sum(fold_top) / len(fold_top) if fold_top else 0.0)
+        oos.update(fold_oos)
+        for cost in COSTS_BPS:
+            fm = execute(fold_oos, horizon, cost, "model")
+            ff = execute(fold_oos, horizon, cost, "momentum")
+            fold_execution[str(cost)].append({
+                "model_return": fm["net_return"],
+                "momentum_return": ff["net_return"],
+                "delta_return": fm["net_return"] - ff["net_return"],
+            })
         folds += 1
         start += TEST_SIZE_DATES
 
@@ -237,6 +255,16 @@ def run_horizon(series, horizon):
         "outer_folds": folds,
         "pairwise_accuracy": sum(pairwise_hits) / len(pairwise_hits),
         "pairwise_pairs": len(pairwise_hits),
+        "top_bottom_hit_rate": statistics.mean(fold_top_bottom_hits) if fold_top_bottom_hits else 0.0,
+        "fold_top_bottom_hit_rates": fold_top_bottom_hits,
+        "fold_execution": {
+            c: {
+                "folds": vals,
+                "delta_positive_folds": sum(v["delta_return"] > 0 for v in vals),
+                "delta_positive_rate": (sum(v["delta_return"] > 0 for v in vals) / len(vals)) if vals else 0.0,
+            }
+            for c, vals in fold_execution.items()
+        },
         "execution": execution,
     }
 
