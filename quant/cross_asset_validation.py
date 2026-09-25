@@ -161,6 +161,45 @@ def _folds(temporal_samples):
     )
 
 
+def _coverage_diagnostics(
+    target_rows: list[dict[str, Any]],
+    peer_rows: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    target = _normalize_rows(target_rows)
+    peers = {name: _normalize_rows(rows) for name, rows in peer_rows.items()}
+    expected = timedelta(minutes=5)
+
+    def exact_pairs(rows: list[dict[str, Any]]) -> int:
+        return sum(
+            1
+            for left, right in zip(rows, rows[1:])
+            if right["time"] - left["time"] == expected
+        )
+
+    peer_observations: dict[str, int] = {}
+    for peer, rows in peers.items():
+        count = 0
+        for row in target:
+            if _peer_observation(rows, row["time"]) is not None:
+                count += 1
+        peer_observations[peer] = count
+
+    return {
+        "target_rows": len(target),
+        "target_exact_5m_pairs": exact_pairs(target),
+        "target_five_minute_series": _looks_like_five_minute_series(target),
+        "peer_rows": {peer: len(rows) for peer, rows in peers.items()},
+        "peer_exact_5m_pairs": {
+            peer: exact_pairs(rows) for peer, rows in peers.items()
+        },
+        "peer_five_minute_series": {
+            peer: _looks_like_five_minute_series(rows)
+            for peer, rows in peers.items()
+        },
+        "peer_observations_available": peer_observations,
+    }
+
+
 def validate_cross_asset(
     target_rows: list[dict[str, Any]],
     peer_rows: dict[str, list[dict[str, Any]]],
@@ -182,6 +221,7 @@ def validate_cross_asset(
             "validation_type": "cross_asset_walk_forward_purged_embargoed",
         }
 
+    coverage = _coverage_diagnostics(target, peers)
     samples, temporal_samples, _, _ = _build_samples(target, peers)
     if len(samples) < TRAIN_SIZE + TEST_SIZE:
         return {
@@ -192,6 +232,7 @@ def validate_cross_asset(
             "validation_type": "cross_asset_walk_forward_purged_embargoed",
             "sample_count": len(samples),
             "minimum_required": TRAIN_SIZE + TEST_SIZE,
+            "coverage": coverage,
         }
 
     folds = _folds(temporal_samples)
@@ -247,6 +288,7 @@ def validate_cross_asset(
             "validation_type": "cross_asset_walk_forward_purged_embargoed",
             "fold_count": len(folds),
             "usable_fold_count": 0,
+            "coverage": coverage,
         }
 
     metrics = _metrics(all_probabilities, all_labels, all_baselines)
@@ -289,6 +331,7 @@ def validate_cross_asset(
         "sample_count": len(samples),
         "fold_count": len(folds),
         "usable_fold_count": len(fold_results),
+        "coverage": coverage,
         "oos_count": len(all_labels),
         "metrics": metrics,
         "bootstrap": bootstrap,
