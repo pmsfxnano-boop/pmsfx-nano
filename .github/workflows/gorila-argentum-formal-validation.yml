@@ -1,0 +1,134 @@
+name: Gorila Argentum Formal Validation Pipeline
+
+on:
+  push:
+    branches: [gorila-argentum-v0]
+  workflow_dispatch:
+
+concurrency:
+  group: gorila-argentum-formal-validation
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  ranking:
+    name: Nested ranking + corrected placebo + LOO
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - name: Core tests
+        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py
+      - name: Nested purged ranking
+        run: set -o pipefail; python research/gorila_nested_pairwise_rank_oos.py | tee ranking-nested.json
+      - name: Corrected temporal placebo
+        env:
+          GORILA_HORIZONS: "5,10"
+        run: set -o pipefail; python research/gorila_nested_rank_placebo_oos.py | tee ranking-placebo.json
+      - name: Corrected universe LOO
+        env:
+          GORILA_HORIZONS: "5,10"
+        run: set -o pipefail; python research/gorila_rank_universe_loo_oos.py | tee ranking-universe-loo.json
+      - name: Upload ranking evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-formal-ranking
+          path: |
+            ranking-nested.json
+            ranking-placebo.json
+            ranking-universe-loo.json
+
+  robustness:
+    name: Horizon/cost/lag robustness
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        horizon: [5, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Stress
+        env:
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+        run: set -o pipefail; python research/gorila_nested_rank_stress_oos.py | tee robustness-stress-${{ matrix.horizon }}d.json
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-formal-stress-${{ matrix.horizon }}d
+          path: robustness-stress-${{ matrix.horizon }}d.json
+
+  jacobian:
+    name: Jacobian WFO stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Jacobian stress
+        run: set -o pipefail; python research/gorila_jacobian_stress_oos.py | tee jacobian-stress.json
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-formal-jacobian
+          path: jacobian-stress.json
+
+  audit:
+    name: Evidence manifest
+    needs: [ranking, robustness, jacobian]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build manifest
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          manifest = {
+              "status": "COMPLETE",
+              "commit": os.environ.get("GITHUB_SHA"),
+              "workflow": os.environ.get("GITHUB_WORKFLOW"),
+              "note": "This pipeline executes the real OOS/stress/placebo/LOO gates in one non-cancelling workflow. Formal PBO/DSR remains blocked until candidate-by-split raw matrices or daily strategy returns are persisted.",
+              "gates": {
+                  "ranking": "${{ needs.ranking.result }}",
+                  "robustness": "${{ needs.robustness.result }}",
+                  "jacobian": "${{ needs.jacobian.result }}"
+              },
+              "formal_search_gate": {
+                  "cpcv": "PENDING_RAW_CANDIDATE_MATRIX",
+                  "pbo": "PENDING_RAW_CANDIDATE_MATRIX",
+                  "dsr": "PENDING_DAILY_OR_TRADE_RETURN_SERIES"
+              }
+          }
+          with open("gorila-formal-validation-manifest.json","w") as f:
+              json.dump(manifest,f,indent=2)
+          print(json.dumps(manifest,indent=2))
+          PY
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-formal-validation-manifest
+          path: gorila-formal-validation-manifest.json
