@@ -42,6 +42,66 @@ _CACHE: dict[tuple[str, bool], tuple[float, dict[str, Any]]] = {}
 _BARS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
+async def get_historical_bars(
+    symbol: str,
+    token: str,
+    *,
+    force_refresh: bool = False,
+) -> list[dict[str, Any]]:
+    symbol = symbol.upper()
+    cached = _BARS_CACHE.get(symbol)
+    if (
+        not force_refresh
+        and cached
+        and __import__("time").time() - cached[0] < CACHE_SECONDS
+    ):
+        return cached[1]
+
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=LOOKBACK_DAYS)
+    headers = {
+        "Authorization": f"Token {token}",
+        "Content-Type": "application/json",
+    }
+    params = {
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+        "resampleFreq": RESAMPLE_FREQ,
+        "columns": "open,high,low,close,volume",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(
+            f"{HISTORY_URL}/{symbol}/prices",
+            headers=headers,
+            params=params,
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Tiingo historical HTTP {response.status_code} for {symbol}"
+        )
+
+    data = response.json()
+    if not isinstance(data, list):
+        data = data.get("data", []) if isinstance(data, dict) else []
+    if not isinstance(data, list):
+        data = []
+
+    rows = data[-MAX_ROWS:]
+    _BARS_CACHE[symbol] = (__import__("time").time(), rows)
+    print(
+        "PMSF-X HISTORICAL BARS:",
+        {
+            "symbol": symbol,
+            "rows": len(rows),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "resample_freq": RESAMPLE_FREQ,
+        },
+    )
+    return rows
+
+
 def get_cached_bars(symbol: str, *, max_age_seconds: float = CACHE_SECONDS) -> list[dict[str, Any]] | None:
     cached = _BARS_CACHE.get(symbol.upper())
     if not cached:
