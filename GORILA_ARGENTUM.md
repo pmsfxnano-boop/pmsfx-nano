@@ -77,3 +77,18 @@ The experiments have now answered the first coupling question: coupling is obser
 The next work should therefore move away from forcing coupling into prediction and focus on the components that can be measured directly against the final objective: stronger point-in-time feature construction, purged walk-forward validation, multi-horizon evaluation, calibration, and realistic execution-aware metrics. Coupling can remain in the command center as context and as a future research variable.
 
 The CI uses pipefail, all four research artifacts are uploaded, and the latest Gorila Argentum CI run completed successfully.
+
+
+### Multi-horizon purged walk-forward — corrected execution accounting
+
+Run 35 completed successfully after correcting the transaction-cost implementation. The benchmark used expanding walk-forward training with a minimum 504 observations, 126-observation test blocks, and a purge equal to the forecast horizon. Execution observations were made non-overlapping.
+
+At the 25 bps round-trip cost level, using a fixed 0.60/0.40 long/short probability gate:
+- 5-day horizon was net positive for GGAL, BMA, YPFD, PAMP and CEPU; TGSU2 was negative.
+- 10-day horizon was net positive for GGAL, BMA, YPFD, PAMP and TGSU2; CEPU was negative.
+- The observed maximum drawdowns in these positive cases were still large, roughly 34.5% to 73.7%.
+- Probability calibration was weak at these horizons, with ECE10 ranging roughly from 0.10 to 0.19.
+
+Therefore these positive execution results are treated as a research lead, not a promoted trading rule. The next robustness gate is to test long-only versus long/short behavior and higher round-trip costs (50 and 100 bps), using the same point-in-time walk-forward discipline.
+
+A prior cost-accounting error was corrected before recording these results; earlier double-charged-cost figures are not used.
