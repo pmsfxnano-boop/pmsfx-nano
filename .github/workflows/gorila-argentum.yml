@@ -27,6 +27,8 @@ jobs:
         run: python -c "from gorila_argentum.app import app; print(app.title, app.version)"
       - name: Core Argentine OOS research
         run: python research/gorila_oos.py | tee gorila-oos.json
+      - name: Dynamic coupling OOS research
+        run: python research/gorila_coupling_oos.py | tee gorila-coupling-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -45,4 +47,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gorila-argentum-oos
-          path: gorila-oos.json
+          path: |
+            gorila-oos.json
+            gorila-coupling-oos.json
