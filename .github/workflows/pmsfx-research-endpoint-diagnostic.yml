@@ -1,0 +1,25 @@
+name: PMSF-X research endpoint diagnostic
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "research/endpoint-diagnostic.txt"
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Call research endpoint and capture HTTP result
+        shell: bash
+        run: |
+          set +e
+          date -u
+          curl -sS --connect-timeout 20 --max-time 600             -o /tmp/body.json             -w "HTTP_STATUS=%{http_code}\nTIME_TOTAL=%{time_total}\n"             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL
+          rc=$?
+          echo "CURL_RC=$rc"
+          echo "=== RESPONSE BODY ==="
+          cat /tmp/body.json || true
+          exit 0
