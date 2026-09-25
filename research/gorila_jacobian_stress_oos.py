@@ -254,6 +254,8 @@ def metrics(model_rows, horizon, lag, idxs):
     }
 
 
+DYN_CACHE = {}
+
 def build_rows(series, window, ridge, horizon, lag):
     dates = sorted(set.intersection(*(set(series[s]) for s in SYMBOLS)))
     rets = []
@@ -270,10 +272,16 @@ def build_rows(series, window, ridge, horizon, lag):
             rets.append((dates[i], row))
     rdates = [d for d, _ in rets]
     rval = [r for _, r in rets]
+    cache_key = (window, ridge)
+    if cache_key not in DYN_CACHE:
+        DYN_CACHE[cache_key] = {
+            rdates[k]: jac_features(rval[k-window:k+1], window, ridge)
+            for k in range(window, len(rval))
+        }
     out = {}
     for k in range(window, len(rval) - horizon - lag):
         date = rdates[k]
-        dyn = jac_features(rval[k-window:k+1], window, ridge)
+        dyn = DYN_CACHE[cache_key][date]
         di = dates.index(date)
         out[date] = {}
         target_date = rdates[k + horizon + lag]
