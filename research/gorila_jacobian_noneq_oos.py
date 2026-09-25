@@ -188,43 +188,6 @@ def jacobian_noneq_features(ret_rows):
         dissipative_proxy,
     ]
 
-def jacobian_noneq_features(ret_rows):
-    X = [r[:-1] for r in ret_rows]
-    Y = [r[1:] for r in ret_rows]
-    Ymat = [list(y) for y in Y]
-    B = ridge_solve(X, Ymat, RIDGE)
-    A = mat_transpose(B)
-    eig = eigvals_qr(A)
-    spectral_radius = max(abs(v) for v in eig)
-    max_real = max(eig)
-    trace = sum(A[i][i] for i in range(len(A)))
-    # lagged covariance measures temporal asymmetry / irreversibility proxy
-    C0 = covariance(Y)
-    C1 = [[0.0 for _ in SYMBOLS] for _ in SYMBOLS]
-    d = len(SYMBOLS)
-    for t in range(1, len(ret_rows)):
-        a = ret_rows[t - 1]
-        b = ret_rows[t]
-        for i in range(d):
-            for j in range(d):
-                C1[i][j] += a[i] * b[j] / max(1, len(ret_rows) - 1)
-    antisym = math.sqrt(sum((C1[i][j] - C1[j][i]) ** 2 for i in range(d) for j in range(d)))
-    norm_c1 = math.sqrt(sum(C1[i][j] ** 2 for i in range(d) for j in range(d)))
-    irreversibility = antisym / max(1e-12, norm_c1)
-    pred = [matvec(A, x) for x in X]
-    innovations = [[Y[i][j] - pred[i][j] for j in range(d)] for i in range(len(Y))]
-    innovation_energy = statistics.mean(sum(v * v for v in e) for e in innovations)
-    cross_entropy_proxy = math.log1p(max(0.0, innovation_energy))
-    return [
-        spectral_radius,
-        max_real,
-        trace,
-        irreversibility,
-        innovation_energy,
-        cross_entropy_proxy,
-    ]
-
-
 def own_features(series, dates, i, symbol):
     vals = [series[symbol][d] for d in dates]
     if i < 25:
