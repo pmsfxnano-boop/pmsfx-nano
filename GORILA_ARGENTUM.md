@@ -92,3 +92,40 @@ At the 25 bps round-trip cost level, using a fixed 0.60/0.40 long/short probabil
 Therefore these positive execution results are treated as a research lead, not a promoted trading rule. The next robustness gate is to test long-only versus long/short behavior and higher round-trip costs (50 and 100 bps), using the same point-in-time walk-forward discipline.
 
 A prior cost-accounting error was corrected before recording these results; earlier double-charged-cost figures are not used.
+
+
+### Jacobian / nonequilibrium OOS — 2026-09-25
+
+Se ejecutó sobre 5 años de historia diaria pública de GGAL, BMA, YPFD, PAMP, TGSU2 y CEPU, con horizontes de 5 y 10 días, separación cronológica 80/20 y purga por horizonte.
+
+La representación probada fue una transición VAR(1) local regularizada, usada como matriz dinámica efectiva, más:
+- mayor expansión local (sigma máxima);
+- trace(J);
+- no-normalidad;
+- proxy de irreversibilidad por covarianza retardada;
+- fracción de innovación;
+- proxy disipativo log1p.
+
+Resultado: las 12 combinaciones activo-horizonte empeoraron el Brier frente al V0 base.
+
+Promedios de delta Brier:
+- horizonte 5d: aproximadamente +0.0519;
+- horizonte 10d: aproximadamente +0.0856.
+
+Decisión: esta construcción Jacobiano/nonequilibrium no entra en el predictor V0.
+
+Importante: las variables anteriores son proxies estadísticos de dinámica local y no se interpretan como entropía termodinámica física literal.
+
+### Siguiente experimento: ablación
+
+Se añadió `research/gorila_jacobian_ablation_oos.py` para identificar si existe algún componente individual rescatable:
+- expansión;
+- trace;
+- no-normalidad;
+- irreversibilidad;
+- innovación;
+- proxy disipativo;
+- bloques estructural y nonequilibrium;
+- conjunto completo.
+
+El criterio de promoción será OOS, no significación aparente in-sample. Si ningún componente muestra mejora consistente, toda la rama Jacobiana se conserva únicamente como diagnóstico de régimen/estado y se abandona como variable predictiva.
