@@ -16,8 +16,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in \$(seq 1 30); do
-            echo "Health check \$attempt/30"
+          for attempt in $(seq 1 30); do
+            echo "Health check $attempt/30"
             if curl --fail --silent --show-error --max-time 20 \
               https://pmsfx-nano.onrender.com/health \
               -o /tmp/health.json; then
@@ -57,11 +57,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          run_id="\$(cat /tmp/run_id.txt)"
-          for attempt in \$(seq 1 90); do
-            echo "Validation poll \$attempt/90: \$run_id"
+          run_id="$(cat /tmp/run_id.txt)"
+          for attempt in $(seq 1 90); do
+            echo "Validation poll $attempt/90: $run_id"
             curl --fail --silent --show-error --max-time 30 \
-              "https://pmsfx-nano.onrender.com/api/research/run/\$run_id" \
+              "https://pmsfx-nano.onrender.com/api/research/run/$run_id" \
               -o /tmp/status.json
 
             python - <<'PY' > /tmp/status_line.txt
@@ -74,17 +74,17 @@ jobs:
             print(error or "")
             PY
 
-            status="\$(sed -n '1p' /tmp/status_line.txt)"
-            error="\$(sed -n '2p' /tmp/status_line.txt)"
-            echo "status=\$status error=\$error"
+            status="$(sed -n '1p' /tmp/status_line.txt)"
+            error="$(sed -n '2p' /tmp/status_line.txt)"
+            echo "status=$status error=$error"
 
-            if [ "\$status" = "COMPLETED" ]; then
+            if [ "$status" = "COMPLETED" ]; then
               cp /tmp/status.json /tmp/final.json
               break
             fi
 
-            if [ "\$status" = "ERROR" ]; then
-              echo "Research validation failed: \$error"
+            if [ "$status" = "ERROR" ]; then
+              echo "Research validation failed: $error"
               cat /tmp/status.json
               exit 1
             fi
