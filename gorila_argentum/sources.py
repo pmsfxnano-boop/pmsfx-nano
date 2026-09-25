@@ -50,19 +50,18 @@ def bcra_fx():
         with _client() as c:
             data=c.get(settings.bcra_url); data.raise_for_status(); payload=data.json()
         rows=[]
-        candidates=payload.get("results") if isinstance(payload,dict) else payload
-        if isinstance(candidates,dict):
-            candidates=candidates.get("results") or candidates.get("monedas") or []
-        for x in candidates or []:
-            if not isinstance(x,dict): continue
-            stamp=x.get("fecha") or x.get("Fecha") or received.date().isoformat()
-            for key in ("tipoCambio","valor","venta","cotizacion","Value"):
-                if x.get(key) is not None:
+        results=payload.get("results") if isinstance(payload,dict) else []
+        for item in results or []:
+            stamp=item.get("fecha") or item.get("Fecha") or received.date().isoformat()
+            detalles=item.get("detalle") or item.get("Detalle") or []
+            for detail in detalles:
+                value=detail.get("tipoCotizacion") or detail.get("tipoCambio") or detail.get("valor")
+                if value is not None:
                     try:
-                        rows.append({"symbol":"USD_BCRA","field":"reference","value":float(x[key]),"event_time":str(stamp),"received_time":iso(received),"source":source,"latency_ms":(time.perf_counter()-t0)*1000})
-                        break
-                    except (TypeError,ValueError): pass
-        if not rows: raise RuntimeError("BCRA payload parsed but no FX value found")
+                        rows.append({"symbol":"USD_BCRA","field":"reference","value":float(value),"event_time":str(stamp),"received_time":iso(received),"source":source,"latency_ms":(time.perf_counter()-t0)*1000})
+                    except (TypeError,ValueError):
+                        pass
+        if not rows: raise RuntimeError("BCRA payload parsed but no USD reference quote found")
         return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
     except Exception as e:
         return SourceResult(source,error=str(e),latency_ms=(time.perf_counter()-t0)*1000)
