@@ -38,6 +38,8 @@ jobs:
         run: set -o pipefail; python research/gorila_multihorizon_wfo.py | tee gorila-multihorizon-wfo.json
       - name: Execution robustness OOS research
         run: set -o pipefail; python research/gorila_execution_robustness_oos.py | tee gorila-execution-robustness-oos.json
+      - name: Nested execution selection OOS research
+        run: set -o pipefail; python research/gorila_nested_execution_selection_oos.py | tee gorila-nested-execution-selection-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -63,3 +65,4 @@ jobs:
             gorila-coupling-gate-oos.json
             gorila-multihorizon-wfo.json
             gorila-execution-robustness-oos.json
+            gorila-nested-execution-selection-oos.json
