@@ -909,6 +909,14 @@ async def multihorizon_research(ticker: str):
     if not rows:
         raise HTTPException(status_code=503, detail="Historical bars unavailable")
 
+    print(
+        "PMSF-X MULTIHORIZON RESEARCH START:",
+        {
+            "symbol": symbol,
+            "rows": len(rows),
+            "mode": "cross_fitted_walk_forward_purged_embargoed",
+        },
+    )
     try:
         validation = await asyncio.to_thread(
             validate_multi_horizon_meta,
