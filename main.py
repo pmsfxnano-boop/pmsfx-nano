@@ -162,6 +162,77 @@ async def initialize_persistence():
 
 
 @app.on_event("startup")
+async def research_validation_runner():
+    if os.getenv("PMSFX_RESEARCH_BOOT", "0") != "1":
+        return
+    token = os.getenv("TIINGO_API_KEY")
+    if not token:
+        print("PMSF-X RESEARCH RUNNER: TIINGO_API_KEY missing")
+        return
+
+    symbols = tuple(
+        item.strip().upper()
+        for item in os.getenv("PMSFX_RESEARCH_SYMBOLS", "AAPL").split(",")
+        if item.strip()
+    )
+    print(
+        "PMSF-X RESEARCH RUNNER: STARTED",
+        {"symbols": symbols, "mode": "non_blocking_one_shot"},
+    )
+
+    async def run():
+        for symbol in symbols:
+            try:
+                historical = await asyncio.wait_for(
+                    get_historical_forecast(symbol, token, evaluate=False),
+                    timeout=60.0,
+                )
+                rows = get_cached_bars(symbol)
+                if not rows:
+                    print(
+                        "PMSF-X RESEARCH RUNNER: NO_BARS",
+                        {"symbol": symbol},
+                    )
+                    continue
+                validation = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        validate_multi_horizon_meta,
+                        rows,
+                        symbol=symbol,
+                    ),
+                    timeout=600.0,
+                )
+                print(
+                    "PMSF-X RESEARCH RUNNER: RESULT",
+                    {
+                        "symbol": symbol,
+                        "status": validation.get("status"),
+                        "validated": validation.get("validated"),
+                        "sample_counts": validation.get("sample_counts"),
+                        "outer_folds": validation.get("outer_fold_count"),
+                        "usable_folds": validation.get("usable_fold_count"),
+                        "oos_count": validation.get("oos_count"),
+                        "metrics": validation.get("metrics"),
+                        "primary_300s_metrics": validation.get("primary_300s_metrics"),
+                        "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
+                        "bootstrap": validation.get("bootstrap"),
+                        "gate": validation.get("gate"),
+                    },
+                )
+            except Exception as exc:
+                print(
+                    "PMSF-X RESEARCH RUNNER: ERROR",
+                    {
+                        "symbol": symbol,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+        print("PMSF-X RESEARCH RUNNER: FINISHED", {"symbols": symbols})
+
+    asyncio.create_task(run())
+
+
+@app.on_event("startup")
 async def tiingo_startup_check():
     if os.getenv("PMSFX_TIINGO_SELFTEST") != "1":
         print("PMSF-X SELFTEST AAPL: SKIPPED (set PMSFX_TIINGO_SELFTEST=1 to enable)")
