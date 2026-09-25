@@ -16,9 +16,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 30); do
-            echo "Health check $attempt/30"
-            if curl --fail --silent --show-error --max-time 20               https://pmsfx-nano.onrender.com/health               -o /tmp/health.json; then
+          for attempt in \$(seq 1 30); do
+            echo "Health check \$attempt/30"
+            if curl --fail --silent --show-error --max-time 20 \
+              https://pmsfx-nano.onrender.com/health \
+              -o /tmp/health.json; then
               cat /tmp/health.json
               echo "Service health is ready."
               break
@@ -27,21 +29,84 @@ jobs:
           done
           test -s /tmp/health.json
 
-      - name: Run AAPL nested/cross-fitted validation
+      - name: Queue professional validation
         shell: bash
         run: |
           set -euo pipefail
-          echo "Starting professional validation. This endpoint is intentionally long-running."
-          curl --fail --silent --show-error --max-time 900             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL             -o /tmp/aapl.json
+          curl --fail --silent --show-error --max-time 30 \
+            -X POST \
+            https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL \
+            -o /tmp/start.json
+
+          cat /tmp/start.json
 
           python - <<'PY'
           import json
-          with open("/tmp/aapl.json", "r", encoding="utf-8") as fh:
+          with open("/tmp/start.json", "r", encoding="utf-8") as fh:
               payload = json.load(fh)
 
-          validation = payload["validation"]
+          run_id = payload.get("run_id")
+          if not run_id:
+              raise SystemExit(f"Missing run_id in response: {payload}")
+
+          with open("/tmp/run_id.txt", "w", encoding="utf-8") as fh:
+              fh.write(run_id)
+          PY
+
+      - name: Poll professional validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="\$(cat /tmp/run_id.txt)"
+          for attempt in \$(seq 1 90); do
+            echo "Validation poll \$attempt/90: \$run_id"
+            curl --fail --silent --show-error --max-time 30 \
+              "https://pmsfx-nano.onrender.com/api/research/run/\$run_id" \
+              -o /tmp/status.json
+
+            python - <<'PY' > /tmp/status_line.txt
+            import json
+            with open("/tmp/status.json", "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            status = payload.get("status")
+            error = payload.get("error")
+            print(status or "")
+            print(error or "")
+            PY
+
+            status="\$(sed -n '1p' /tmp/status_line.txt)"
+            error="\$(sed -n '2p' /tmp/status_line.txt)"
+            echo "status=\$status error=\$error"
+
+            if [ "\$status" = "COMPLETED" ]; then
+              cp /tmp/status.json /tmp/final.json
+              break
+            fi
+
+            if [ "\$status" = "ERROR" ]; then
+              echo "Research validation failed: \$error"
+              cat /tmp/status.json
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          test -s /tmp/final.json
+
+      - name: Report validation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          with open("/tmp/final.json", "r", encoding="utf-8") as fh:
+              payload = json.load(fh)
+
+          validation = payload["result"]["validation"]
           print(json.dumps({
-              "symbol": "AAPL",
+              "symbol": payload.get("symbol"),
+              "run_id": payload.get("run_id"),
               "status": validation.get("status"),
               "validated": validation.get("validated"),
               "sample_counts": validation.get("sample_counts"),
@@ -57,6 +122,6 @@ jobs:
               "bootstrap_vs_300s": validation.get("primary_300s_bootstrap"),
               "ablation": validation.get("ablation"),
               "gate": validation.get("gate"),
-              "research_run_id": payload.get("research_run_id"),
+              "research_backtest_id": payload["result"].get("research_backtest_id"),
           }, indent=2))
           PY
