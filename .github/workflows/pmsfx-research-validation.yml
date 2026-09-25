@@ -12,21 +12,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Wait for live research endpoint
+      - name: Wait for Render health
         shell: bash
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
-            echo "Research endpoint check $attempt/30"
-            if curl --fail --silent --show-error --max-time 20               https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL               -o /tmp/aapl.json; then
-              echo "Research endpoint is live."
+            echo "Health check $attempt/30"
+            if curl --fail --silent --show-error --connect-timeout 10 --max-time 20               https://pmsfx-nano.onrender.com/health > /tmp/health.json; then
+              cat /tmp/health.json
               break
             fi
-            sleep 20
+            sleep 10
           done
-          test -s /tmp/aapl.json
+          test -s /tmp/health.json
 
-      - name: Validate AAPL multi-horizon meta
+      - name: Run AAPL professional validation
+        shell: bash
+        run: |
+          set +e
+          curl --fail --silent --show-error             --connect-timeout 20             --max-time 900             -o /tmp/aapl.json             -w "HTTP_STATUS=%{http_code}\nTIME_TOTAL=%{time_total}\n"             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL
+          rc=$?
+          echo "CURL_RC=$rc"
+          echo "=== RESPONSE ==="
+          cat /tmp/aapl.json || true
+          test "$rc" -eq 0
+
+      - name: Print validation evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -41,7 +52,9 @@ jobs:
               "status": validation.get("status"),
               "validated": validation.get("validated"),
               "sample_counts": validation.get("sample_counts"),
-              "outer_fold_count": validation.get("outer_fold_count"),
+              "specialist_oos_counts": validation.get("specialist_oos_counts"),
+              "cross_fitted_meta_count": validation.get("cross_fitted_meta_count"),
+              "meta_fold_count": validation.get("meta_fold_count"),
               "usable_fold_count": validation.get("usable_fold_count"),
               "oos_count": validation.get("oos_count"),
               "metrics": validation.get("metrics"),
