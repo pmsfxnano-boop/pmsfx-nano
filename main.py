@@ -26,6 +26,10 @@ from quant.db import (
     record_forecast,
     record_model_registry,
     record_outcome,
+    create_research_run,
+    update_research_run,
+    get_research_run,
+    latest_research_run,
 )
 from quant.data_health import assess_quote
 from quant.execution_costs import estimate_execution_cost
@@ -895,87 +899,149 @@ async def state(ticker: str):
     response_payload["model_registry_id"] = registry_id
     return response_payload
 
-@app.get("/api/research/multihorizon/{ticker}")
-async def multihorizon_research(ticker: str):
-    symbol = normalize_ticker(ticker)
-    if not symbol or not symbol.isalnum():
-        raise HTTPException(status_code=400, detail="Invalid ticker")
+async def _run_multihorizon_research_job(run_id: str, symbol: str):
     token = os.getenv("TIINGO_API_KEY")
     if not token:
-        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+        update_research_run(
+            run_id,
+            status="ERROR",
+            error="TIINGO_API_KEY is not configured",
+            finished_at=datetime.now(timezone.utc),
+        )
+        return
 
-    result = await get_historical_forecast(symbol, token, evaluate=False)
-    rows = get_cached_bars(symbol)
-    if not rows:
-        raise HTTPException(status_code=503, detail="Historical bars unavailable")
-
-    print(
-        "PMSF-X MULTIHORIZON RESEARCH START:",
-        {
-            "symbol": symbol,
-            "rows": len(rows),
-            "mode": "cross_fitted_walk_forward_purged_embargoed",
-        },
+    started_at = datetime.now(timezone.utc)
+    update_research_run(
+        run_id,
+        status="RUNNING",
+        started_at=started_at,
     )
+    print(
+        "PMSF-X MULTIHORIZON RESEARCH JOB START:",
+        {"run_id": run_id, "symbol": symbol},
+    )
+
     try:
-        validation = await asyncio.to_thread(
-            validate_multi_horizon_meta,
-            rows,
-            symbol=symbol,
+        historical = await asyncio.wait_for(
+            get_historical_forecast(symbol, token, evaluate=False),
+            timeout=60.0,
         )
-    except Exception as exc:
-        print(
-            "PMSF-X MULTIHORIZON RESEARCH ERROR:",
-            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Multihorizon research validation failed: {type(exc).__name__}",
+        rows = get_cached_bars(symbol)
+        if not rows:
+            raise RuntimeError("Historical bars unavailable")
+
+        validation = await asyncio.wait_for(
+            asyncio.to_thread(
+                validate_multi_horizon_meta,
+                rows,
+                symbol=symbol,
+            ),
+            timeout=900.0,
         )
 
-    research_run_id = None
-    try:
-        research_run_id = record_backtest(
+        research_backtest_id = record_backtest(
             symbol,
             {
                 "model_id": "multihorizon-meta-research-v1",
-                "lookback_days": result.get("lookback_days"),
-                "bars": result.get("bars"),
+                "lookback_days": historical.get("lookback_days"),
+                "bars": historical.get("bars"),
                 "evaluation": validation,
             },
         )
-    except Exception as exc:
+
+        finished_at = datetime.now(timezone.utc)
+        result = {
+            "service": "pmsfx-nano",
+            "symbol": symbol,
+            "historical_model_id": historical.get("model_id"),
+            "historical_bars": historical.get("bars"),
+            "research_run_id": run_id,
+            "research_backtest_id": research_backtest_id,
+            "validation": validation,
+        }
+        update_research_run(
+            run_id,
+            status="COMPLETED",
+            result=result,
+            finished_at=finished_at,
+        )
         print(
-            "PMSF-X MULTIHORIZON RESEARCH SAVE ERROR:",
-            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+            "PMSF-X MULTIHORIZON RESEARCH JOB COMPLETE:",
+            {
+                "run_id": run_id,
+                "symbol": symbol,
+                "status": validation.get("status"),
+                "validated": validation.get("validated"),
+                "usable_folds": validation.get("usable_fold_count"),
+                "oos_count": validation.get("oos_count"),
+                "brier_skill": (validation.get("metrics") or {}).get("brier_skill"),
+                "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
+                "research_backtest_id": research_backtest_id,
+            },
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        error = f"{type(exc).__name__}: {exc}"
+        update_research_run(
+            run_id,
+            status="ERROR",
+            error=error,
+            finished_at=finished_at,
+        )
+        print(
+            "PMSF-X MULTIHORIZON RESEARCH JOB ERROR:",
+            {"run_id": run_id, "symbol": symbol, "error": error},
         )
 
-    print(
-        "PMSF-X MULTIHORIZON RESEARCH:",
-        {
-            "symbol": symbol,
-            "status": validation.get("status"),
-            "validated": validation.get("validated"),
-            "usable_folds": validation.get("usable_fold_count"),
-            "oos_count": validation.get("oos_count"),
-            "brier_skill": (validation.get("metrics") or {}).get("brier_skill"),
-            "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
-            "delta_brier_ci_low": (
-                (validation.get("primary_300s_bootstrap") or {}).get(
-                    "delta_brier_ci_low"
-                )
-            ),
-            "ece": (validation.get("metrics") or {}).get("ece"),
-            "research_run_id": research_run_id,
-        },
-    )
+
+@app.post("/api/research/multihorizon/{ticker}", status_code=202)
+async def start_multihorizon_research(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    if not os.getenv("TIINGO_API_KEY"):
+        raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+    if not DB_READY:
+        raise HTTPException(status_code=503, detail="Database is not ready")
+
+    run_id = create_research_run(symbol)
+    if not run_id:
+        raise HTTPException(status_code=503, detail="Unable to create research run")
+
+    asyncio.create_task(_run_multihorizon_research_job(run_id, symbol))
     return {
         "service": "pmsfx-nano",
         "symbol": symbol,
-        "historical_model_id": result.get("model_id"),
-        "historical_bars": result.get("bars"),
-        "research_run_id": research_run_id,
-        "validation": validation,
+        "run_id": run_id,
+        "status": "QUEUED",
+        "poll": f"/api/research/run/{run_id}",
+        "validation_type": "cross_fitted_walk_forward_purged_embargoed",
+    }
+
+
+@app.get("/api/research/run/{run_id}")
+def research_run_status(run_id: str):
+    result = get_research_run(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    return {
+        "service": "pmsfx-nano",
+        **result,
+    }
+
+
+@app.get("/api/research/multihorizon/{ticker}")
+def latest_multihorizon_research(ticker: str):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    result = latest_research_run(symbol)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No research run found")
+    return {
+        "service": "pmsfx-nano",
+        "symbol": symbol,
+        **result,
     }
 
 
