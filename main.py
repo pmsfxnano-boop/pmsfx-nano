@@ -1049,6 +1049,34 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
         if not target_rows:
             raise RuntimeError("Historical target bars unavailable")
 
+        peer_rows: dict[str, list[dict[str, Any]]] = {}
+        for peer_symbol in ("MSFT", "NVDA", "AAPL", "TSLA"):
+            if peer_symbol == symbol:
+                continue
+            if peer_symbol not in {"AAPL", "MSFT", "NVDA", "TSLA"}:
+                continue
+            try:
+                await asyncio.wait_for(
+                    get_historical_forecast(
+                        peer_symbol,
+                        token,
+                        evaluate=False,
+                    ),
+                    timeout=60.0,
+                )
+                cached_peer = get_cached_bars(peer_symbol)
+                if cached_peer:
+                    peer_rows[peer_symbol] = cached_peer
+            except Exception as peer_exc:
+                print(
+                    "PMSF-X CROSS-ASSET PEER PRELOAD ERROR:",
+                    {
+                        "symbol": symbol,
+                        "peer": peer_symbol,
+                        "error": f"{type(peer_exc).__name__}: {peer_exc}",
+                    },
+                )
+
         loop = asyncio.get_running_loop()
         validation = await asyncio.wait_for(
             loop.run_in_executor(
@@ -1058,6 +1086,7 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
                     symbol,
                     token,
                     target_rows,
+                    peer_rows,
                 ),
             ),
             timeout=900.0,
