@@ -372,7 +372,7 @@ def validate_cross_asset_symbol(
     symbol = symbol.upper()
     peer_symbols = PEERS.get(symbol, ())
 
-    if target_rows is None or not _looks_like_five_minute_series(target_rows):
+    if not target_rows:
         target_rows = _fetch_rows(symbol, token)
 
     if peer_rows is None:
