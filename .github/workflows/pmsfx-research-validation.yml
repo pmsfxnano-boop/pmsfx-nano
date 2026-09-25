@@ -12,16 +12,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Validate AAPL
+      - name: Wait for live research endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            echo "Research endpoint check $attempt/30"
+            if curl --fail --silent --show-error --max-time 20               https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL               -o /tmp/aapl.json; then
+              echo "Research endpoint is live."
+              break
+            fi
+            sleep 20
+          done
+          test -s /tmp/aapl.json
+
+      - name: Validate AAPL multi-horizon meta
+        shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
-          import urllib.request
-
-          url = "https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL"
-          with urllib.request.urlopen(url, timeout=900) as response:
-              payload = json.load(response)
+          with open("/tmp/aapl.json", "r", encoding="utf-8") as fh:
+              payload = json.load(fh)
 
           validation = payload["validation"]
           print(json.dumps({
