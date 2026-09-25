@@ -44,6 +44,12 @@ def features(symbol: str):
 def signal(symbol: str, probability_up: float, horizon_seconds: int = 900, regime: str = "UNKNOWN"):
     return compose_signal(symbol, probability_up, horizon_seconds, regime=regime)
 
+@app.get("/api/coupling/current")
+def coupling_current():
+    from .coupling import current_coupling_state
+    pairs=[("USD_MEP","sell","USD_CCL","sell"),("USD_BLUE","sell","USD_MEP","sell"),("USD_MEP","sell","EMBI_ARG","embi_bps"),("USD_CCL","sell","EMBI_ARG","embi_bps"),("USD_MEP","sell","USD_BCRA","reference")]
+    return current_coupling_state(pairs)
+
 @app.post("/api/coupling")
 def coupling():
     pairs=[("USD_MEP","sell","USD_CCL","sell"),("USD_BLUE","sell","USD_MEP","sell"),("USD_MEP","sell","EMBI_ARG","embi_bps"),("USD_CCL","sell","EMBI_ARG","embi_bps"),("USD_MEP","sell","USD_BCRA","reference")]
