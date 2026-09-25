@@ -95,7 +95,6 @@ jobs:
           name: gorila-formal-jacobian
           path: jacobian-stress.json
 
-
   search_audit:
     name: Search-aware PBO/DSR audit
     runs-on: ubuntu-latest
@@ -119,31 +118,37 @@ jobs:
 
   audit:
     name: Evidence manifest
-    needs: [ranking, robustness, jacobian]
+    needs: [ranking, robustness, jacobian, search_audit]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - uses: actions/checkout@v4
       - name: Build manifest
+        env:
+          RANKING_RESULT: ${{ needs.ranking.result }}
+          ROBUSTNESS_RESULT: ${{ needs.robustness.result }}
+          JACOBIAN_RESULT: ${{ needs.jacobian.result }}
+          SEARCH_RESULT: ${{ needs.search_audit.result }}
         run: |
           python - <<'PY'
-          import json
-          import os
+          import json, os
+          results = {
+              "ranking": os.environ["RANKING_RESULT"],
+              "robustness": os.environ["ROBUSTNESS_RESULT"],
+              "jacobian": os.environ["JACOBIAN_RESULT"],
+              "search_audit": os.environ["SEARCH_RESULT"],
+          }
+          complete = all(v == "success" for v in results.values())
           manifest = {
-              "status": "COMPLETE",
+              "status": "COMPLETE" if complete else "FAILED",
               "commit": os.environ.get("GITHUB_SHA"),
               "workflow": os.environ.get("GITHUB_WORKFLOW"),
-              "note": "This pipeline executes the real OOS/stress/placebo/LOO gates in one non-cancelling workflow. Formal PBO/DSR remains blocked until candidate-by-split raw matrices or daily strategy returns are persisted.",
-              "gates": {
-                  "ranking": "${{ needs.ranking.result }}",
-                  "robustness": "${{ needs.robustness.result }}",
-                  "jacobian": "${{ needs.jacobian.result }}"
-              },
+              "gates": results,
               "formal_search_gate": {
-                  "cpcv": "PENDING_RAW_CANDIDATE_MATRIX",
-                  "pbo": "PENDING_RAW_CANDIDATE_MATRIX",
-                  "dsr": "PENDING_DAILY_OR_TRADE_RETURN_SERIES"
-              }
+                  "nested_wfo_pbo_dsr": "PASS" if results["search_audit"] == "success" else "FAIL",
+                  "true_cpcv": "PENDING_TRUE_CPCV_IMPLEMENTATION",
+                  "note": "The current search audit is nested purged WFO PBO/DSR, not a true combinatorial purged cross-validation path analysis.",
+              },
           }
           with open("gorila-formal-validation-manifest.json","w") as f:
               json.dump(manifest,f,indent=2)
