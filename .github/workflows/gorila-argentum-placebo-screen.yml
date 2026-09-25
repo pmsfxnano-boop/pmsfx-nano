@@ -1,0 +1,30 @@
+name: Gorila Argentum Placebo Screen
+
+on:
+  push:
+    branches: [gorila-argentum-v0]
+  workflow_dispatch:
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  placebo-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Temporal placebo screen
+        run: set -o pipefail; python research/gorila_nested_rank_placebo_screen_oos.py | tee placebo-screen.json
+      - name: Upload screen evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-placebo-screen
+          path: placebo-screen.json
