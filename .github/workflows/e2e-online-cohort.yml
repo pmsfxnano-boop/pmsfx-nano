@@ -1,0 +1,29 @@
+name: E2E online cohort probe
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  probe-live-cohort:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render deploy
+        run: sleep 120
+      - name: Probe live cohort endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://pmsfx-nano.onrender.com/api/research/online-cohort/probe"
+          curl --fail-with-body --retry 8 --retry-all-errors --retry-delay 10 --connect-timeout 20 --max-time 60 -sS "$URL" | tee /tmp/probe.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('/tmp/probe.json').read_text())
+          assert data["status"] == "PASS", data
+          assert data["database_ready"] is True, data
+          assert data["stream_status"] == "CONNECTED", data
+          assert data["cohort_count"] > 0, data
+          assert data["cohort_up"] > 0 and data["cohort_down"] > 0, data
+          print("E2E_PROBE_PASS", data)
+          PY
