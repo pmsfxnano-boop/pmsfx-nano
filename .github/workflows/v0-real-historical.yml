@@ -1,4 +1,4 @@
-name: V0 real historical OOS
+name: V0 TSLA measured result
 
 on:
   push:
@@ -10,71 +10,52 @@ permissions:
   contents: write
 
 jobs:
-  v0-real-historical:
+  v0-tsla:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for Render deploy
-        run: sleep 90
-      - name: Run V0 on real Tiingo history
+      - name: Clone current main scoring code
+        run: git clone --depth 1 https://github.com/${{ github.repository }}.git scoring
+      - name: Run V0 on raw TSLA history
         shell: bash
         run: |
-          set -u
-          mkdir -p results
-          base="https://pmsfx-nano.onrender.com/api/research/v0-ofi"
-          for symbol in AAPL MSFT NVDA TSLA; do
-            echo "=== $symbol ==="
-            code=$(curl -sS -o "results/$symbol.body" -w "%{http_code}" --max-time 300 "$base/$symbol" 2>"results/$symbol.curl_error" || echo "CURL_ERROR")
-            printf '{"symbol":"%s","http_code":"%s","curl_error":' "$symbol" "$code" > "results/$symbol.status.json"
-            python - "$symbol" <<'PY' >> "results/$symbol.status.json"
-import json,sys
-s=sys.argv[1]
-e=open(f"results/{s}.curl_error").read()
-print(json.dumps(e))
+          set -euo pipefail
+          curl -sS --fail --max-time 300 "https://pmsfx-nano.onrender.com/api/research/v0-ofi/raw/TSLA" -o /tmp/TSLA.json
+          python - <<'PY'
+import json,sys,pathlib
+sys.path.insert(0,"scoring")
+from quant.v0_ofi import run_v0_research
+p=json.load(open("/tmp/TSLA.json"))
+r=run_v0_research(p["rows"], symbol="TSLA")
+out={
+ "symbol":"TSLA",
+ "raw_row_count":p.get("row_count"),
+ "raw_first_bar":p.get("first_bar"),
+ "raw_last_bar":p.get("last_bar"),
+ "bars_used":r.get("bars_used"),
+ "validation_summary":r.get("validation_summary"),
+ "horizons":{
+   h:{
+     "sample_count":v.get("sample_count"),
+     "oos_count":(v.get("evaluation") or {}).get("oos_count"),
+     "fold_count":(v.get("evaluation") or {}).get("fold_count"),
+     "accuracy":(v.get("evaluation") or {}).get("accuracy"),
+     "auc":(v.get("evaluation") or {}).get("auc"),
+     "brier":(v.get("evaluation") or {}).get("brier"),
+     "baseline_brier":(v.get("evaluation") or {}).get("baseline_brier"),
+     "brier_skill":(v.get("evaluation") or {}).get("brier_skill"),
+     "log_loss":(v.get("evaluation") or {}).get("log_loss"),
+     "baseline_log_loss":(v.get("evaluation") or {}).get("baseline_log_loss"),
+     "log_loss_improvement":(v.get("evaluation") or {}).get("log_loss_improvement"),
+     "ece":(v.get("evaluation") or {}).get("ece"),
+     "validated":(v.get("evaluation") or {}).get("validated"),
+     "reason":(v.get("evaluation") or {}).get("validation_reason")
+   } for h,v in r.get("horizons",{}).items()
+ }
+}
+pathlib.Path("/tmp/TSLA_V0_RESULT.json").write_text(json.dumps(out,indent=2))
+print(json.dumps(out,indent=2))
 PY
-            printf ',"body_file":"%s.body"}
-' "$symbol" >> "results/$symbol.status.json"
-          done
-
-      - name: Build summary
-        shell: python
-        run: |
-          import json, pathlib
-          rows=[]
-          for p in sorted(pathlib.Path("results").glob("*.body")):
-              symbol=p.stem
-              status=json.load(open(f"results/{symbol}.status.json"))
-              raw=p.read_text(errors="replace")
-              row={"symbol":symbol,**status}
-              try:
-                  d=json.loads(raw)
-                  row.update({
-                    "api_status":d.get("status"),
-                    "bars_used":d.get("bars_used"),
-                    "validation_summary":d.get("validation_summary"),
-                    "horizons":{
-                      h:{
-                        "sample_count":v.get("sample_count"),
-                        "oos_count":(v.get("evaluation") or {}).get("oos_count"),
-                        "fold_count":(v.get("evaluation") or {}).get("fold_count"),
-                        "accuracy":(v.get("evaluation") or {}).get("accuracy"),
-                        "auc":(v.get("evaluation") or {}).get("auc"),
-                        "brier":(v.get("evaluation") or {}).get("brier"),
-                        "baseline_brier":(v.get("evaluation") or {}).get("baseline_brier"),
-                        "brier_skill":(v.get("evaluation") or {}).get("brier_skill"),
-                        "log_loss":(v.get("evaluation") or {}).get("log_loss"),
-                        "baseline_log_loss":(v.get("evaluation") or {}).get("baseline_log_loss"),
-                        "log_loss_improvement":(v.get("evaluation") or {}).get("log_loss_improvement"),
-                        "ece":(v.get("evaluation") or {}).get("ece"),
-                        "validated":(v.get("evaluation") or {}).get("validated")
-                      } for h,v in (d.get("horizons") or {}).items()
-                    }
-                  })
-              except Exception:
-                  row["body_prefix"]=raw[:2000]
-              rows.append(row)
-          pathlib.Path("results/V0_RESULTS.json").write_text(json.dumps(rows,indent=2))
-
-      - name: Commit measured results
+      - name: Commit result
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -82,18 +63,11 @@ PY
           set -e
           git clone "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" repo
           mkdir -p repo/results
-          cp -r results/. repo/results/
+          cp /tmp/TSLA_V0_RESULT.json repo/results/TSLA_V0_RESULT.json
           cd repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add results/
+          git add results/TSLA_V0_RESULT.json
           git diff --cached --quiet && exit 0
-          git commit -m "Store V0 historical run evidence"
+          git commit -m "Store measured TSLA V0 OOS result"
           git push origin HEAD:main
-
-      - name: Upload raw V0 results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v0-real-historical-results
-          path: results/
