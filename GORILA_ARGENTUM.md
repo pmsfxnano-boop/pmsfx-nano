@@ -183,3 +183,7 @@ The advanced research suite is executed in a dedicated CI workflow to reduce ite
 
 ### Ranking Gate CI
 A focused workflow isolates the nested relative-ranking validation from the legacy and Jacobian research stages.
+
+
+### Placebo screen CI
+A lightweight four-permutation placebo screen is run as a fast sanity check; the full twelve-permutation placebo remains the acceptance test.
