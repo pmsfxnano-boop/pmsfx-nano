@@ -326,10 +326,14 @@ def validate_cross_asset_symbol(
 ) -> dict[str, Any]:
     symbol = symbol.upper()
     peer_symbols = PEERS.get(symbol, ())
+    if target_rows is None or not _looks_like_five_minute_series(target_rows):
+        target_rows = _fetch_rows(symbol, token)
+
     peer_rows = {
         peer: _fetch_rows(peer, token)
         for peer in peer_symbols
     }
+
     return validate_cross_asset(
         target_rows,
         peer_rows,
