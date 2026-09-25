@@ -1,0 +1,40 @@
+name: Gorila Argentum Ranking Gate
+
+on:
+  push:
+    branches: [gorila-argentum-v0]
+  workflow_dispatch:
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  ranking-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Nested purged pairwise ranking
+        run: set -o pipefail; python research/gorila_nested_pairwise_rank_oos.py | tee ranking-nested.json
+      - name: Execution lag and cost stress
+        run: set -o pipefail; python research/gorila_nested_rank_stress_oos.py | tee ranking-stress.json
+      - name: Temporal placebo and rank IC
+        run: set -o pipefail; python research/gorila_nested_rank_placebo_oos.py | tee ranking-placebo.json
+      - name: True leave-one-universe-out
+        run: set -o pipefail; python research/gorila_rank_universe_loo_oos.py | tee ranking-universe-loo.json
+      - name: Upload ranking evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-ranking-gate
+          path: |
+            ranking-nested.json
+            ranking-stress.json
+            ranking-placebo.json
+            ranking-universe-loo.json
