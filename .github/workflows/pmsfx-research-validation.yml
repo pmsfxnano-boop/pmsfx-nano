@@ -1,30 +1,27 @@
 name: PMSF-X professional research validation
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "research/run.txt"
+  workflow_run:
+    workflows:
+      - "PMSF-X endpoint connectivity check"
+    types:
+      - completed
+
+concurrency:
+  group: pmsfx-professional-validation
+  cancel-in-progress: true
 
 jobs:
   validate-multihorizon:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Wait for Render health
+      - name: Check Render health
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 30); do
-            echo "Health check $attempt/30"
-            if curl --fail --silent --show-error --connect-timeout 10 --max-time 20               https://pmsfx-nano.onrender.com/health > /tmp/health.json; then
-              cat /tmp/health.json
-              break
-            fi
-            sleep 10
-          done
-          test -s /tmp/health.json
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 20             https://pmsfx-nano.onrender.com/health
 
       - name: Run AAPL professional validation
         shell: bash
