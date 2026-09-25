@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import math
 import statistics
 import time
@@ -9,7 +10,7 @@ from itertools import combinations
 import httpx
 
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
-HORIZONS = [5, 10]
+HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 EXECUTION_LAGS = [0, 1, 2]
 COSTS_BPS = [25, 50, 100, 150]
 TRAIN_MIN = 504
