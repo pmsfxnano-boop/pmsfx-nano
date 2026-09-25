@@ -86,3 +86,25 @@ def byma_status():
     if not settings.byma_url:
         return SourceResult("BYMA/MarketData",error="BYMA_MARKET_DATA_URL_NOT_CONFIGURED")
     return SourceResult("BYMA/MarketData",error="BYMA_ADAPTER_ENDPOINT_CONFIG_REQUIRED")
+
+def yahoo_chart_daily(symbol):
+    source=f"YahooChart/{symbol}.BA"; t0=time.perf_counter(); received=now()
+    try:
+        ticker=f"{symbol}.BA"
+        url=f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        params={"range":"5y","interval":"1d","events":"history"}
+        with _client() as c:
+            data=c.get(url,params=params); data.raise_for_status(); payload=data.json()
+        result=(payload.get("chart",{}).get("result") or [None])[0]
+        if not result: raise RuntimeError("YAHOO_EMPTY_RESULT")
+        timestamps=result.get("timestamp") or []
+        quote=((result.get("indicators") or {}).get("quote") or [{}])[0]
+        closes=quote.get("close") or []
+        rows=[]
+        for ts,close in zip(timestamps,closes):
+            if close is None: continue
+            rows.append({"symbol":symbol,"field":"close","value":float(close),"event_time":datetime.fromtimestamp(ts,timezone.utc).isoformat(),"received_time":iso(received),"source":source,"latency_ms":(time.perf_counter()-t0)*1000,"metadata":{"interval":"1d","range":"5y","ticker":ticker}})
+        if not rows: raise RuntimeError("YAHOO_NO_USABLE_ROWS")
+        return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+    except Exception as e:
+        return SourceResult(source,error=str(e),latency_ms=(time.perf_counter()-t0)*1000)
