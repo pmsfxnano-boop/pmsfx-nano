@@ -140,11 +140,7 @@ def make_dataset(series,horizon):
 
 
 def pair_rows(data,ds,idxs):
-    X,y=[],[]
-    for d in ds:
-        for a,b in combinations(SYMBOLS,2):
-            X.append([u-v for u,v in zip(data[d]["x"][a],data[d]["x"][b]) if False])
-    # Build with selected feature positions without altering pair alignment.
+    # Build pairwise feature differences for the selected feature positions.
     X=[]; y=[]
     for d in ds:
         for a,b in combinations(SYMBOLS,2):
@@ -207,8 +203,9 @@ def run_horizon(series,horizon):
             for a,b in combinations(SYMBOLS,2):
                 xa,xb=data[d]["x"][a],data[d]["x"][b]
                 p=pair_prob(model,[xa[i]-xb[i] for i in idxs])
-                all_pair.append(p >= 0.5 == (data[d]["fwd"][a] > data[d]["fwd"][b]))
-                pair_hits.append(p >= 0.5 == (data[d]["fwd"][a] > data[d]["fwd"][b]))
+                hit = (p >= 0.5) == (data[d]["fwd"][a] > data[d]["fwd"][b])
+                all_pair.append(hit)
+                pair_hits.append(hit)
         def execute(mode,cost):
             ret=[]
             last=-10**9
