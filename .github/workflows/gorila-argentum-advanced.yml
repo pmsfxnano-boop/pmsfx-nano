@@ -1,11 +1,13 @@
 name: Gorila Argentum Advanced Research
 
 on:
-  push:
-    branches: [gorila-argentum-v0]
   workflow_dispatch:
 
 concurrency:
+  group: gorila-argentum-global-research
+  cancel-in-progress: true
+
+env:
   group: gorila-argentum-advanced-research
   cancel-in-progress: true
 
