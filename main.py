@@ -950,19 +950,27 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
     )
 
     try:
-        historical = await asyncio.wait_for(
-            get_historical_forecast(symbol, token, evaluate=False),
-            timeout=60.0,
-        )
+        # Research runs must not invoke the live forecast path: that path
+        # rebuilds multiple horizons and can block the request coroutine.
+        # Reuse the proven bar cache when available; otherwise fetch only bars.
         rows = get_cached_bars(symbol)
+        history_source = "cache"
+        if not rows:
+            history_source = "tiingo_history"
+            rows = await asyncio.wait_for(
+                get_historical_bars(symbol, token),
+                timeout=30.0,
+            )
         if not rows:
             raise RuntimeError("Historical bars unavailable")
 
         print(
             "PMSF-X MULTIHORIZON DATA READY:",
             {
+                "run_id": run_id,
                 "symbol": symbol,
                 "target_rows": len(rows),
+                "history_source": history_source,
             },
         )
 
@@ -976,15 +984,15 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
                     symbol=symbol,
                 ),
             ),
-            timeout=900.0,
+            timeout=600.0,
         )
 
         research_backtest_id = record_backtest(
             symbol,
             {
                 "model_id": "multihorizon-meta-research-v1",
-                "lookback_days": historical.get("lookback_days"),
-                "bars": historical.get("bars"),
+                "lookback_days": LOOKBACK_DAYS,
+                "bars": len(rows),
                 "evaluation": validation,
             },
         )
@@ -993,11 +1001,12 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
         result = {
             "service": "pmsfx-nano",
             "symbol": symbol,
-            "historical_model_id": historical.get("model_id"),
-            "historical_bars": historical.get("bars"),
+            "historical_model_id": "historical-bars-only-v1",
+            "historical_bars": len(rows),
             "research_run_id": run_id,
             "research_backtest_id": research_backtest_id,
             "validation": validation,
+            "history_source": history_source,
         }
         update_research_run(
             run_id,
@@ -1017,6 +1026,23 @@ async def _run_multihorizon_research_job(run_id: str, symbol: str):
                 "brier_skill": (validation.get("metrics") or {}).get("brier_skill"),
                 "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
                 "research_backtest_id": research_backtest_id,
+            },
+        )
+    except asyncio.TimeoutError:
+        finished_at = datetime.now(timezone.utc)
+        error = "MULTIHORIZON_RESEARCH_TIMEOUT"
+        update_research_run(
+            run_id,
+            status="ERROR",
+            error=error,
+            finished_at=finished_at,
+        )
+        print(
+            "PMSF-X MULTIHORIZON RESEARCH JOB ERROR:",
+            {
+                "run_id": run_id,
+                "symbol": symbol,
+                "error": error,
             },
         )
     except Exception as exc:
