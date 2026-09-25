@@ -249,7 +249,7 @@ def _fit_meta(
     ]
     return _fit_logistic(
         samples,
-        feature_count=3,
+        feature_count=len(features[0]) if features else 0,
         steps=META_LOGISTIC_STEPS,
         learning_rate=0.05,
         l2=0.05,
@@ -541,6 +541,8 @@ def validate_multi_horizon_meta(
             "primary_300s_metrics": ablation_metrics["300"],
             "ablation_metrics": ablation_metrics,
             "ablation_probabilities": ablation_probabilities,
+            "probabilities": ablation_probabilities["300_900_1800"],
+            "specialist_300_probabilities": ablation_probabilities["300"],
             "labels": labels,
         })
 
