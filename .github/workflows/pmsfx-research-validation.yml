@@ -99,5 +99,6 @@ jobs:
               "gate": validation.get("gate"),
               "research_run_id": payload.get("run_id"),
               "research_backtest_id": (payload.get("result") or {}).get("research_backtest_id"),
+              "ablation": validation.get("ablation"),
           }, indent=2))
           PY
