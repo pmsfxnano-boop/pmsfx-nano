@@ -160,3 +160,18 @@ For each outer purged fold, the nested ranking selector is re-fit using only the
 The purpose is to distinguish a genuine cross-sectional effect from a result dependent on same-close execution, a favorable cost assumption, or one dominant constituent.
 
 No stress result will be promoted merely because the aggregate return is positive. Fold-level stability is mandatory.
+
+
+### Statistical robustness gate — temporal placebo and rank IC
+
+Added `research/gorila_nested_rank_placebo_oos.py`.
+
+For every outer fold the nested ranking procedure is evaluated on:
+- pairwise OOS accuracy;
+- cross-sectional rank information coefficient (rank IC);
+- 12 date-level temporal permutations of the entire forward-return cross-section inside the training window;
+- re-selection of feature group and L2 inside each placebo training window.
+
+The placebo preserves the cross-sectional structure within each date while destroying temporal alignment between features and future returns.
+
+A candidate must demonstrate OOS rank information that is systematically stronger than the temporal-placebo distribution before it can be considered for V1.
