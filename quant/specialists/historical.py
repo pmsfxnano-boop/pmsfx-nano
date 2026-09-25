@@ -481,6 +481,12 @@ async def get_historical_forecast(
                 "lookback_days": LOOKBACK_DAYS,
                 "error": f"Tiingo historical HTTP {response.status_code}",
             }
+            if include_rows:
+                result["__research_fetch_meta"] = {
+                    "http_status": response.status_code,
+                    "raw_type": type(response.text).__name__,
+                    "raw_preview": response.text[:500],
+                }
             if not include_rows:
                 _CACHE[cache_key] = (__import__("time").time(), result)
             return result
@@ -491,6 +497,7 @@ async def get_historical_forecast(
         if not isinstance(data, list):
             data = []
 
+        raw_row_count = len(data) if isinstance(data, list) else None
         rows = data[-MAX_ROWS:]
         if rows:
             _BARS_CACHE[symbol.upper()] = (__import__("time").time(), rows)
@@ -542,6 +549,14 @@ async def get_historical_forecast(
             }
             if include_rows:
                 result["__bars_rows"] = rows
+                result["__research_fetch_meta"] = {
+                    "http_status": response.status_code,
+                    "raw_row_count": raw_row_count,
+                    "returned_row_count": len(rows),
+                    "start_date": start_date.isoformat(),
+                    "end_date": end_date.isoformat(),
+                    "resample_freq": RESAMPLE_FREQ,
+                }
             else:
                 _CACHE[cache_key] = (__import__("time").time(), result)
             return result
@@ -586,6 +601,14 @@ async def get_historical_forecast(
         }
         if include_rows:
             result["__bars_rows"] = rows
+            result["__research_fetch_meta"] = {
+                "http_status": response.status_code,
+                "raw_row_count": raw_row_count,
+                "returned_row_count": len(rows),
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "resample_freq": RESAMPLE_FREQ,
+            }
         else:
             _CACHE[cache_key] = (__import__("time").time(), result)
         return result
