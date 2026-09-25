@@ -387,6 +387,11 @@ async def resolve_forecast(forecast: dict[str, Any], token: str) -> dict[str, An
 
     timing_slippage_seconds = max(0.0, (quote_timestamp - due_at).total_seconds())
     if timing_slippage_seconds > MAX_TIMING_SLIPPAGE_SECONDS:
+        # A late live resolver must not destroy a valid historical label.
+        # Recover the first 1-minute observation at/after the exact horizon.
+        repaired = await repair_timing_expired_forecast(forecast, token)
+        if repaired.get("status") == "RESOLVED":
+            return repaired
         return {
             "status": "TIMING_EXPIRED",
             "forecast_id": int(forecast["id"]),
@@ -394,6 +399,7 @@ async def resolve_forecast(forecast: dict[str, Any], token: str) -> dict[str, An
             "due_at": due_at.isoformat(),
             "market_event_at": quote_timestamp.isoformat(),
             "timing_slippage_seconds": round(timing_slippage_seconds, 3),
+            "historical_repair_status": repaired.get("status"),
         }
 
     outcome = build_outcome(forecast, quote, resolved_at=quote_timestamp)
