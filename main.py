@@ -925,6 +925,23 @@ async def multihorizon_research(ticker: str):
             detail=f"Multihorizon research validation failed: {type(exc).__name__}",
         )
 
+    research_run_id = None
+    try:
+        research_run_id = record_backtest(
+            symbol,
+            {
+                "model_id": "multihorizon-meta-research-v1",
+                "lookback_days": result.get("lookback_days"),
+                "bars": result.get("bars"),
+                "evaluation": validation,
+            },
+        )
+    except Exception as exc:
+        print(
+            "PMSF-X MULTIHORIZON RESEARCH SAVE ERROR:",
+            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+        )
+
     print(
         "PMSF-X MULTIHORIZON RESEARCH:",
         {
@@ -935,8 +952,13 @@ async def multihorizon_research(ticker: str):
             "oos_count": validation.get("oos_count"),
             "brier_skill": (validation.get("metrics") or {}).get("brier_skill"),
             "delta_brier_vs_300s": validation.get("delta_brier_vs_300s"),
-            "delta_brier_ci_low": (validation.get("bootstrap") or {}).get("delta_brier_ci_low"),
+            "delta_brier_ci_low": (
+                (validation.get("primary_300s_bootstrap") or {}).get(
+                    "delta_brier_ci_low"
+                )
+            ),
             "ece": (validation.get("metrics") or {}).get("ece"),
+            "research_run_id": research_run_id,
         },
     )
     return {
@@ -944,6 +966,7 @@ async def multihorizon_research(ticker: str):
         "symbol": symbol,
         "historical_model_id": result.get("model_id"),
         "historical_bars": result.get("bars"),
+        "research_run_id": research_run_id,
         "validation": validation,
     }
 
