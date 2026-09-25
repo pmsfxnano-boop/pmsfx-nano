@@ -2,7 +2,7 @@ name: V0 TSLA real historical OOS
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review]
 
 jobs:
   v0-tsla:
