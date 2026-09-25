@@ -13,7 +13,11 @@ from fastapi.responses import FileResponse, Response
 
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
-from quant.specialists.historical import get_historical_forecast, get_cached_bars
+from quant.specialists.historical import (
+    get_historical_forecast,
+    get_historical_bars,
+    get_cached_bars,
+)
 from quant.cross_asset import get_cross_asset_forecast
 from quant.horizon_consensus import build_horizon_consensus
 from quant.multihorizon_meta import validate_multi_horizon_meta
@@ -213,7 +217,19 @@ async def research_validation_runner():
                         {"symbol": symbol},
                     )
                     continue
-                validation = await asyncio.wait_for(
+                print(
+            "PMSF-X CROSS-ASSET PRELOAD:",
+            {
+                "symbol": symbol,
+                "target_rows": len(target_rows),
+                "peer_rows": {
+                    peer: len(rows)
+                    for peer, rows in peer_rows.items()
+                },
+            },
+        )
+
+        validation = await asyncio.wait_for(
                     asyncio.to_thread(
                         validate_multi_horizon_meta,
                         rows,
@@ -1045,28 +1061,28 @@ async def _run_cross_asset_research_job(run_id: str, symbol: str):
             get_historical_forecast(symbol, token, evaluate=False),
             timeout=60.0,
         )
-        target_rows = get_cached_bars(symbol)
+        target_rows = await asyncio.wait_for(
+            get_historical_bars(symbol, token),
+            timeout=60.0,
+        )
         if not target_rows:
             raise RuntimeError("Historical target bars unavailable")
 
         peer_rows: dict[str, list[dict[str, Any]]] = {}
-        for peer_symbol in ("MSFT", "NVDA", "AAPL", "TSLA"):
-            if peer_symbol == symbol:
-                continue
-            if peer_symbol not in {"AAPL", "MSFT", "NVDA", "TSLA"}:
-                continue
+        peer_symbols = {
+            "AAPL": ("MSFT", "NVDA"),
+            "MSFT": ("AAPL", "NVDA"),
+            "NVDA": ("AAPL", "MSFT"),
+            "TSLA": ("AAPL", "NVDA"),
+        }.get(symbol, ())
+        for peer_symbol in peer_symbols:
             try:
-                await asyncio.wait_for(
-                    get_historical_forecast(
-                        peer_symbol,
-                        token,
-                        evaluate=False,
-                    ),
+                peer_bars = await asyncio.wait_for(
+                    get_historical_bars(peer_symbol, token),
                     timeout=60.0,
                 )
-                cached_peer = get_cached_bars(peer_symbol)
-                if cached_peer:
-                    peer_rows[peer_symbol] = cached_peer
+                if peer_bars:
+                    peer_rows[peer_symbol] = peer_bars
             except Exception as peer_exc:
                 print(
                     "PMSF-X CROSS-ASSET PEER PRELOAD ERROR:",
