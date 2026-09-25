@@ -36,7 +36,7 @@ const $=id=>document.getElementById(id);
 function metric(k,v,cls=""){return '<div class="metric"><div class="label">'+k+'</div><div class="value '+cls+'">'+(v==null?'—':v)+'</div></div>'}
 async function refresh(){
  try{
-  const [s,h]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json())]);
+  const [s,h,c]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json())]);
   const fx=s.fx||{}, sp=fx.spreads||{};
   $('fx').innerHTML=[
     metric('USD OFICIAL',fx.official),metric('MEP',fx.mep),metric('CCL',fx.ccl),
@@ -46,6 +46,7 @@ async function refresh(){
     metric('EMBI',s.risk?.embi_bps)
   ].join('');
   $('sources').textContent=(h.sources||[]).map(x=>x.source+'  '+x.status+'  '+(x.latency_ms==null?'—':x.latency_ms.toFixed(1)+'ms')).join('\n')||'no source state';
+  $('coupling').textContent=JSON.stringify({state:c.structural_state,mean_abs:c.mean_abs_coupling,mean_signed:c.mean_signed_coupling,edges:c.edges},null,2);
  }catch(e){$('status').textContent='DEGRADED';}
 }
 refresh();setInterval(refresh,1000);
