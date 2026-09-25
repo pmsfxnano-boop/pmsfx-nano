@@ -187,3 +187,7 @@ A focused workflow isolates the nested relative-ranking validation from the lega
 
 ### Placebo screen CI
 A lightweight four-permutation placebo screen is run as a fast sanity check; the full twelve-permutation placebo remains the acceptance test.
+
+
+### Corrected robustness gate
+The focused robustness workflow runs only the corrected execution-lag stress, temporal placebo, and true leave-one-universe-out ranking checks.
