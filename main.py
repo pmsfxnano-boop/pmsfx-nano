@@ -1071,7 +1071,20 @@ async def start_multihorizon_research(ticker: str):
 def research_run_status(run_id: str):
     result = get_research_run(run_id)
     if result is None:
+        print(
+            "PMSF-X RESEARCH STATUS:",
+            {"run_id": run_id, "status": "NOT_FOUND"},
+        )
         raise HTTPException(status_code=404, detail="Research run not found")
+
+    print(
+        "PMSF-X RESEARCH STATUS:",
+        {
+            "run_id": run_id,
+            "status": result.get("status"),
+            "error": result.get("error"),
+        },
+    )
     return {
         "service": "pmsfx-nano",
         **result,
