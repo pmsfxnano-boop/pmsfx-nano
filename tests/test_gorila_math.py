@@ -9,7 +9,7 @@ def test_corr():
     assert c > 0.999
 
 def test_lag():
-    xs=[1,2,3,4,5,6,7,8,9,10]
-    ys=[0,1,2,3,4,5,6,7,8,9]
+    xs=[1,2,3,4,5,7,6,8,9,11,10,12]
+    ys=[40]+xs[:-1]
     item=_lagged(xs,ys,max_lag=2)
     assert item["lag"]==1 and item["corr"]>0.999
