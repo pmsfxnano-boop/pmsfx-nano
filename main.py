@@ -690,43 +690,24 @@ async def state(ticker: str):
         },
     )
 
+    # Cross-asset lead/lag remains research-only until its independent OOS
+    # validation gate passes. Keep it out of the latency-critical live path.
+    target_rows = get_cached_bars(symbol)
     cross_asset = {
-        "status": "SKIPPED",
+        "status": "RESEARCH_DECOUPLED",
         "model_id": "cross-asset-leadlag-v1",
         "forecast": None,
         "evaluation": {},
         "context": None,
-        "reason": "HISTORICAL_BARS_NOT_READY",
+        "reason": "RESEARCH_ONLY_LIVE_PATH_EXCLUDED",
     }
-    target_rows = get_cached_bars(symbol)
-    if token and healthy and target_rows:
-        try:
-            cross_asset = await asyncio.to_thread(
-                lambda: asyncio.run(
-                    get_cross_asset_forecast(
-                        symbol,
-                        token,
-                        target_rows=target_rows,
-                        evaluate=False,
-                    )
-                )
-            )
-        except Exception as exc:
-            cross_asset = {
-                "status": "ERROR",
-                "model_id": "cross-asset-leadlag-v1",
-                "forecast": None,
-                "evaluation": {},
-                "context": None,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
     print(
         "PMSF-X FORECAST PIPELINE: CROSS_ASSET_READY",
         {
             "symbol": symbol,
             "status": cross_asset.get("status"),
-            "samples": (cross_asset.get("evaluation") or {}).get("sample_count"),
-            "validated": bool((cross_asset.get("evaluation") or {}).get("validated")),
+            "samples": 0,
+            "validated": False,
         },
     )
 
