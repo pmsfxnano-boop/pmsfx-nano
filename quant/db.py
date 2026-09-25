@@ -305,6 +305,76 @@ def record_backtest(symbol: str, result: dict[str, Any]) -> int | None:
         return int(result_row[0])
 
 
+def active_research_run(
+    symbol: str,
+    model_id: str = "multihorizon-meta-research-v1",
+    *,
+    stale_after_minutes: int = 30,
+) -> dict[str, Any] | None:
+    if not database_url():
+        return None
+
+    sql = """
+    SELECT id
+    FROM research_runs
+    WHERE symbol = %(symbol)s
+      AND model_id = %(model_id)s
+      AND status IN ('QUEUED', 'RUNNING')
+      AND updated_at >= NOW() - (%(stale_after_minutes)s * INTERVAL '1 minute')
+    ORDER BY created_at DESC
+    LIMIT 1
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql,
+                    {
+                        "symbol": symbol,
+                        "model_id": model_id,
+                        "stale_after_minutes": int(stale_after_minutes),
+                    },
+                )
+                row = cur.fetchone()
+        return get_research_run(str(row[0])) if row else None
+    except Exception:
+        return None
+
+
+def recover_stale_research_runs(
+    stale_after_minutes: int = 30,
+) -> int:
+    if not database_url():
+        return 0
+
+    sql = """
+    UPDATE research_runs
+    SET
+        updated_at = NOW(),
+        status = 'ERROR',
+        finished_at = NOW(),
+        error = 'STALE_RESEARCH_RUN_RECOVERED_AFTER_SERVICE_RESTART'
+    WHERE status IN ('QUEUED', 'RUNNING')
+      AND updated_at < NOW() - (%(stale_after_minutes)s * INTERVAL '1 minute')
+    """
+    try:
+        with connection() as conn:
+            if conn is None:
+                return 0
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql,
+                    {"stale_after_minutes": int(stale_after_minutes)},
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return int(updated)
+    except Exception:
+        return 0
+
+
 def create_research_run(symbol: str, model_id: str = "multihorizon-meta-research-v1") -> str | None:
     if not database_url():
         return None
