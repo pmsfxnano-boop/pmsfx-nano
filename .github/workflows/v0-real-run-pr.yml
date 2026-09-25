@@ -16,7 +16,7 @@ jobs:
         run: |
           set -u
           base="https://pmsfx-nano.onrender.com/api/research/v0-ofi/raw"
-          for symbol in AAPL MSFT NVDA TSLA; do
+          for symbol in TSLA; do
             echo "========== BEGIN $symbol =========="
             curl -sS --fail --max-time 300 "$base/$symbol" -o "/tmp/$symbol.json"
             python - "$symbol" <<'PY'
@@ -55,3 +55,5 @@ print(json.dumps({
 PY
             echo "========== END $symbol =========="
           done
+
+# TSLA-only rerun after Render 502
