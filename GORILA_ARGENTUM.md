@@ -146,3 +146,17 @@ Outer design:
 - fold-level positive-delta counts versus momentum are reported.
 
 Promotion criterion: no promotion from aggregate return alone. The candidate must show stable outer-fold behavior and remain viable under increased cost. 
+
+
+### Next robustness gate — execution lag and universe stress
+
+Added `research/gorila_nested_rank_stress_oos.py`.
+
+For each outer purged fold, the nested ranking selector is re-fit using only the fold's training history and then stressed under:
+- execution lag of 0, 1 and 2 sessions;
+- round-trip costs of 25, 50, 100 and 150 bps;
+- leave-one-symbol-out portfolio construction for every core symbol.
+
+The purpose is to distinguish a genuine cross-sectional effect from a result dependent on same-close execution, a favorable cost assumption, or one dominant constituent.
+
+No stress result will be promoted merely because the aggregate return is positive. Fold-level stability is mandatory.
