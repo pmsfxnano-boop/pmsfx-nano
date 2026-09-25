@@ -239,7 +239,7 @@ def trade_metrics(rows, threshold_pair, cost_bps, horizon):
             side = 0
         if side == 0:
             continue
-        net = side * r["forward_return"] - 2.0 * cost_bps / 10000.0
+        net = side * r["forward_return"] - cost_bps / 10000.0
         trades.append(net)
 
     if not trades:
