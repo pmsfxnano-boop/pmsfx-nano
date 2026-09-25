@@ -1,0 +1,25 @@
+name: PMSF-X research route quick diagnostic
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "research/quick-diagnostic.txt"
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Quick research route probe
+        shell: bash
+        run: |
+          set +e
+          curl -v --connect-timeout 10 --max-time 30             -o /tmp/body.json             -w "HTTP_STATUS=%{http_code}\nTIME_TOTAL=%{time_total}\n"             https://pmsfx-nano.onrender.com/api/research/multihorizon/AAPL             2>/tmp/curl.err
+          rc=$?
+          echo "CURL_RC=$rc"
+          echo "=== CURL STDERR ==="
+          cat /tmp/curl.err || true
+          echo "=== BODY ==="
+          cat /tmp/body.json || true
+          exit 0
