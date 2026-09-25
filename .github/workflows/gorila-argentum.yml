@@ -1,10 +1,11 @@
 name: Gorila Argentum CI
 
 on:
-  push:
-    branches: [gorila-argentum-v0]
-  pull_request:
-    branches: [gorila-argentum-v0]
+  workflow_dispatch:
+
+concurrency:
+  group: gorila-argentum-global-research
+  cancel-in-progress: true
 
 env:
   PYTHONPATH: .
