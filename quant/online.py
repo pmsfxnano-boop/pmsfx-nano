@@ -16,6 +16,8 @@ from dataclasses import dataclass
 import math
 import time
 from typing import Any
+from datetime import timedelta
+from quant.temporal import TemporalSample, walk_forward_splits
 
 
 HORIZON_SECONDS = 60.0
@@ -66,6 +68,39 @@ class ResolvedSample:
     future_return_bps: float
 
 
+
+def evaluate_temporal_cohort(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(samples, key=lambda x: x['event_time'])
+    n = len(ordered)
+    if n < MIN_VALIDATION_SAMPLES:
+        return {'sample_count': n, 'validated': False, 'validation_reason': 'INSUFFICIENT_SAMPLES', 'validation_type': 'walk_forward_purged_embargoed'}
+    temporal = [TemporalSample(event_time=s['event_time'], label_end_time=s['label_end_time'], features=s['features'], label=int(s['label'])) for s in ordered]
+    folds = walk_forward_splits(temporal, train_size=60, test_size=20, purge=timedelta(seconds=HORIZON_SECONDS), embargo=timedelta(seconds=HORIZON_SECONDS))
+    metrics = []
+    for fold in folds:
+        train = [ResolvedSample(0.0, list(x.features), x.label, 0.0) for x in fold.train]
+        test = [ResolvedSample(0.0, list(x.features), x.label, 0.0) for x in fold.test]
+        if len({x.label for x in train}) < 2 or len({x.label for x in test}) < 2: continue
+        w = OnlineFlowEngine._fit(train)
+        probs = [OnlineFlowEngine._predict(w, x.features) for x in test]
+        labels = [x.label for x in test]
+        base = sum(x.label for x in train)/len(train)
+        brier = sum((p-y)**2 for p,y in zip(probs,labels))/len(labels)
+        base_brier = sum((base-y)**2 for y in labels)/len(labels)
+        ll = sum(_log_loss(p,y) for p,y in zip(probs,labels))/len(labels)
+        base_ll = sum(_log_loss(base,y) for y in labels)/len(labels)
+        acc = sum((p>=0.5)==bool(y) for p,y in zip(probs,labels))/len(labels)
+        metrics.append((acc,brier,base_brier,ll,base_ll,len(labels)))
+    if len(metrics) < 3:
+        return {'sample_count': n, 'fold_count': len(metrics), 'validated': False, 'validation_reason': 'INSUFFICIENT_USABLE_FOLDS', 'validation_type': 'walk_forward_purged_embargoed'}
+    accuracy=sum(x[0] for x in metrics)/len(metrics)
+    brier=sum(x[1] for x in metrics)/len(metrics)
+    baseline=sum(x[2] for x in metrics)/len(metrics)
+    logloss=sum(x[3] for x in metrics)/len(metrics)
+    basell=sum(x[4] for x in metrics)/len(metrics)
+    skill=1-brier/baseline if baseline>0 else None
+    passed=accuracy>=0.55 and brier<baseline
+    return {'sample_count':n,'fold_count':len(metrics),'oos_count':sum(x[5] for x in metrics),'accuracy':round(accuracy,4),'brier':round(brier,5),'baseline_brier':round(baseline,5),'brier_skill':round(skill,5) if skill is not None else None,'log_loss':round(logloss,5),'baseline_log_loss':round(basell,5),'purge_seconds':int(HORIZON_SECONDS),'embargo_seconds':int(HORIZON_SECONDS),'train_size':60,'test_size':20,'validation_type':'walk_forward_purged_embargoed','validated':passed,'validation_reason':'PASS' if passed else 'METRICS_BELOW_THRESHOLD'}
 class OnlineFlowEngine:
     def __init__(self) -> None:
         self._pending: dict[str, deque[PendingSample]] = defaultdict(
