@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: gorila-argentum-global-research
+  group: gorila-argentum-jacobian-stress
   cancel-in-progress: true
 
 env:
