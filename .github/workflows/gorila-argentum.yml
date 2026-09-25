@@ -46,6 +46,8 @@ jobs:
         run: set -o pipefail; python research/gorila_pairwise_rank_oos.py | tee gorila-pairwise-rank-oos.json
       - name: US V0 real-history OOS benchmark
         run: set -o pipefail; python research/gorila_us_v0_oos.py | tee gorila-us-v0-oos.json
+      - name: Jacobian nonequilibrium OOS research
+        run: set -o pipefail; python research/gorila_jacobian_noneq_oos.py | tee gorila-jacobian-noneq-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -87,3 +89,4 @@ jobs:
             gorila-cross-sectional-oos.json
             gorila-pairwise-rank-oos.json
             gorila-us-v0-oos.json
+            gorila-jacobian-noneq-oos.json
