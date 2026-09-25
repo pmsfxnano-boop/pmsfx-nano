@@ -5,6 +5,7 @@ from .coupling import build_matrix
 from .config import settings
 from .signal import compose_signal
 from .regime import classify_regime
+from .dashboard import HTML as DASHBOARD_HTML
 from .state import build_market_state
 from .features import build_features
 
@@ -17,6 +18,10 @@ def startup():
 @app.get("/health")
 def health():
     return {"ok":True,"service":"gorila-argentum","version":"0.1.0","mode":"RESEARCH","storage":"postgres" if settings.database_url else "sqlite-fallback","sources":Store().health()}
+
+@app.get("/dashboard",response_class=HTMLResponse)
+def dashboard():
+    return DASHBOARD_HTML
 
 @app.get("/api/state")
 def state():
