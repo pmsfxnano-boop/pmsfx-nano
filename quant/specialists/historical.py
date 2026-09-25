@@ -53,6 +53,7 @@ async def get_historical_bars(
     if (
         not force_refresh
         and cached
+        and cached[1]
         and __import__("time").time() - cached[0] < CACHE_SECONDS
     ):
         return cached[1]
@@ -88,7 +89,8 @@ async def get_historical_bars(
         data = []
 
     rows = data[-MAX_ROWS:]
-    _BARS_CACHE[symbol] = (__import__("time").time(), rows)
+    if rows:
+        _BARS_CACHE[symbol] = (__import__("time").time(), rows)
     print(
         "PMSF-X HISTORICAL BARS:",
         {
