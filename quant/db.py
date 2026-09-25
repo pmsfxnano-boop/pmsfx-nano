@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS forecasts (
     data_source TEXT,
     quote_timestamp TIMESTAMPTZ,
     evaluation JSONB,
-    features JSONB
+    features JSONB,
+    cohort_tag TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_forecasts_symbol_created
@@ -78,6 +79,9 @@ CREATE TABLE IF NOT EXISTS forecast_outcomes (
     prediction_correct BOOLEAN,
     binary_eligible BOOLEAN NOT NULL DEFAULT FALSE,
     brier_loss DOUBLE PRECISION,
+    probabilistic_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    probabilistic_label SMALLINT,
+    probabilistic_brier_loss DOUBLE PRECISION,
     resolution_source TEXT NOT NULL,
     metadata JSONB
 );
@@ -151,6 +155,12 @@ def init_db() -> bool:
             return False
         with conn.cursor() as cur:
             cur.execute(SCHEMA)
+            cur.execute("ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS cohort_tag TEXT")
+            cur.execute("ALTER TABLE forecast_outcomes ADD COLUMN IF NOT EXISTS probabilistic_eligible BOOLEAN NOT NULL DEFAULT FALSE")
+            cur.execute("ALTER TABLE forecast_outcomes ADD COLUMN IF NOT EXISTS probabilistic_label SMALLINT")
+            cur.execute("ALTER TABLE forecast_outcomes ADD COLUMN IF NOT EXISTS probabilistic_brier_loss DOUBLE PRECISION")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_forecasts_cohort_tag_created ON forecasts(cohort_tag, created_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_outcomes_probabilistic ON forecast_outcomes(probabilistic_eligible, resolved_at)")
         conn.commit()
     return True
 
@@ -225,18 +235,18 @@ def record_forecast(payload: dict[str, Any]) -> int | None:
         created_at, symbol, last, bid, ask, spread_bps, microprice,
         model_id, status, direction, p_up, p_down, confidence,
         horizon_seconds, validated, gatillazo, data_source,
-        quote_timestamp, evaluation, features
+        quote_timestamp, evaluation, features, cohort_tag
     ) VALUES (
         %(created_at)s, %(symbol)s, %(last)s, %(bid)s, %(ask)s,
         %(spread_bps)s, %(microprice)s, %(model_id)s, %(status)s,
         %(direction)s, %(p_up)s, %(p_down)s, %(confidence)s,
         %(horizon_seconds)s, %(validated)s, %(gatillazo)s,
         %(data_source)s, %(quote_timestamp)s, %(evaluation)s::jsonb,
-        %(features)s::jsonb
+        %(features)s::jsonb, %(cohort_tag)s
     ) RETURNING id
     """
     row = dict(
-        created_at=datetime.now(timezone.utc),
+        created_at=payload.get("created_at") or datetime.now(timezone.utc),
         symbol=payload.get("symbol"),
         last=payload.get("last"),
         bid=payload.get("bid"),
@@ -256,6 +266,7 @@ def record_forecast(payload: dict[str, Any]) -> int | None:
         quote_timestamp=payload.get("quote_timestamp"),
         evaluation=json.dumps(payload.get("evaluation") or {}),
         features=json.dumps((payload.get("forecast") or {}).get("components") or {}),
+        cohort_tag=payload.get("cohort_tag"),
     )
     with connection() as conn:
         if conn is None:
@@ -608,6 +619,26 @@ def repair_probabilistic_outcomes() -> int:
             ) ^ 2
             ELSE NULL
         END,
+        probabilistic_eligible = (
+            forecast_p_up IS NOT NULL
+            AND realized_return_bps <> 0
+            AND actual_elapsed_seconds <= target_horizon_seconds + 60
+        ),
+        probabilistic_label = CASE
+            WHEN realized_return_bps > 0 THEN 1
+            WHEN realized_return_bps < 0 THEN 0
+            ELSE NULL
+        END,
+        probabilistic_brier_loss = CASE
+            WHEN forecast_p_up IS NOT NULL
+             AND realized_return_bps <> 0
+             AND actual_elapsed_seconds <= target_horizon_seconds + 60
+            THEN (
+                forecast_p_up
+                - CASE WHEN realized_return_bps > 0 THEN 1.0 ELSE 0.0 END
+            ) ^ 2
+            ELSE NULL
+        END,
         metadata = jsonb_set(
             COALESCE(metadata, '{}'::jsonb),
             '{eligibility_reason}',
@@ -642,19 +673,24 @@ def record_outcome(outcome: dict[str, Any]) -> int | None:
         forecast_direction, forecast_p_up, forecast_confidence,
         entry_price, exit_price, realized_return_bps,
         realized_direction, prediction_correct, binary_eligible,
-        brier_loss, resolution_source, metadata
+        brier_loss, probabilistic_eligible, probabilistic_label,
+        probabilistic_brier_loss, resolution_source, metadata
     ) VALUES (
         %(forecast_id)s, %(resolved_at)s, %(symbol)s, %(forecast_created_at)s,
         %(target_horizon_seconds)s, %(actual_elapsed_seconds)s,
         %(forecast_direction)s, %(forecast_p_up)s, %(forecast_confidence)s,
         %(entry_price)s, %(exit_price)s, %(realized_return_bps)s,
         %(realized_direction)s, %(prediction_correct)s, %(binary_eligible)s,
-        %(brier_loss)s, %(resolution_source)s, %(metadata)s::jsonb
+        %(brier_loss)s, %(probabilistic_eligible)s, %(probabilistic_label)s,
+        %(probabilistic_brier_loss)s, %(resolution_source)s, %(metadata)s::jsonb
     )
     ON CONFLICT (forecast_id) DO NOTHING
     RETURNING id
     """
     row = dict(outcome)
+    row.setdefault("probabilistic_eligible", False)
+    row.setdefault("probabilistic_label", None)
+    row.setdefault("probabilistic_brier_loss", None)
     row["metadata"] = json.dumps(outcome.get("metadata") or {})
     with connection() as conn:
         if conn is None:
@@ -682,7 +718,8 @@ def get_outcome(forecast_id: int) -> dict[str, Any] | None:
         forecast_direction, forecast_p_up, forecast_confidence,
         entry_price, exit_price, realized_return_bps,
         realized_direction, prediction_correct, binary_eligible,
-        brier_loss, resolution_source, metadata
+        brier_loss, probabilistic_eligible, probabilistic_label,
+        probabilistic_brier_loss, resolution_source, metadata
     FROM forecast_outcomes
     WHERE forecast_id = %(forecast_id)s
     """
@@ -713,8 +750,11 @@ def get_outcome(forecast_id: int) -> dict[str, Any] | None:
             "prediction_correct": row[14],
             "binary_eligible": row[15],
             "brier_loss": float(row[16]) if row[16] is not None else None,
-            "resolution_source": row[17],
-            "metadata": row[18],
+            "probabilistic_eligible": bool(row[17]),
+            "probabilistic_label": int(row[18]) if row[18] is not None else None,
+            "probabilistic_brier_loss": float(row[19]) if row[19] is not None else None,
+            "resolution_source": row[20],
+            "metadata": row[21],
         }
     except Exception:
         return None
@@ -731,7 +771,8 @@ def eligible_outcomes(limit: int = 100) -> list[dict[str, Any]]:
         forecast_direction, forecast_p_up, forecast_confidence,
         entry_price, exit_price, realized_return_bps,
         realized_direction, prediction_correct, binary_eligible,
-        brier_loss, resolution_source, metadata
+        brier_loss, probabilistic_eligible, probabilistic_label,
+        probabilistic_brier_loss, resolution_source, metadata
     FROM forecast_outcomes
     WHERE binary_eligible = TRUE
     ORDER BY resolved_at ASC, id ASC
@@ -762,8 +803,11 @@ def eligible_outcomes(limit: int = 100) -> list[dict[str, Any]]:
             "prediction_correct": row[14],
             "binary_eligible": bool(row[15]),
             "brier_loss": float(row[16]) if row[16] is not None else None,
-            "resolution_source": row[17],
-            "metadata": row[18],
+            "probabilistic_eligible": bool(row[17]),
+            "probabilistic_label": int(row[18]) if row[18] is not None else None,
+            "probabilistic_brier_loss": float(row[19]) if row[19] is not None else None,
+            "resolution_source": row[20],
+            "metadata": row[21],
         }
         for row in rows
     ]
@@ -815,15 +859,20 @@ def outcome_summary() -> dict[str, Any]:
         ) AS eligible_consistent_count,
         COUNT(*) FILTER (
             WHERE forecast_p_up IS NOT NULL
-              AND realized_direction IN ('UP', 'DOWN')
-              AND actual_elapsed_seconds <= target_horizon_seconds + 60
+              AND probabilistic_eligible
         ) AS probabilistic_eligible_count,
         COUNT(*) FILTER (
-            WHERE forecast_p_up IS NOT NULL
-              AND forecast_direction = 'NEUTRAL'
-              AND realized_direction IN ('UP', 'DOWN')
-              AND actual_elapsed_seconds <= target_horizon_seconds + 60
-        ) AS neutral_but_probabilistic_eligible_count
+            WHERE probabilistic_eligible AND probabilistic_label = 1
+        ) AS probabilistic_up_count,
+        COUNT(*) FILTER (
+            WHERE probabilistic_eligible AND probabilistic_label = 0
+        ) AS probabilistic_down_count,
+        COUNT(*) FILTER (
+            WHERE probabilistic_eligible AND forecast_direction = 'NEUTRAL'
+        ) AS neutral_but_probabilistic_eligible_count,
+        AVG(probabilistic_brier_loss) FILTER (
+            WHERE probabilistic_eligible
+        ) AS mean_probabilistic_brier
     FROM forecast_outcomes
     """
     try:
@@ -848,7 +897,10 @@ def outcome_summary() -> dict[str, Any]:
                 "TIMING_EXPIRED": int(row[8]),
                 "ELIGIBLE_CONSISTENT": int(row[9]),
                 "PROBABILISTIC_ELIGIBLE": int(row[10]),
-                "NEUTRAL_BUT_PROBABILISTIC_ELIGIBLE": int(row[11]),
+                "PROBABILISTIC_UP": int(row[11]),
+                "PROBABILISTIC_DOWN": int(row[12]),
+                "NEUTRAL_BUT_PROBABILISTIC_ELIGIBLE": int(row[13]),
+                "MEAN_PROBABILISTIC_BRIER": round(float(row[14]), 6) if row[14] is not None else None,
             },
             "probabilistic_eligibility_rule": "p_up_present + realized_direction in {UP,DOWN} + timing_within_60s",
         }
