@@ -26,11 +26,13 @@ jobs:
       - name: Import smoke
         run: python -c "from gorila_argentum.app import app; print(app.title, app.version)"
       - name: Core Argentine OOS research
-        run: python research/gorila_oos.py | tee gorila-oos.json
+        run: set -o pipefail; python research/gorila_oos.py | tee gorila-oos.json
       - name: Dynamic coupling OOS research
-        run: python research/gorila_coupling_oos.py | tee gorila-coupling-oos.json
+        run: set -o pipefail; python research/gorila_coupling_oos.py | tee gorila-coupling-oos.json
       - name: Coupling regime OOS research
         run: set -o pipefail; python research/gorila_coupling_regime_oos.py | tee gorila-coupling-regime-oos.json
+      - name: Coupling gate OOS research
+        run: set -o pipefail; python research/gorila_coupling_gate_oos.py | tee gorila-coupling-gate-oos.json
       - name: Public endpoint smoke
         run: |
           python - <<'PY'
@@ -52,3 +54,5 @@ jobs:
           path: |
             gorila-oos.json
             gorila-coupling-oos.json
+            gorila-coupling-regime-oos.json
+            gorila-coupling-gate-oos.json
