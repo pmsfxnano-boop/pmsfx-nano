@@ -307,6 +307,21 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
         within_timing_tolerance=within_timing_tolerance,
     )
     binary_eligible = eligibility_reason == "ELIGIBLE"
+    probabilistic_eligible = (
+        forecast.get("p_up") is not None
+        and realized_direction in ("UP", "DOWN")
+        and within_timing_tolerance
+    )
+    probabilistic_label = (
+        1 if realized_direction == "UP"
+        else 0 if realized_direction == "DOWN"
+        else None
+    )
+    probabilistic_brier_loss = (
+        (float(forecast["p_up"]) - float(probabilistic_label)) ** 2
+        if probabilistic_eligible
+        else None
+    )
     realized_label = 1.0 if realized_direction == "UP" else 0.0
     brier_loss = (
         (float(forecast["p_up"]) - realized_label) ** 2
@@ -334,6 +349,9 @@ def build_outcome(forecast: dict[str, Any], quote: dict[str, Any], resolved_at: 
         "prediction_correct": prediction_correct,
         "binary_eligible": binary_eligible,
         "brier_loss": round(brier_loss, 6) if brier_loss is not None else None,
+        "probabilistic_eligible": probabilistic_eligible,
+        "probabilistic_label": probabilistic_label,
+        "probabilistic_brier_loss": round(probabilistic_brier_loss, 6) if probabilistic_brier_loss is not None else None,
         "resolution_source": quote["source"],
         "metadata": {
             "quote_timestamp": quote_timestamp.isoformat() if quote_timestamp else None,
