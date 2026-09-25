@@ -343,9 +343,8 @@ def active_research_run(
         return None
 
 
-def recover_stale_research_runs(
-    stale_after_minutes: int = 30,
-) -> int:
+def recover_incomplete_research_runs() -> int:
+    """Mark active research jobs from a previous web-process lifetime as failed."""
     if not database_url():
         return 0
 
@@ -355,9 +354,8 @@ def recover_stale_research_runs(
         updated_at = NOW(),
         status = 'ERROR',
         finished_at = NOW(),
-        error = 'STALE_RESEARCH_RUN_RECOVERED_AFTER_SERVICE_RESTART'
+        error = 'INCOMPLETE_RESEARCH_RUN_RECOVERED_AFTER_SERVICE_RESTART'
     WHERE status IN ('QUEUED', 'RUNNING')
-      AND updated_at < NOW() - (%(stale_after_minutes)s * INTERVAL '1 minute')
     """
     try:
         with connection() as conn:
