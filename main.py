@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
@@ -349,6 +349,33 @@ def online_cohort_status():
         rows = load_online_cohort_samples(symbol, limit=600)
         payload["symbols"][symbol] = evaluate_temporal_cohort(rows)
     return payload
+
+
+@app.get("/api/research/online-cohort/probe")
+def online_cohort_probe():
+    summary = online_cohort_summary()
+    stream = stream_status()
+    payload = {
+        "service": "pmsfx-nano",
+        "status": "FAIL",
+        "database_ready": bool(summary.get("ready")),
+        "stream_status": stream.get("status"),
+        "stream_symbols": stream.get("cached_symbols"),
+        "cohort_count": int(summary.get("count") or 0) if summary.get("ready") else 0,
+        "cohort_up": int(summary.get("up") or 0) if summary.get("ready") else 0,
+        "cohort_down": int(summary.get("down") or 0) if summary.get("ready") else 0,
+        "first_event": summary.get("first_event"),
+        "last_label": summary.get("last_label"),
+    }
+    healthy = (
+        payload["database_ready"]
+        and payload["stream_status"] == "CONNECTED"
+        and payload["cohort_count"] > 0
+        and payload["cohort_up"] > 0
+        and payload["cohort_down"] > 0
+    )
+    payload["status"] = "PASS" if healthy else "FAIL"
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 async def outcome_resolver_loop():
     while True:
