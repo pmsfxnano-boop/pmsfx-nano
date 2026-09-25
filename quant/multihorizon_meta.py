@@ -398,6 +398,34 @@ def _meta_samples(
     return samples
 
 
+def _ablation_feature_rows(
+    sample: TemporalSample,
+    config: tuple[int, ...],
+) -> list[float]:
+    horizon_to_index = {300: 0, 900: 1, 1800: 2}
+    return [
+        float(sample.features[horizon_to_index[horizon]])
+        for horizon in config
+    ]
+
+
+def _fold_sign_consistency(
+    fold_deltas: list[float],
+) -> dict[str, float | int]:
+    if not fold_deltas:
+        return {
+            "fold_count": 0,
+            "positive_delta_fold_count": 0,
+            "positive_delta_fraction": None,
+        }
+    positive = sum(delta > 0 for delta in fold_deltas)
+    return {
+        "fold_count": len(fold_deltas),
+        "positive_delta_fold_count": positive,
+        "positive_delta_fraction": positive / len(fold_deltas),
+    }
+
+
 def validate_multi_horizon_meta(
     rows: list[dict[str, Any]],
     *,
@@ -469,32 +497,50 @@ def validate_multi_horizon_meta(
         if len({sample.label for sample in train}) < 2:
             continue
 
-        train_x = [list(sample.features) for sample in train]
         train_y = [sample.label for sample in train]
-        weights = _fit_meta(train_x, train_y)
-
-        probabilities = [
-            _meta_predict(weights, list(sample.features))
-            for sample in test
-        ]
-        specialist_300 = [float(sample.features[0]) for sample in test]
         labels = [sample.label for sample in test]
         baseline_rate = sum(train_y) / len(train_y)
         baseline = [baseline_rate] * len(labels)
+
+        ablation_configs = {
+            "300": (300,),
+            "300_900": (300, 900),
+            "300_1800": (300, 1800),
+            "300_900_1800": (300, 900, 1800),
+        }
+        ablation_probabilities: dict[str, list[float]] = {}
+        ablation_metrics: dict[str, dict[str, float | int | None]] = {}
+
+        for name, config in ablation_configs.items():
+            train_x = [
+                _ablation_feature_rows(sample, config)
+                for sample in train
+            ]
+            test_x = [
+                _ablation_feature_rows(sample, config)
+                for sample in test
+            ]
+            weights = _fit_meta(train_x, train_y)
+            predictions = [
+                _meta_predict(weights, features)
+                for features in test_x
+            ]
+            ablation_probabilities[name] = predictions
+            ablation_metrics[name] = _metrics(
+                predictions,
+                labels,
+                baseline,
+            )
 
         fold_results.append({
             "fold": fold.fold,
             "meta_train_count": len(train),
             "test_count": len(test),
             "meta_train_positive_rate": baseline_rate,
-            "metrics": _metrics(probabilities, labels, baseline),
-            "primary_300s_metrics": _metrics(
-                specialist_300,
-                labels,
-                baseline,
-            ),
-            "probabilities": probabilities,
-            "specialist_300_probabilities": specialist_300,
+            "metrics": ablation_metrics["300_900_1800"],
+            "primary_300s_metrics": ablation_metrics["300"],
+            "ablation_metrics": ablation_metrics,
+            "ablation_probabilities": ablation_probabilities,
             "labels": labels,
         })
 
@@ -532,6 +578,48 @@ def validate_multi_horizon_meta(
         labels,
         baselines,
     )
+
+    ablation_probabilities = {
+        name: [
+            probability
+            for fold in fold_results
+            for probability in fold["ablation_probabilities"][name]
+        ]
+        for name in ("300", "300_900", "300_1800", "300_900_1800")
+    }
+    ablation_metrics = {
+        name: _metrics(
+            ablation_probabilities[name],
+            labels,
+            baselines,
+        )
+        for name in ablation_probabilities
+    }
+    ablation_bootstraps = {
+        name: _block_bootstrap_delta(
+            ablation_probabilities[name],
+            specialist_300,
+            labels,
+            seed=bootstrap_seed + 100 + index,
+        )
+        for index, name in enumerate(("300_900", "300_1800", "300_900_1800"))
+    }
+    fold_delta_by_config = {}
+    for name in ("300_900", "300_1800", "300_900_1800"):
+        deltas = [
+            fold["ablation_metrics"][name]["brier"]
+            * 1.0
+            for fold in fold_results
+        ]
+        primary_deltas = [
+            fold["ablation_metrics"]["300"]["brier"]
+            * 1.0
+            for fold in fold_results
+        ]
+        fold_delta_by_config[name] = _fold_sign_consistency([
+            primary - current
+            for primary, current in zip(primary_deltas, deltas)
+        ])
     baseline = baselines
     model_vs_baseline_bootstrap = _block_bootstrap_delta(
         probabilities,
@@ -597,6 +685,11 @@ def validate_multi_horizon_meta(
         "delta_brier_vs_300s": delta_brier_vs_300s,
         "bootstrap": model_vs_baseline_bootstrap,
         "primary_300s_bootstrap": model_vs_300_bootstrap,
+        "ablation": {
+            "metrics": ablation_metrics,
+            "bootstrap_vs_300s": ablation_bootstraps,
+            "fold_sign_consistency_vs_300s": fold_delta_by_config,
+        },
         "folds": [
             {
                 "fold": fold["fold"],
@@ -604,6 +697,7 @@ def validate_multi_horizon_meta(
                 "test_count": fold["test_count"],
                 "metrics": fold["metrics"],
                 "primary_300s_metrics": fold["primary_300s_metrics"],
+                "ablation_metrics": fold["ablation_metrics"],
             }
             for fold in fold_results
         ],
