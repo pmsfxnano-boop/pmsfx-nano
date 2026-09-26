@@ -9,6 +9,7 @@ from .regime import classify_regime
 from .dashboard import HTML as DASHBOARD_HTML
 from .state import build_market_state
 from .features import build_features
+from .drift import rolling_drift
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -39,6 +40,14 @@ def ingest():
 @app.get("/api/features/{symbol}")
 def features(symbol: str):
     return build_features(symbol)
+
+@app.get("/api/drift/{symbol}/{field}")
+def drift(symbol: str, field: str, current_size: int = 30, reference_size: int = 90):
+    current_size = max(10, min(120, int(current_size)))
+    reference_size = max(20, min(180, int(reference_size)))
+    store = Store(); store.init()
+    series = store.recent_series(symbol, field, limit=current_size + reference_size)
+    return rolling_drift([value for _, value in series], current_size=current_size, reference_size=reference_size)
 
 @app.get("/api/signal/{symbol}")
 def signal(symbol: str, probability_up: float, horizon_seconds: int = 900, regime: str = "UNKNOWN"):
