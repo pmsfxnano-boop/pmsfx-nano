@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from .config import settings
 from .storage import Store
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 from .drift import rolling_drift
@@ -132,6 +131,7 @@ def build_control_state(store: Store | None = None) -> dict:
     }
     if "ALERT" in diagnostic_statuses:
         halt_reasons.append("MODEL_DRIFT_ALERT")
+        circuit_status = "HALTED"
     elif "WARN" in diagnostic_statuses and circuit_status == "NORMAL":
         circuit_status = "DEGRADED"
 
