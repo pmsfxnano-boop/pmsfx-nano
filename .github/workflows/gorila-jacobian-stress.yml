@@ -1,0 +1,128 @@
+name: Gorila Argentum Jacobian Stress V2
+
+on:
+  push:
+    branches: [gorila-argentum-v0-hardening]
+    paths:
+      - "research/gorila_jacobian_stress_oos.py"
+      - "research/gorila_data_snapshot.py"
+      - ".github/workflows/gorila-jacobian-stress.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: gorila-argentum-jacobian-stress-v2
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stage:
+          - central
+          - parameter_60
+          - parameter_90
+          - parameter_120
+          - parameter_180
+          - lag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Run bounded stress stage
+        env:
+          GORILA_JAC_STAGE: ${{ matrix.stage }}
+        run: |
+          set -o pipefail
+          python research/gorila_jacobian_stress_oos.py | tee "jacobian-${GORILA_JAC_STAGE}.json"
+      - name: Validate stage artifact
+        env:
+          STAGE: ${{ matrix.stage }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          stage = os.environ["STAGE"]
+          path = Path(f"jacobian-{stage}.json")
+          payload = json.loads(path.read_text())
+          assert payload["status"] == "COMPLETE"
+          assert payload["stage"] == stage
+          assert payload["data_snapshot_sha256"]
+          assert payload["results"]
+          print("JACOBIAN_STAGE_OK", stage, "results", len(payload["results"]))
+          PY
+      - name: Upload stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacobian-${{ matrix.stage }}
+          path: jacobian-${{ matrix.stage }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    needs: stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jacobian-*
+          path: jacobian-stages
+          merge-multiple: false
+      - name: Aggregate immutable evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          expected = {
+              "central",
+              "parameter_60",
+              "parameter_90",
+              "parameter_120",
+              "parameter_180",
+              "lag",
+          }
+          found = {}
+          for p in Path("jacobian-stages").glob("jacobian-*/jacobian-*.json"):
+              payload = json.loads(p.read_text())
+              stage = payload["stage"]
+              assert payload["status"] == "COMPLETE"
+              found[stage] = payload
+          missing = expected - set(found)
+          extra = set(found) - expected
+          assert not missing, f"missing stages: {sorted(missing)}"
+          assert not extra, f"unexpected stages: {sorted(extra)}"
+          hashes = {p["data_snapshot_sha256"] for p in found.values()}
+          assert len(hashes) == 1, f"snapshot mismatch: {hashes}"
+          merged = {
+              "status": "COMPLETE",
+              "method": "jacobian-nonequilibrium-wfo-stress-v2-staged",
+              "stages": {k: found[k] for k in sorted(found)},
+              "data_snapshot_sha256": hashes.pop(),
+          }
+          Path("gorila-jacobian-stress-v2.json").write_text(
+              json.dumps(merged, indent=2, sort_keys=True)
+          )
+          print(
+              "JACOBIAN_STRESS_V2_COMPLETE",
+              "stages=", sorted(found),
+              "snapshot=", merged["data_snapshot_sha256"],
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-jacobian-stress-v2
+          path: gorila-jacobian-stress-v2.json
+          if-no-files-found: error
+          retention-days: 90
