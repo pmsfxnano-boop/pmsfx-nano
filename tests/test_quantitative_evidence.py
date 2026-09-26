@@ -22,6 +22,7 @@ def test_quantitative_validator_gate_is_conservative():
         },
         "pbo": {"status": "COMPLETE", "pbo": 0.0},
         "dsr": 0.20,
+        "execution_delta_vs_momentum_50bps": 0.10,
     })
     assert status == "VALIDATED"
     assert reasons == []
