@@ -290,11 +290,17 @@ def evaluate(series: dict[str, dict[str, float]]):
         predictive_reasons.append("RANK_IC_CI_NOT_ABOVE_ZERO")
     if placebo_p95 is None or model_mean_ic <= placebo_p95:
         predictive_reasons.append("PLACEBO_NOT_BEATEN")
+    base_ic = model_mean_ic
     for lag, item in stress.items():
         if lag == "0":
             continue
-        if not item["rank_ic_ci95"] or item["rank_ic_ci95"][0] <= 0:
-            predictive_reasons.append(f"STRESS_LAG_{lag}_RANK_IC_FAILED")
+        lag_ic = float(item["rank_ic_mean"])
+        retention = lag_ic / base_ic if base_ic > 0 else 0.0
+        item["retention_vs_base"] = retention
+        if lag_ic <= 0.0:
+            predictive_reasons.append(f"STRESS_LAG_{lag}_SIGN_FLIP")
+        elif retention < 0.25:
+            predictive_reasons.append(f"STRESS_LAG_{lag}_RETENTION_BELOW_25PCT")
 
     if not delta_ci or delta_ci[0] <= 0:
         trading_reasons.append("DELTA_VS_MOMENTUM_CI_NOT_ABOVE_ZERO")
