@@ -29,6 +29,29 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
         rows = [item for run in manifest["runs"] for item in run.get("evidence", [])]
     with store.connect() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO research_manifests(
+                    id,created_at,source,status,snapshot_sha256,manifest_sha256,payload
+                )
+                VALUES(%(id)s,%(created_at)s,%(source)s,%(status)s,%(snapshot)s,%(digest)s,%(payload)s)
+                ON CONFLICT (manifest_sha256) DO UPDATE SET
+                    created_at=EXCLUDED.created_at,
+                    source=EXCLUDED.source,
+                    status=EXCLUDED.status,
+                    snapshot_sha256=EXCLUDED.snapshot_sha256,
+                    payload=EXCLUDED.payload
+                """,
+                {
+                    "id": uuid.uuid4().hex,
+                    "created_at": manifest.get("generated_at") or _utc(),
+                    "source": source,
+                    "status": manifest.get("status", "UNKNOWN"),
+                    "snapshot": manifest.get("snapshot_sha256"),
+                    "digest": digest,
+                    "payload": json.dumps(manifest, sort_keys=True, default=str),
+                },
+            )
             for item in rows:
                 cur.execute(
                     """
@@ -148,3 +171,34 @@ def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int |
         except Exception:
             pass
     return rows
+
+
+def latest_manifest(store: Store) -> dict[str, Any] | None:
+    store.init()
+    if not store.pg:
+        return None
+    with store.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT created_at,source,status,snapshot_sha256,manifest_sha256,payload
+                FROM research_manifests
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row[5])
+    except Exception:
+        payload = {}
+    return {
+        "created_at": row[0],
+        "source": row[1],
+        "status": row[2],
+        "snapshot_sha256": row[3],
+        "manifest_sha256": row[4],
+        "payload": payload,
+    }
