@@ -140,6 +140,18 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
  result TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_runs_time ON runtime_runs(started_at);
+CREATE TABLE IF NOT EXISTS research_manifests (
+ id TEXT PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ source TEXT NOT NULL,
+ status TEXT NOT NULL,
+ snapshot_sha256 TEXT,
+ manifest_sha256 TEXT NOT NULL UNIQUE,
+ payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_manifests_created ON research_manifests(created_at);
+CREATE INDEX IF NOT EXISTS idx_research_manifests_snapshot ON research_manifests(snapshot_sha256);
+
 CREATE TABLE IF NOT EXISTS research_evidence (
  id TEXT PRIMARY KEY,
  run_id TEXT NOT NULL,
