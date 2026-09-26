@@ -1,57 +1,52 @@
 # Gorila Argentum — Batch 16: Continuous Learning
 
-Fecha: 2026-09-26 UTC
-Rama: gorila-argentum-v0-hardening
+Estado: IMPLEMENTADO COMO CICLO DE CANDIDATOS + PERSISTENCIA.
 
-## Estado
-
-IMPLEMENTADO COMO CICLO DE CANDIDATOS + PERSISTENCIA.
-
-Batch 16 existe como ciclo reproducible:
+## Ciclo
 
 observations → causal feature dataset → purged walk-forward → candidate fit → current-state score → learning_runs
 
-## Dataset
+Features:
+- r1
+- r3
+- r5
+- vol5
+- vol20
+- z20
 
-Para cada símbolo se construyen features exclusivamente con observaciones anteriores al timestamp de cada muestra:
+Las labels miran sólo hacia delante por horizon_days. Cada dataset recibe SHA-256.
 
-- retorno 1 período;
-- retorno 3 períodos;
-- retorno 5 períodos;
-- volatilidad 5;
-- volatilidad 20;
-- z-score de 20.
+## Recalibración
 
-La etiqueta mira únicamente hacia delante mediante horizon_days.
+Se añadió `gorila_argentum/calibration.py` con:
+- calibración logit-intercept;
+- solución por bisección acotada;
+- evaluación Brier/log-loss/prediction gap;
+- candidate gate;
+- persistencia en `calibration_runs`.
 
-Cada dataset recibe un SHA-256 para detectar cambios de universo/datos.
+La aplicación automática está deshabilitada y exige Promotion + durability.
 
-## Validación
+## Runtime tick
 
-El candidato pasa por purged_walk_forward con purge igual al horizonte.
+`scripts/gorila_runtime_tick.py` ejecuta, con Postgres:
+1. learning para los símbolos core;
+2. settlement Shadow due;
+3. Promotion evaluation;
+4. recalibración candidata;
+5. Audit snapshot.
 
-Criterio interno de candidato:
-
-- OOS accuracy >= 0.55;
-- Brier skill >= 0.
-
-Un candidato puede ser rechazado sin afectar al predictor vigente.
+El tick falla cerrado con `durable_storage_required` si no hay Postgres.
 
 ## Invariantes
 
-- Nunca se reemplaza automáticamente el modelo vigente.
-- Todo candidato queda en learning_runs.
-- La promoción continúa BLOCKED hasta Batch 15.
-- La probabilidad final se calcula sobre el estado más reciente disponible, no sobre una fila que ya utiliza una etiqueta futura.
-- No se mezclan labels futuros con features del mismo timestamp.
+- no reemplazo automático del modelo;
+- no trading;
+- no relajación del Promotion Gate;
+- no reutilización de labels futuras;
+- candidatos persistidos;
+- trazabilidad mediante hashes/audit.
 
-## API
+## Operación pendiente
 
-- POST /api/learning/run?symbol=GGAL&horizon_days=5
-- GET /api/learning?symbol=GGAL&limit=20
-
-## Operación
-
-El ciclo está preparado para ejecución recurrente por scheduler/cron. La rama contiene el código y los tests, pero el runtime Render todavía no se ha verificado con estos commits.
-
-La habilitación de Continuous Learning no implica promoción ni trading.
+El runtime tick está listo para Render Cron. No se declara activo hasta que el servicio Render tenga el nuevo deploy, Postgres configurado y el workspace autorizado.
