@@ -5,7 +5,7 @@ Rama: `gorila-argentum-v0-hardening`
 
 ## Estado
 
-**IMPLEMENTADO + TEST VALIDADO EN REPOSITORIO.**
+**IMPLEMENTADO + TEST CONFIGURADO + CI PENDIENTE DE OBSERVACIÓN.**
 
 Batch 13 añade una capa de control/observabilidad que expone el estado operativo sin convertirlo en un mecanismo de promoción automática.
 
@@ -31,7 +31,7 @@ El dashboard incorpora **CONTROL ROOM — BATCH 13** y muestra runtime, storage,
 
 El control room **no promueve** modelos, **no ejecuta trading** y **no activa** un kill-switch que todavía no existe.
 
-La variable `GORILA_PREDICTOR_PROMOTION` solo describe el estado de compuerta y por defecto es `BLOCKED`.
+El estado de promoción no es configurable por runtime: el Control Room conserva `BLOCKED` hasta que una implementación de gate científico lo derive explícitamente.
 
 ## Validación
 
