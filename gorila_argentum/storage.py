@@ -198,7 +198,6 @@ class Store:
             if not schema.replace("_","").isalnum():
                 raise ValueError("invalid_database_schema")
             with self.conn.cursor() as cur:
-                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 cur.execute(f'SET search_path TO "{schema}"')
             return self.conn
         self.conn = sqlite3.connect(self.path)
