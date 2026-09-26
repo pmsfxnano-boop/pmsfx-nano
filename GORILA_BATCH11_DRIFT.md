@@ -30,7 +30,7 @@ Se añadió el endpoint:
 
 También se añadió `GET /api/drift?limit=100` para leer snapshots persistidos.
 
-Cada ingestión calcula Drift sobre los seis símbolos core (`GGAL,BMA,YPFD,PAMP,TGSU2,CEPU`) con referencia de 90 observaciones y ventana actual de 30, y persiste el resultado en `drift_snapshots`.
+Cada ingestión calcula Drift sobre los seis símbolos core (`GGAL,BMA,YPFD,PAMP,TGSU2,CEPU`) con referencia de 90 observaciones y ventana actual de 30, y persiste el resultado en `drift_snapshots`. Además se calcula Drift sobre `return_1d` derivado de los cierres, para evitar que la tendencia de niveles de precio domine el detector.
 
 El endpoint de cálculo directo no modifica la lógica del predictor V0.
 
