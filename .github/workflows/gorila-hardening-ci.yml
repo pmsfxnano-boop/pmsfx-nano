@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt pytest
       - name: Unit tests
-        run: pytest -q tests/test_research_validation.py tests/test_data_snapshot.py tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py tests/test_dashboard.py tests/test_drift.py tests/test_control.py
+        run: pytest -q tests/test_research_validation.py tests/test_data_snapshot.py tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py tests/test_dashboard.py tests/test_drift.py tests/test_control.py tests/test_shadow.py
       - name: Compile research scripts
         run: |
           python -m py_compile             research/gorila_data_snapshot.py             research/gorila_snapshot_oos.py             research/gorila_true_cpcv_search_audit_oos.py             research/gorila_search_audit_oos.py             research/gorila_nested_pairwise_rank_oos.py             research/gorila_nested_rank_placebo_oos.py             research/gorila_rank_universe_loo_oos.py             research/gorila_nested_rank_stress_oos.py             research/gorila_jacobian_stress_oos.py
