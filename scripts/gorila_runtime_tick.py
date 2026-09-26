@@ -13,6 +13,145 @@ from gorila_argentum.learning import run_learning_cycle
 from gorila_argentum.ingest import run_batch
 from gorila_argentum.promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
 from gorila_argentum.storage import Store
+from gorila_argentum.shadow import compute_shadow_outcome
+from quant.db import connection as quant_connection
+
+
+def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
+    created = 0
+    settled = 0
+    pending = 0
+    forecast_rows = []
+
+    # PMSF-X is already the live/validated market-data engine in the shared
+    # Postgres. Importing its forecasts into Gorila's shadow ledger preserves
+    # the actual forecast timestamps and lets the shadow layer evaluate the
+    # same decisions without executing trades.
+    try:
+        with quant_connection() as conn:
+            if conn is None:
+                return {"status": "NO_QUANT_DB", "created": 0, "settled": 0, "pending": 0}
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, created_at, symbol, model_id, status, direction,
+                           p_up, confidence, horizon_seconds,
+                           COALESCE((bid + ask) / 2.0, last) AS entry_price
+                    FROM forecasts
+                    WHERE p_up IS NOT NULL
+                      AND horizon_seconds IS NOT NULL
+                      AND COALESCE((bid + ask) / 2.0, last) IS NOT NULL
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT %s
+                    """,
+                    (max(1, min(int(limit), 500)),),
+                )
+                forecast_rows = cur.fetchall()
+    except Exception as exc:
+        return {
+            "status": "ERROR",
+            "created": 0,
+            "settled": 0,
+            "pending": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    imported_ids: set[int] = set()
+    for row in forecast_rows:
+        forecast_id = int(row[0])
+        feature_hash = f"pmsfx-forecast:{forecast_id}"
+        if store.shadow_exists_by_feature_hash(feature_hash):
+            imported_ids.add(forecast_id)
+            continue
+        created_at = row[1].isoformat() if hasattr(row[1], "isoformat") else str(row[1])
+        result = store.save_shadow_prediction(
+            symbol=str(row[2]).upper(),
+            model_version="pmsfx-x-upstream-shadow-v1",
+            probability_up=float(row[6]),
+            horizon_seconds=int(row[8]),
+            regime="PMSF_X_LIVE",
+            entry_price=float(row[9]),
+            feature_hash=feature_hash,
+            metadata={
+                "source": "shared_quant_postgres",
+                "quant_forecast_id": forecast_id,
+                "upstream_model_id": row[3],
+                "upstream_status": row[4],
+                "upstream_direction": row[5],
+                "upstream_confidence": row[7],
+                "historical_backfill": True,
+            },
+            created_at=created_at,
+        )
+        imported_ids.add(forecast_id)
+        if not result.get("existing"):
+            created += 1
+
+    open_rows = store.latest_shadow(status="OPEN", limit=500)
+    for shadow in open_rows:
+        feature_hash = str(shadow.get("feature_hash") or "")
+        if not feature_hash.startswith("pmsfx-forecast:"):
+            continue
+        try:
+            forecast_id = int(feature_hash.split(":", 1)[1])
+        except ValueError:
+            continue
+
+        outcome_row = None
+        try:
+            with quant_connection() as conn:
+                if conn is not None:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT resolved_at, exit_price, realized_direction,
+                                   realized_return_bps, prediction_correct,
+                                   brier_loss, probabilistic_brier_loss
+                            FROM forecast_outcomes
+                            WHERE forecast_id=%s
+                            LIMIT 1
+                            """,
+                            (forecast_id,),
+                        )
+                        outcome_row = cur.fetchone()
+        except Exception:
+            outcome_row = None
+
+        if not outcome_row or outcome_row[1] is None or outcome_row[0] is None:
+            pending += 1
+            continue
+
+        observed_at = outcome_row[0].isoformat() if hasattr(outcome_row[0], "isoformat") else str(outcome_row[0])
+        try:
+            outcome = compute_shadow_outcome(
+                float(shadow["probability_up"]),
+                float(shadow["entry_price"]),
+                float(outcome_row[1]),
+            )
+            store.settle_shadow_prediction(
+                shadow["id"],
+                outcome,
+                observed_at,
+                metadata={
+                    "resolution": "shared_quant_forecast_outcome",
+                    "quant_forecast_id": forecast_id,
+                    "upstream_realized_direction": outcome_row[2],
+                    "upstream_realized_return_bps": outcome_row[3],
+                    "upstream_prediction_correct": outcome_row[4],
+                    "upstream_brier_loss": outcome_row[5],
+                },
+            )
+            settled += 1
+        except (ValueError, KeyError):
+            pending += 1
+
+    return {
+        "status": "COMPLETED",
+        "created": created,
+        "settled": settled,
+        "pending": pending,
+        "source_forecasts_seen": len(forecast_rows),
+    }
 
 
 def _create_learning_shadow_predictions(store: Store, learning_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -102,7 +241,8 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
             learning.append(result)
     learning.sort(key=lambda row: str(row.get("symbol") or ""))
 
-    shadow_capture = _create_learning_shadow_predictions(store, learning)
+    shadow_capture = _create_learning_shadow_predictions(store, learning_results)
+    pmsfx_shadow = _sync_pmsfx_shadow_ledger(store)
 
     settlement = store.settle_due_shadow_from_observations(
         max_lateness_seconds=3600,
@@ -126,6 +266,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "ingestion": ingestion,
         "learning": learning,
         "shadow_capture": shadow_capture,
+        "pmsfx_shadow": pmsfx_shadow,
         "settlement": settlement,
         "promotion": {
             "decision": decision,
