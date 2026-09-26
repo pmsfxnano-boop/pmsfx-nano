@@ -12,6 +12,7 @@ from .features import build_features
 from .drift import rolling_drift
 from .control import build_control_state
 from .shadow import validate_shadow_prediction, compute_shadow_outcome, validate_observed_at
+from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -61,6 +62,21 @@ def shadow(limit: int = 50, symbol: str | None = None, status: str | None = None
 def shadow_summary():
     store = Store(); store.init()
     return store.shadow_summary()
+
+@app.get("/api/promotion")
+def promotion():
+    store = Store(); store.init()
+    return {
+        "current_evaluation": evaluate_promotion(CURRENT_BATCH10_EVIDENCE),
+        "latest_decision": store.latest_promotion_decision(),
+    }
+
+@app.post("/api/promotion/evaluate")
+def promotion_evaluate():
+    store = Store(); store.init()
+    decision = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
+    persisted = store.save_promotion_decision("multihorizon-meta-research-v1", "V2", decision)
+    return {"decision": decision, "persisted": persisted}
 
 @app.post("/api/shadow/prediction")
 def create_shadow_prediction(
