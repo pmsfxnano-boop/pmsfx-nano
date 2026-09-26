@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response, JSONResponse
+from gorila_argentum.dashboard import HTML as GORILA_DASHBOARD_HTML
 
 from quant.specialists.flow import run_flow_specialist
 from quant.online import observe_online
@@ -574,10 +575,7 @@ def dashboard_head():
 
 @app.get("/", include_in_schema=False)
 def dashboard():
-    return FileResponse(
-        APP_DIR / "static" / "index.html",
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
-    )
+    return GORILA_DASHBOARD_HTML
 
 
 @app.get("/health")
