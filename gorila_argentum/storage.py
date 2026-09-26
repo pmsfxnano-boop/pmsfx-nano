@@ -107,6 +107,15 @@ CREATE TABLE IF NOT EXISTS learning_runs (
  result TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_learning_symbol_time ON learning_runs(symbol,created_at);
+CREATE TABLE IF NOT EXISTS calibration_runs (
+ id TEXT PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ model_id TEXT NOT NULL,
+ status TEXT NOT NULL,
+ intercept DOUBLE PRECISION,
+ result TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_calibration_model_time ON calibration_runs(model_id,created_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -588,6 +597,71 @@ class Store:
             item=dict(zip(["id","created_at","symbol","horizon_days","status","dataset_hash","samples","result"],row))
             try: item["result"]=json.loads(item["result"] or "{}")
             except Exception: pass
+            out.append(item)
+        return out
+
+    def save_calibration_run(self, model_id, result):
+        run_id = uuid.uuid4().hex
+        conn = self.connect()
+        now = utc_now()
+        values = (
+            run_id,
+            now,
+            model_id,
+            result.get("status", "UNKNOWN"),
+            result.get("intercept"),
+            json.dumps(result),
+        )
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO calibration_runs(
+                        id,created_at,model_id,status,intercept,result)
+                        VALUES(%s,%s,%s,%s,%s,%s)""",
+                    values,
+                )
+        else:
+            conn.execute(
+                """INSERT INTO calibration_runs(
+                    id,created_at,model_id,status,intercept,result)
+                    VALUES(?,?,?,?,?,?)""",
+                values,
+            )
+        conn.commit()
+        conn.close()
+        self.conn = None
+        return {"id": run_id, "created_at": now, "status": result.get("status", "UNKNOWN")}
+
+    def latest_calibration(self, model_id=None, limit=20):
+        conn = self.connect()
+        params = []
+        if self.pg:
+            sql = "SELECT id,created_at,model_id,status,intercept,result FROM calibration_runs"
+            if model_id is not None:
+                sql += " WHERE model_id=%s"
+                params.append(model_id)
+            sql += " ORDER BY created_at DESC LIMIT %s"
+            params.append(max(1, min(100, int(limit))))
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall()
+        else:
+            sql = "SELECT id,created_at,model_id,status,intercept,result FROM calibration_runs"
+            if model_id is not None:
+                sql += " WHERE model_id=?"
+                params.append(model_id)
+            sql += " ORDER BY created_at DESC LIMIT ?"
+            params.append(max(1, min(100, int(limit))))
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        conn.close()
+        self.conn = None
+        out = []
+        for row in rows:
+            item = dict(zip(["id","created_at","model_id","status","intercept","result"], row))
+            try:
+                item["result"] = json.loads(item["result"] or "{}")
+            except Exception:
+                pass
             out.append(item)
         return out
 
