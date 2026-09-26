@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS shadow_outcomes (
  UNIQUE(prediction_id)
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_outcome_time ON shadow_outcomes(observed_at);
+CREATE TABLE IF NOT EXISTS promotion_decisions (
+ id TEXT PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ model_id TEXT NOT NULL,
+ version TEXT NOT NULL,
+ status TEXT NOT NULL,
+ automatic_promotion INTEGER NOT NULL DEFAULT 0,
+ reasons TEXT NOT NULL DEFAULT '[]',
+ checks TEXT NOT NULL DEFAULT '{}',
+ evidence TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_promotion_model_time ON promotion_decisions(model_id,created_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -393,6 +405,55 @@ class Store:
             "mean_logloss": metrics[3],
             "mean_return_pct": metrics[4],
         }
+
+
+    def save_promotion_decision(self, model_id, version, decision):
+        decision_id = uuid.uuid4().hex
+        conn = self.connect(); now = utc_now()
+        values = (
+            decision_id, now, model_id, version, decision.get("status","BLOCKED"),
+            int(bool(decision.get("automatic_promotion", False))),
+            json.dumps(decision.get("reasons", [])),
+            json.dumps(decision.get("checks", {})),
+            json.dumps(decision.get("evidence", {})),
+        )
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO promotion_decisions(
+                    id,created_at,model_id,version,status,automatic_promotion,reasons,checks,evidence)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""", values)
+        else:
+            conn.execute("""INSERT INTO promotion_decisions(
+                id,created_at,model_id,version,status,automatic_promotion,reasons,checks,evidence)
+                VALUES(?,?,?,?,?,?,?,?,?)""", values)
+        conn.commit(); conn.close(); self.conn=None
+        return {"id": decision_id, "created_at": now, "status": decision.get("status","BLOCKED")}
+
+    def latest_promotion_decision(self, model_id=None):
+        conn=self.connect()
+        if self.pg:
+            sql="SELECT id,created_at,model_id,version,status,automatic_promotion,reasons,checks,evidence FROM promotion_decisions"
+            params=[]
+            if model_id is not None:
+                sql += " WHERE model_id=%s"; params.append(model_id)
+            sql += " ORDER BY created_at DESC LIMIT 1"
+            with conn.cursor() as cur:
+                cur.execute(sql,tuple(params)); row=cur.fetchone()
+        else:
+            sql="SELECT id,created_at,model_id,version,status,automatic_promotion,reasons,checks,evidence FROM promotion_decisions"
+            params=[]
+            if model_id is not None:
+                sql += " WHERE model_id=?"; params.append(model_id)
+            sql += " ORDER BY created_at DESC LIMIT 1"
+            row=conn.execute(sql,tuple(params)).fetchone()
+        conn.close(); self.conn=None
+        if not row: return None
+        out=dict(zip(["id","created_at","model_id","version","status","automatic_promotion","reasons","checks","evidence"],row))
+        for key in ("reasons","checks","evidence"):
+            try: out[key]=json.loads(out[key] or ("[]" if key=="reasons" else "{}"))
+            except Exception: pass
+        out["automatic_promotion"]=bool(out["automatic_promotion"])
+        return out
 
     def health(self):
         conn=self.connect()
