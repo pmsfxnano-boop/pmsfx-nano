@@ -39,3 +39,9 @@ def test_execution_uses_simple_return_not_log_return():
     from research.gorila_quantitative_v1_oos import strategy_from_probs
     result = strategy_from_probs([1.0], [math.log(1.10)], 0, 1)
     assert abs(result["net_return"] - 0.10) < 1e-9
+
+
+def test_relative_alpha_module_imports_and_schema():
+    from research.gorila_relative_alpha_v1 import SCORE_VARIANTS, SYMBOLS
+    assert len(SCORE_VARIANTS) == 3
+    assert len(SYMBOLS) == 6
