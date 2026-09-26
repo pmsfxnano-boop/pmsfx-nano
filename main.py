@@ -750,6 +750,28 @@ async def quote(ticker: str):
             "quote": equity,
         }
 
+@app.get("/api/series/{ticker}")
+async def series(ticker: str, limit: int = 180):
+    symbol = normalize_ticker(ticker)
+    if not symbol or not symbol.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid ticker")
+    limit = max(1, min(500, int(limit)))
+    rows = get_cached_bars(symbol)
+    if not rows:
+        token = os.getenv("TIINGO_API_KEY")
+        if not token:
+            raise HTTPException(status_code=503, detail="TIINGO_API_KEY is not configured")
+        rows = await get_historical_bars(symbol, token)
+    items = [
+        {
+            "time": row.get("date") or row.get("timestamp"),
+            "close": row.get("close"),
+        }
+        for row in rows[-limit:]
+        if row.get("close") is not None
+    ]
+    return {"service": "pmsfx-nano", "symbol": symbol, "items": items}
+
 @app.get("/api/state/{ticker}")
 async def state(ticker: str):
     symbol = normalize_ticker(ticker)
