@@ -379,33 +379,65 @@ def run_oos(series, symbol: str, horizon: int):
 
 def validation_gate(result):
     if result.get("status") != "COMPLETE":
-        return "INSUFFICIENT_DATA", ["NO_COMPLETE_RESULT"]
-    reasons = []
+        return {
+            "validation_status": "INSUFFICIENT_DATA",
+            "prediction_status": "INSUFFICIENT_DATA",
+            "strategy_status": "INSUFFICIENT_DATA",
+            "prediction_reasons": ["NO_COMPLETE_RESULT"],
+            "strategy_reasons": ["NO_COMPLETE_RESULT"],
+        }
+
+    prediction_reasons = []
+    strategy_reasons = []
+
     if result.get("oos_samples", 0) < 500:
-        reasons.append("MIN_OOS_SAMPLES")
+        prediction_reasons.append("MIN_OOS_SAMPLES")
+
     ci = result.get("brier_skill_ci95")
     if result.get("brier_skill") is None or result["brier_skill"] <= 0:
-        reasons.append("BRIER_SKILL_NOT_POSITIVE")
+        prediction_reasons.append("BRIER_SKILL_NOT_POSITIVE")
     if not ci or ci[0] <= 0:
-        reasons.append("BRIER_SKILL_CI_NOT_ABOVE_ZERO")
-    if result.get("rank_ic", 0.0) <= 0:
-        reasons.append("RANK_IC_NOT_POSITIVE")
-    if result.get("strategy_costs", {}).get("50", {}).get("net_return", 0.0) <= 0:
-        reasons.append("NET_RETURN_50BPS_NOT_POSITIVE")
-    if result.get("execution_delta_vs_momentum_50bps", 0.0) <= 0:
-        reasons.append("EXECUTION_DELTA_VS_MOMENTUM_NOT_POSITIVE")
+        prediction_reasons.append("BRIER_SKILL_CI_NOT_ABOVE_ZERO")
+
     placebo = result.get("placebo_accuracy_p95")
     if placebo is None or result.get("accuracy", 0.0) <= placebo:
-        reasons.append("PLACEBO_NOT_BEATEN")
+        prediction_reasons.append("PLACEBO_NOT_BEATEN")
+
+    # Prediction validation intentionally does not require trading-return
+    # metrics. Probability forecasts and executable strategies are separate
+    # statistical objects and must have separate gates.
+    if result.get("logloss") is None:
+        prediction_reasons.append("LOGLOSS_MISSING")
+
+    if result.get("rank_ic", 0.0) <= 0:
+        # Ranking is a secondary prediction diagnostic, not a hard requirement
+        # for probability calibration.
+        prediction_reasons.append("RANK_IC_NOT_POSITIVE")
+
+    if result.get("strategy_costs", {}).get("50", {}).get("net_return", 0.0) <= 0:
+        strategy_reasons.append("NET_RETURN_50BPS_NOT_POSITIVE")
+    if result.get("execution_delta_vs_momentum_50bps", 0.0) <= 0:
+        strategy_reasons.append("EXECUTION_DELTA_VS_MOMENTUM_NOT_POSITIVE")
+
     pbo = result.get("pbo") or {}
     if pbo.get("status") != "COMPLETE" or pbo.get("pbo", 1.0) > 0.05:
-        reasons.append("PBO_GATE_FAILED")
+        strategy_reasons.append("PBO_GATE_FAILED")
     if result.get("dsr") is None or result.get("dsr", 0.0) <= 0:
-        reasons.append("DSR_GATE_FAILED")
+        strategy_reasons.append("DSR_GATE_FAILED")
     for lag in ("0", "1", "2"):
         if result.get("stress", {}).get(lag, {}).get("50", {}).get("net_return", -1.0) <= 0:
-            reasons.append(f"STRESS_LAG_{lag}_FAILED")
-    return ("VALIDATED", []) if not reasons else ("BLOCKED", reasons)
+            strategy_reasons.append(f"STRESS_LAG_{lag}_FAILED")
+
+    prediction_status = "VALIDATED" if not prediction_reasons else "BLOCKED"
+    strategy_status = "VALIDATED" if not strategy_reasons else "BLOCKED"
+    overall = "VALIDATED" if prediction_status == "VALIDATED" and strategy_status == "VALIDATED" else "BLOCKED"
+    return {
+        "validation_status": overall,
+        "prediction_status": prediction_status,
+        "strategy_status": strategy_status,
+        "prediction_reasons": prediction_reasons,
+        "strategy_reasons": strategy_reasons,
+    }
 
 
 def _fetch(symbol):
@@ -433,9 +465,12 @@ def main():
     for horizon in HORIZONS:
         for symbol in SYMBOLS:
             result = run_oos(series, symbol, horizon)
-            status, reasons = validation_gate(result)
-            result["validation_status"] = status
-            result["validation_reasons"] = reasons
+            gate = validation_gate(result)
+            result.update(gate)
+            result["validation_reasons"] = (
+                list(gate.get("prediction_reasons") or [])
+                + list(gate.get("strategy_reasons") or [])
+            )
             result["dataset_sha256"] = snapshot_hash
             result["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             evidence.append(result)
