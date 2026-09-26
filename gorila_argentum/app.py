@@ -64,6 +64,14 @@ def shadow_summary():
     store = Store(); store.init()
     return store.shadow_summary()
 
+@app.post("/api/shadow/settle-due")
+def shadow_settle_due(max_lateness_seconds: int = 3600, limit: int = 50):
+    store = Store(); store.init()
+    return store.settle_due_shadow_from_observations(
+        max_lateness_seconds=max(60, min(172800, int(max_lateness_seconds))),
+        limit=max(1, min(100, int(limit))),
+    )
+
 @app.get("/api/promotion")
 def promotion():
     store = Store(); store.init()
