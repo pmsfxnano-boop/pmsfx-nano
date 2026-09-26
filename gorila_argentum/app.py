@@ -11,6 +11,7 @@ from .state import build_market_state
 from .features import build_features
 from .drift import rolling_drift
 from .control import build_control_state
+from .shadow import validate_shadow_prediction, compute_shadow_outcome
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -50,6 +51,49 @@ def drift_summary(symbol: str | None = None, field: str | None = None, limit: in
 @app.get("/api/control")
 def control():
     return build_control_state()
+
+@app.get("/api/shadow")
+def shadow(limit: int = 50, symbol: str | None = None, status: str | None = None):
+    store = Store(); store.init()
+    return {"items": store.latest_shadow(symbol=symbol, status=status, limit=limit)}
+
+@app.get("/api/shadow/summary")
+def shadow_summary():
+    store = Store(); store.init()
+    return store.shadow_summary()
+
+@app.post("/api/shadow/prediction")
+def create_shadow_prediction(
+    symbol: str,
+    probability_up: float,
+    horizon_seconds: int = 900,
+    model_version: str = "V0",
+    regime: str = "UNKNOWN",
+    entry_price: float = 0.0,
+    feature_hash: str = "",
+):
+    values = validate_shadow_prediction(
+        symbol=symbol,
+        probability_up=probability_up,
+        horizon_seconds=horizon_seconds,
+        entry_price=entry_price,
+    )
+    store = Store(); store.init()
+    return store.save_shadow_prediction(
+        values["symbol"], model_version, values["probability_up"], values["horizon_seconds"],
+        regime, values["entry_price"], feature_hash=feature_hash,
+    )
+
+@app.post("/api/shadow/{prediction_id}/settle")
+def settle_shadow_prediction(prediction_id: str, observed_price: float):
+    store = Store(); store.init()
+    prediction = store.get_shadow_prediction(prediction_id)
+    if not prediction:
+        return {"error": "shadow_prediction_not_found", "prediction_id": prediction_id}
+    outcome = compute_shadow_outcome(
+        prediction["probability_up"], prediction["entry_price"], observed_price
+    )
+    return store.settle_shadow_prediction(prediction_id, outcome)
 
 @app.get("/api/drift/{symbol}/{field}")
 def drift(symbol: str, field: str, current_size: int = 30, reference_size: int = 90):
