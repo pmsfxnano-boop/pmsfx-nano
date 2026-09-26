@@ -28,7 +28,8 @@ def build_control_state(store: Store | None = None) -> dict:
         row for row in latest.values()
         if row.get("status") in {"WARN", "ALERT"}
     ]
-    alerts.sort(key=lambda row: (row.get("status") != "ALERT", row.get("created_at", "")), reverse=False)
+    rank = {"ALERT": 0, "WARN": 1}
+    alerts.sort(key=lambda row: (rank.get(row.get("status"), 9), row.get("created_at", "")), reverse=False)
 
     promotion = _promotion_status()
     return {
