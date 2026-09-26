@@ -3,12 +3,83 @@ from __future__ import annotations
 from .config import settings
 from .storage import Store
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
+from .drift import rolling_drift
 
 
 def _promotion_status(decision: dict | None = None) -> str:
     # Promotion is derived from the validated research gate, not runtime configuration.
     decision = decision or evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     return str(decision.get("status", "BLOCKED"))
+
+
+def _shadow_diagnostics(rows: list[dict], *, current_size: int = 30, reference_size: int = 90) -> dict:
+    settled = [
+        row for row in rows
+        if row.get("status") == "SETTLED"
+        and row.get("realized_direction") in {"UP", "DOWN"}
+        and row.get("probability_up") is not None
+    ]
+    settled.sort(key=lambda row: row.get("observed_at") or row.get("created_at") or "")
+    needed = int(current_size) + int(reference_size)
+    if len(settled) < needed:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "samples": len(settled),
+            "required_samples": needed,
+            "prediction_drift": {"status": "INSUFFICIENT_DATA"},
+            "realized_vs_predicted": {"status": "INSUFFICIENT_DATA"},
+        }
+
+    probs = [float(row["probability_up"]) for row in settled]
+    prob_drift = rolling_drift(
+        probs[-needed:],
+        current_size=int(current_size),
+        reference_size=int(reference_size),
+    )
+
+    split = len(settled) - int(current_size)
+    reference = settled[split - int(reference_size):split]
+    current = settled[split:]
+
+    def label(row: dict) -> float:
+        return 1.0 if row["realized_direction"] == "UP" else 0.0
+
+    ref_residuals = [float(r["probability_up"]) - label(r) for r in reference]
+    cur_residuals = [float(r["probability_up"]) - label(r) for r in current]
+    ref_briers = [float(r["brier"]) for r in reference if r.get("brier") is not None]
+    cur_briers = [float(r["brier"]) for r in current if r.get("brier") is not None]
+
+    ref_gap = sum(ref_residuals) / len(ref_residuals)
+    cur_gap = sum(cur_residuals) / len(cur_residuals)
+    brier_delta = (
+        (sum(cur_briers) / len(cur_briers)) - (sum(ref_briers) / len(ref_briers))
+        if ref_briers and cur_briers
+        else None
+    )
+
+    if abs(cur_gap) >= 0.15 or (brier_delta is not None and brier_delta >= 0.10):
+        realized_status = "ALERT"
+    elif abs(cur_gap) >= 0.08 or (brier_delta is not None and brier_delta >= 0.05):
+        realized_status = "WARN"
+    else:
+        realized_status = "OK"
+
+    return {
+        "status": "ALERT" if prob_drift.get("status") == "ALERT" or realized_status == "ALERT"
+                  else "WARN" if prob_drift.get("status") == "WARN" or realized_status == "WARN"
+                  else "OK",
+        "samples": len(settled),
+        "prediction_drift": prob_drift,
+        "realized_vs_predicted": {
+            "status": realized_status,
+            "reference_n": len(reference),
+            "current_n": len(current),
+            "reference_prediction_gap": ref_gap,
+            "current_prediction_gap": cur_gap,
+            "gap_delta": cur_gap - ref_gap,
+            "brier_delta": brier_delta,
+        },
+    }
 
 
 def build_control_state(store: Store | None = None) -> dict:
@@ -52,6 +123,18 @@ def build_control_state(store: Store | None = None) -> dict:
     else:
         circuit_status = "NORMAL"
 
+    shadow_rows = store.latest_shadow(status="SETTLED", limit=500)
+    shadow_diagnostics = _shadow_diagnostics(shadow_rows)
+
+    diagnostic_statuses = {
+        shadow_diagnostics["prediction_drift"].get("status"),
+        shadow_diagnostics["realized_vs_predicted"].get("status"),
+    }
+    if "ALERT" in diagnostic_statuses:
+        halt_reasons.append("MODEL_DRIFT_ALERT")
+    elif "WARN" in diagnostic_statuses and circuit_status == "NORMAL":
+        circuit_status = "DEGRADED"
+
     promotion_reasons = list(
         (
             (promotion_decision or {}).get("reasons")
@@ -85,8 +168,8 @@ def build_control_state(store: Store | None = None) -> dict:
         },
         "monitoring": {
             "data_distribution_drift": "IMPLEMENTED",
-            "prediction_drift": "NOT_IMPLEMENTED",
-            "realized_vs_predicted": "NOT_IMPLEMENTED",
+            "prediction_drift": "IMPLEMENTED",
+            "realized_vs_predicted": "IMPLEMENTED",
             "automatic_recalibration": "NOT_IMPLEMENTED",
             "automatic_kill_switch": "IMPLEMENTED_RESEARCH_CIRCUIT_BREAKER",
             "shadow_ledger": "IMPLEMENTED",
@@ -102,4 +185,5 @@ def build_control_state(store: Store | None = None) -> dict:
         "learning": {
             "latest_run": latest_learning[0] if latest_learning else None,
         },
+        "model_diagnostics": shadow_diagnostics,
     }
