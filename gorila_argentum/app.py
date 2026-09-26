@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header
+import os
 import threading
 from fastapi.responses import HTMLResponse
 from .storage import Store
@@ -46,9 +47,55 @@ def startup():
                 flush=True,
             )
 
+    def bootstrap_cycle():
+        run_id = os.getenv("GORILA_BOOTSTRAP_TICK_RUN_ID", "").strip()
+        if not run_id:
+            return
+        store = Store()
+        store.init()
+        if not store.pg:
+            print(
+                "GORILA_BOOTSTRAP_TICK_SKIPPED",
+                "durable_storage_required",
+                flush=True,
+            )
+            return
+        if not store.claim_runtime_run(run_id, "bootstrap_operational"):
+            print(
+                "GORILA_BOOTSTRAP_TICK_SKIPPED",
+                "already_claimed",
+                run_id,
+                flush=True,
+            )
+            return
+        try:
+            payload = run_runtime_tick()
+            store.finish_runtime_run(run_id, "COMPLETED", payload)
+            print(
+                "GORILA_BOOTSTRAP_TICK_COMPLETED",
+                run_id,
+                payload.get("status"),
+                flush=True,
+            )
+        except Exception as exc:
+            error = {"error": type(exc).__name__, "message": str(exc)}
+            store.finish_runtime_run(run_id, "FAILED", error)
+            print(
+                "GORILA_BOOTSTRAP_TICK_FAILED",
+                run_id,
+                type(exc).__name__,
+                str(exc),
+                flush=True,
+            )
+
     threading.Thread(
         target=persistence_probe,
         name="gorila-persistence-probe",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=bootstrap_cycle,
+        name="gorila-bootstrap-cycle",
         daemon=True,
     ).start()
 
@@ -89,6 +136,12 @@ def control():
 @app.get("/api/audit")
 def audit():
     return build_audit_state()
+
+@app.get("/api/runtime/runs")
+def runtime_runs(kind: str | None = None, limit: int = 20):
+    store = Store()
+    store.init()
+    return {"items": store.latest_runtime_run(kind=kind, limit=max(1, min(100, int(limit))))}
 
 @app.post("/api/runtime/tick")
 def runtime_tick(
