@@ -98,7 +98,32 @@ def run_learning_cycle(
         return result
 
     model = fit_logistic(X, y)
-    latest_probability = predict(model, X[-1])
+
+    latest_values = [float(v) for _, v in store.recent_series(symbol, "close", limit=25)]
+    if len(latest_values) < 21 or any(v <= 0 for v in latest_values[-21:]):
+        result = {
+            "status": "LATEST_STATE_INSUFFICIENT",
+            "symbol": symbol,
+            "horizon_days": horizon_days,
+            "dataset_hash": dataset["dataset_hash"],
+            "samples": dataset["samples"],
+            "validation": validation,
+            "promotion": "BLOCKED",
+        }
+        store.save_learning_run(symbol, horizon_days, result)
+        return result
+    latest_r1 = latest_values[-1] / latest_values[-2] - 1.0
+    latest_r3 = latest_values[-1] / latest_values[-4] - 1.0
+    latest_r5 = latest_values[-1] / latest_values[-6] - 1.0
+    latest5 = latest_values[-5:]
+    latest20 = latest_values[-20:]
+    latest_mean20 = sum(latest20) / 20.0
+    latest_vol5 = (sum(((latest5[j] / latest5[j - 1]) - 1.0) ** 2 for j in range(1, 5)) / 4.0) ** 0.5
+    latest_vol20 = (sum(((latest20[j] / latest20[j - 1]) - 1.0) ** 2 for j in range(1, 20)) / 19.0) ** 0.5
+    latest_std20 = (sum((x - latest_mean20) ** 2 for x in latest20) / 20.0) ** 0.5
+    latest_z20 = 0.0 if latest_std20 <= 1e-12 else (latest_values[-1] - latest_mean20) / latest_std20
+    latest_features = [latest_r1, latest_r3, latest_r5, latest_vol5, latest_vol20, latest_z20]
+    latest_probability = predict(model, latest_features)
     model_payload = {
         "mean": model.mean,
         "scale": model.scale,
