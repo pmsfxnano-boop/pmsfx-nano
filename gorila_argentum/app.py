@@ -34,7 +34,7 @@ from .audit import build_audit_state
 from .config import settings
 from .control import build_control_state
 from .coupling import current_coupling_state
-from .dashboard import HTML as DASHBOARD_HTML
+from .dashboard_terminal import HTML as DASHBOARD_HTML
 from .drift import rolling_drift
 from .features import build_features
 from .promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
