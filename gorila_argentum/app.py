@@ -10,6 +10,7 @@ from .dashboard import HTML as DASHBOARD_HTML
 from .state import build_market_state
 from .features import build_features
 from .drift import rolling_drift
+from .control import build_control_state
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -45,6 +46,10 @@ def features(symbol: str):
 def drift_summary(symbol: str | None = None, field: str | None = None, limit: int = 100):
     store=Store(); store.init()
     return {"items":store.latest_drift(symbol=symbol,field=field,limit=limit)}
+
+@app.get("/api/control")
+def control():
+    return build_control_state()
 
 @app.get("/api/drift/{symbol}/{field}")
 def drift(symbol: str, field: str, current_size: int = 30, reference_size: int = 90):
