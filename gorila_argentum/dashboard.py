@@ -229,6 +229,8 @@ pre{margin:0;background:#06080a;border:1px solid var(--line);border-radius:9px;p
       <div class="body">
         <div class="row"><span class="muted">Postgres</span><b id="pg">—</b></div>
         <div class="row"><span class="muted">primary feed</span><b id="primaryFeed">—</b></div>
+        <div class="row"><span class="muted">autonomous cycle</span><b id="autonomousState">—</b></div>
+        <div class="row"><span class="muted">circuit breaker</span><b id="circuitState">—</b></div>
         <div class="row"><span class="muted">latest tick</span><b id="tick">—</b></div>
         <div class="row"><span class="muted">shadow predictions</span><b id="shadowPred">—</b></div>
         <div class="row"><span class="muted">shadow settled</span><b id="shadowSettled">—</b></div>
@@ -330,6 +332,12 @@ async function refreshControl(){
     setStatus($('storage'),h.database?.ready?'STORAGE · POSTGRES':'STORAGE · DEGRADED',!!h.database?.ready,!h.database?.ready);
     $('tick').textContent=latest?.status||'—';$('pg').textContent=h.database?.ready?'READY':'—';
     $('shadowPred').textContent=sh.predictions??'—';$('shadowSettled').textContent=sh.settled??'—';$('shadowAcc').textContent=pct(sh.accuracy);
+    const runtimeState=h.autonomous_runtime||{};
+    const readiness=(latest?.result?.audit||{}).readiness||{};
+    $('autonomousState').textContent=runtimeState.status||latest?.status||'—';
+    $('autonomousState').style.color=(String(runtimeState.status||'').includes('ERROR'))?'#ffafba':'#9beec8';
+    $('circuitState').textContent=readiness.circuit_breaker||'—';
+    $('circuitState').style.color=readiness.circuit_breaker==='NORMAL'?'#9beec8':'#ffafba';
     $('macroUpdated').textContent=h.macro_ingest?.updated_at||'—';
     const required=new Set(['BCRA/FX','ArgentinaDatos/FX','ArgentinaDatos/EMBI+']);
     const requiredRows=(h.sources||[]).filter(x=>required.has(x.source));
