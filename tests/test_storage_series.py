@@ -37,3 +37,18 @@ def test_recent_series_deduplicates_same_event_time(tmp_path, monkeypatch):
     assert len(series) == 2
     assert series[0][0] == "2026-09-25T12:00:00+00:00"
     assert series[0][1] == 101.0
+
+
+def test_calibration_persistence_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "calibration.sqlite3"))
+    store = Store()
+    store.init()
+    saved = store.save_calibration_run(
+        "shadow-probability-v0",
+        {"status": "CANDIDATE_READY", "intercept": -0.42},
+    )
+    latest = store.latest_calibration(limit=1)
+    assert latest[0]["id"] == saved["id"]
+    assert latest[0]["status"] == "CANDIDATE_READY"
+    assert latest[0]["result"]["intercept"] == -0.42
