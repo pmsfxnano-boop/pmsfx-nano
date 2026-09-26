@@ -112,6 +112,23 @@ def logloss(probs, labels):
     return -sum(y * math.log(max(eps, p)) + (1 - y) * math.log(max(eps, 1 - p)) for p, y in zip(probs, labels)) / len(labels)
 
 
+def ece(probs, labels, bins=10):
+    if not labels:
+        return None
+    total = len(labels)
+    value = 0.0
+    for bucket in range(bins):
+        lo = bucket / bins
+        hi = (bucket + 1) / bins
+        idx = [i for i, p in enumerate(probs) if (lo <= p < hi) or (bucket == bins - 1 and p <= hi)]
+        if not idx:
+            continue
+        mp = sum(probs[i] for i in idx) / len(idx)
+        my = sum(labels[i] for i in idx) / len(idx)
+        value += len(idx) / total * abs(mp - my)
+    return value
+
+
 def rank_ic(probs, returns):
     if len(probs) < 3:
         return 0.0
@@ -262,12 +279,25 @@ def run_oos(series, symbol: str, horizon: int):
 
     actual_rate = sum(labels) / len(labels)
     model_brier = brier(probs, labels)
-    base_brier = sum((actual_rate - y) ** 2 for y in labels) / len(labels)
     fold_skills = []
+    fold_base_briers = []
+    fold_base_logloss = []
+    fold_model_logloss = []
+
     for f in outer:
         rate = sum(f["labels"]) / len(f["labels"])
         bb = sum((rate - y) ** 2 for y in f["labels"]) / len(f["labels"])
+        bl = logloss([rate] * len(f["labels"]), f["labels"])
+        ml = logloss(f["probs"], f["labels"])
+        fold_base_briers.append(bb * len(f["labels"]))
+        fold_base_logloss.append(bl * len(f["labels"]))
+        fold_model_logloss.append(ml * len(f["labels"]))
         fold_skills.append(1.0 - brier(f["probs"], f["labels"]) / bb if bb > 0 else 0.0)
+
+    base_brier = sum(fold_base_briers) / max(1, len(labels))
+    baseline_logloss = sum(fold_base_logloss) / max(1, len(labels))
+    model_logloss = sum(fold_model_logloss) / max(1, len(labels))
+    logloss_delta = baseline_logloss - model_logloss
 
     strategy_50 = strategy_from_probs(probs, returns, 50, horizon)
     momentum = {
@@ -338,7 +368,10 @@ def run_oos(series, symbol: str, horizon: int):
         "baseline_brier": base_brier,
         "brier_skill": 1.0 - model_brier / base_brier if base_brier > 0 else None,
         "brier_skill_ci95": normal_ci(fold_skills),
-        "logloss": logloss(probs, labels),
+        "logloss": model_logloss,
+        "baseline_logloss": baseline_logloss,
+        "logloss_delta": logloss_delta,
+        "ece": ece(probs, labels),
         "rank_ic": rank_ic(probs, returns),
         "actual_up_rate": actual_rate,
         "mean_probability": sum(probs) / len(probs),
@@ -398,6 +431,10 @@ def validation_gate(result):
         prediction_reasons.append("BRIER_SKILL_NOT_POSITIVE")
     if not ci or ci[0] <= 0:
         prediction_reasons.append("BRIER_SKILL_CI_NOT_ABOVE_ZERO")
+    if result.get("logloss_delta") is None or result.get("logloss_delta") <= 0:
+        prediction_reasons.append("NO_LOGLOSS_IMPROVEMENT")
+    if result.get("ece") is None or result.get("ece") > 0.05:
+        prediction_reasons.append("ECE_ABOVE_0_05")
 
     placebo = result.get("placebo_accuracy_p95")
     if placebo is None or result.get("accuracy", 0.0) <= placebo:
