@@ -16,6 +16,7 @@ from fastapi import Header, HTTPException
 
 from main import (
     app,
+    get_cached_bars,
     market_session_state,
     normalize_ticker,
     outcome_summary,
@@ -249,6 +250,15 @@ async def gorila_terminal(ticker: str):
         }
 
     macro = await macro_task
+    bars = get_cached_bars(symbol) or []
+    chart = [
+        {
+            "time": row.get("date") or row.get("timestamp"),
+            "close": row.get("close"),
+        }
+        for row in bars[-180:]
+        if row.get("close") is not None
+    ]
     return {
         "service": "gorila-argentum",
         "symbol": symbol,
@@ -256,6 +266,7 @@ async def gorila_terminal(ticker: str):
         "quote_error": quote_error,
         "forecast": forecast,
         "macro": macro,
+        "chart": chart,
         "stream": stream_status(),
         "session": market_session_state(),
     }
