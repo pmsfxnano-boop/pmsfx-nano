@@ -123,12 +123,7 @@ def evaluate_live_promotion(
     symbols=("GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"),
     horizons=(5,10),
 ) -> dict[str, Any]:
-    """Evaluate promotion only from the freshest persisted evidence matrix.
-
-    Historical Batch-10 evidence is deliberately not used as a live gate.
-    A production candidate must have fresh PIT/OOS evidence for every required
-    symbol/horizon cell, and every cell must satisfy the same conservative gate.
-    """
+    """Evaluate fresh evidence with separate predictor and strategy gates."""
     from .evidence import latest_evidence
 
     rows = latest_evidence(store, limit=500)
@@ -143,6 +138,8 @@ def evaluate_live_promotion(
     if missing:
         return {
             "status": "BLOCKED",
+            "predictor_status": "BLOCKED",
+            "strategy_status": "BLOCKED",
             "eligible": False,
             "automatic_promotion": False,
             "reasons": ["FRESH_EVIDENCE_INCOMPLETE"],
@@ -151,30 +148,51 @@ def evaluate_live_promotion(
             "source": "persisted_research_evidence",
         }
 
-    failed = []
+    prediction_failed = []
+    strategy_failed = []
     for key in sorted(required):
         row = latest[key]
-        if row.get("validation_status") != "VALIDATED":
-            failed.append({
+        if row.get("prediction_status") != "VALIDATED":
+            prediction_failed.append({
                 "symbol": key[0],
                 "horizon_days": key[1],
-                "status": row.get("validation_status"),
-                "reasons": row.get("validation_reasons") or [],
+                "status": row.get("prediction_status", "BLOCKED"),
+                "reasons": row.get("prediction_reasons") or [],
+            })
+        if row.get("strategy_status") != "VALIDATED":
+            strategy_failed.append({
+                "symbol": key[0],
+                "horizon_days": key[1],
+                "status": row.get("strategy_status", "BLOCKED"),
+                "reasons": row.get("strategy_reasons") or [],
             })
 
     dataset_hashes = {str(latest[k].get("dataset_sha256")) for k in required}
     same_dataset = len(dataset_hashes) == 1 and "None" not in dataset_hashes
     if not same_dataset:
-        failed.append({"reason": "DATASET_HASH_MISMATCH"})
+        prediction_failed.append({"reason": "DATASET_HASH_MISMATCH"})
 
-    eligible = not failed
+    predictor_status = "VALIDATED" if not prediction_failed else "BLOCKED"
+    strategy_status = "VALIDATED" if not strategy_failed else "BLOCKED"
+    overall = "VALIDATED" if predictor_status == "VALIDATED" else "BLOCKED"
+
     return {
-        "status": "ELIGIBLE" if eligible else "BLOCKED",
-        "eligible": eligible,
+        "status": overall,
+        "predictor_status": predictor_status,
+        "strategy_status": strategy_status,
+        "eligible": predictor_status == "VALIDATED",
+        "execution_eligible": predictor_status == "VALIDATED" and strategy_status == "VALIDATED",
         "automatic_promotion": False,
-        "reasons": [] if eligible else ["SYMBOL_HORIZON_EVIDENCE_FAILED"],
-        "failed_cells": failed,
+        "reasons": [] if predictor_status == "VALIDATED" else ["PREDICTOR_EVIDENCE_FAILED"],
+        "strategy_reasons": [] if strategy_status == "VALIDATED" else ["STRATEGY_EVIDENCE_FAILED"],
+        "failed_prediction_cells": prediction_failed,
+        "failed_strategy_cells": strategy_failed,
         "dataset_sha256": next(iter(dataset_hashes)) if same_dataset else None,
         "cells": [latest[k] for k in sorted(required)],
         "source": "persisted_research_evidence",
+        "policy": {
+            "predictor_gate": "OOS probability evidence",
+            "strategy_gate": "net-cost return + PBO + DSR + execution stress",
+            "execution_authority": False,
+        },
     }
