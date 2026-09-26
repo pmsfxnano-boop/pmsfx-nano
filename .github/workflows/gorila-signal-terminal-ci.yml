@@ -1,0 +1,32 @@
+name: Gorila Argentum Signal Terminal CI
+
+on:
+  push:
+    branches: [gorila-argentum-signal-terminal-v1]
+  workflow_dispatch:
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  signal-terminal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - name: Signal engine unit tests
+        run: pytest -q tests/test_argentum_signal_engine.py
+      - name: Existing contract tests
+        run: pytest -q tests/test_dashboard.py tests/test_control.py tests/test_runtime_tick.py tests/test_prediction.py
+      - name: Compile
+        run: |
+          python -m py_compile gorila_argentum/signal_engine.py gorila_argentum/dashboard_terminal.py gorila_argentum/app.py
+      - name: Import smoke
+        run: python -c "from gorila_argentum.app import app; print(app.title)"
