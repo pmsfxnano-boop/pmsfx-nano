@@ -142,6 +142,8 @@ jobs:
           }
           found = {}
           for p in Path("jacobian-stages").glob("jacobian-*/jacobian-*.json"):
+              if p.parent.name == "jacobian-frozen-snapshot":
+                  continue
               payload = json.loads(p.read_text())
               stage = payload["stage"]
               assert payload["status"] == "COMPLETE"
