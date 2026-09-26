@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from gorila_argentum.audit import build_audit_state
 from gorila_argentum.calibration import build_recalibration_candidate
@@ -76,10 +77,30 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         raise RuntimeError("durable_storage_required")
 
     ingestion = run_batch()
-    learning = [
-        run_learning_cycle(symbol, horizon_days=5, store=store)
-        for symbol in settings.core_symbols
-    ]
+    learning = []
+    symbols = tuple(settings.core_symbols)
+    max_workers = min(3, max(1, len(symbols)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                run_learning_cycle,
+                symbol,
+                horizon_days=5,
+            ): symbol
+            for symbol in symbols
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {
+                    "status": "ERROR",
+                    "symbol": symbol,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            learning.append(result)
+    learning.sort(key=lambda row: str(row.get("symbol") or ""))
 
     shadow_capture = _create_learning_shadow_predictions(store, learning)
 
