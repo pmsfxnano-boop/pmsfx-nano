@@ -13,6 +13,7 @@ from .drift import rolling_drift
 from .control import build_control_state
 from .shadow import validate_shadow_prediction, compute_shadow_outcome, validate_observed_at
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
+from .learning import run_learning_cycle
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -77,6 +78,15 @@ def promotion_evaluate():
     decision = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     persisted = store.save_promotion_decision("multihorizon-meta-research-v1", "V2", decision)
     return {"decision": decision, "persisted": persisted}
+
+@app.post("/api/learning/run")
+def learning_run(symbol: str, horizon_days: int = 5):
+    return run_learning_cycle(symbol, horizon_days=max(1, min(20, int(horizon_days))))
+
+@app.get("/api/learning")
+def learning(symbol: str | None = None, limit: int = 20):
+    store = Store(); store.init()
+    return {"items": store.latest_learning(symbol=symbol, limit=limit)}
 
 @app.post("/api/shadow/prediction")
 def create_shadow_prediction(
