@@ -5,15 +5,15 @@ Rama: `gorila-argentum-v0-hardening`
 
 ## Estado
 
-**PARCIALMENTE IMPLEMENTADO + CI VALIDADO.**
+**IMPLEMENTADO EN RAMA + CI CONFIGURADA; E2E RENDER PENDIENTE.**
 
 Batch 12 debe convertir la observabilidad existente en un command center operativo sin convertir el dashboard en un mecanismo de promoción.
 
 ## Ejecutado
 
-El dashboard existente ahora incorpora un bloque **DRIFT MONITOR** que:
+El dashboard existente incorpora **DRIFT MONITOR**, **CONTROL ROOM**, **SHADOW LEDGER** y visualización del **PROMOTION GATE**. El flujo principal que permanece:
 
-- consulta `/api/drift?limit=50`;
+- consulta `/api/drift?limit=50` y `/api/control`;
 - muestra el estado más reciente por símbolo/campo;
 - expone PSI, KS, mean-shift z y ratio de desviación;
 - distingue visualmente `OK`, `WARN` y `ALERT`;
@@ -29,7 +29,7 @@ La CI del commit `3dfe7e582657832add5b33a0d4729ed3937d5c00` terminó en `success
 
 Aún no se declara Batch 12 como E2E cerrado porque el servicio Render todavía no ha ejecutado un deploy que contenga estos commits. El último deploy verificable continúa siendo el commit `2a8aa06a1be9951da0e95a810b68e782b2b4d393`.
 
-Tampoco se ha añadido todavía el Control Room de Batch 13 ni un kill-switch automático.
+El Control Room de Batch 13 y Shadow Ledger de Batch 14 ya están implementados en la rama. El kill-switch automático sigue sin implementarse por diseño y no se simula.
 
 ## Regla de continuidad
 
