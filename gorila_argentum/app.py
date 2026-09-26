@@ -234,6 +234,36 @@ async def _gorila_forecast(symbol: str, *, force: bool = False) -> dict[str, Any
     return _upstream_forecast_payload(symbol, state)
 
 
+def _latest_persisted_engine_chart(symbol: str, limit: int = 180) -> list[dict[str, Any]]:
+    sql = """
+    SELECT created_at, last
+    FROM forecasts
+    WHERE symbol = %(symbol)s
+      AND last IS NOT NULL
+    ORDER BY created_at DESC, id DESC
+    LIMIT %(limit)s
+    """
+    try:
+        with quant_connection() as conn:
+            if conn is None:
+                return []
+            with conn.cursor() as cur:
+                cur.execute(sql, {"symbol": symbol, "limit": max(1, min(500, int(limit)))})
+                rows = cur.fetchall()
+        return [
+            {"time": row[0].isoformat(), "close": float(row[1])}
+            for row in reversed(rows)
+            if row[1] is not None
+        ]
+    except Exception as exc:
+        print(
+            "GORILA_PERSISTED_CHART_READ_ERROR",
+            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+            flush=True,
+        )
+        return []
+
+
 async def _gorila_quote(symbol: str) -> dict[str, Any]:
     if os.getenv("TIINGO_API_KEY", "").strip():
         return await advanced_quote(symbol)
@@ -448,19 +478,17 @@ async def gorila_forecast(ticker: str, force: bool = False):
 @app.get("/api/gorila/terminal/{ticker}")
 async def gorila_terminal(ticker: str):
     symbol = normalize_ticker(ticker)
-    quote_task = asyncio.create_task(_gorila_quote(symbol))
+    local_tiingo = bool(os.getenv("TIINGO_API_KEY", "").strip())
     forecast_task = asyncio.create_task(_gorila_forecast(symbol))
+    quote_task = asyncio.create_task(advanced_quote(symbol)) if local_tiingo else None
     macro_task = asyncio.to_thread(build_market_state)
 
     quote_result = None
     quote_error = None
     try:
-        quote_result = await quote_task
-    except Exception as exc:
-        quote_error = f"{type(exc).__name__}: {exc}"
-
-    try:
         forecast = await forecast_task
+        if not local_tiingo:
+            quote_result = _upstream_quote_payload(symbol, forecast)
     except Exception as exc:
         forecast = {
             "symbol": symbol,
@@ -468,6 +496,12 @@ async def gorila_terminal(ticker: str):
             "forecast": None,
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+    if quote_task is not None:
+        try:
+            quote_result = await quote_task
+        except Exception as exc:
+            quote_error = f"{type(exc).__name__}: {exc}"
 
     macro = await macro_task
     bars = get_cached_bars(symbol) or []
@@ -479,6 +513,9 @@ async def gorila_terminal(ticker: str):
         for row in bars[-180:]
         if row.get("close") is not None
     ]
+    if not chart and not local_tiingo:
+        chart = _latest_persisted_engine_chart(symbol, limit=180)
+
     return {
         "service": "gorila-argentum",
         "symbol": symbol,
