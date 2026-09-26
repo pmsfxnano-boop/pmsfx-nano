@@ -238,8 +238,8 @@ def evaluate_lockbox(series, symbol_rows, horizon):
     mean_rank = statistics.mean(rank_ics) if rank_ics else None
     rank_ci = _ci(rank_ics)
     lockbox_net_50 = math.prod(1.0 + r for r in target) - 1.0 if target else 0.0
-    momentum_net_50 = statistics.prod(1.0 + r for r in mom) - 1.0 if mom else 0.0
-    fixed_net_50 = statistics.prod(1.0 + r for r in fixed) - 1.0 if fixed else 0.0
+    momentum_net_50 = math.prod(1.0 + r for r in mom) - 1.0 if mom else 0.0
+    fixed_net_50 = math.prod(1.0 + r for r in fixed) - 1.0 if fixed else 0.0
 
     prediction_ok = bool(rank_ci and rank_ci[0] > 0 and mean_rank is not None)
     strategy_ok = (
