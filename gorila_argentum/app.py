@@ -16,7 +16,8 @@ from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 from .learning import run_learning_cycle
 from .calibration import build_recalibration_candidate
 from .audit import build_audit_state
-from .security import require_internal_key
+from .security import require_internal_key, require_runtime_tick_key
+from scripts.gorila_runtime_tick import run_tick as run_runtime_tick
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -61,6 +62,18 @@ def control():
 @app.get("/api/audit")
 def audit():
     return build_audit_state()
+
+@app.post("/api/runtime/tick")
+def runtime_tick(
+    x_gorila_runtime_key: str | None = Header(default=None, alias="X-Gorila-Runtime-Key"),
+):
+    require_runtime_tick_key(x_gorila_runtime_key)
+    try:
+        return run_runtime_tick()
+    except RuntimeError as exc:
+        if str(exc) == "durable_storage_required":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
 
 @app.get("/api/shadow")
 def shadow(limit: int = 50, symbol: str | None = None, status: str | None = None):
