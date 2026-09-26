@@ -151,6 +151,43 @@ def normal_ci(values, z=1.96):
     return [mean - z * se, mean + z * se]
 
 
+def confidence_tail_curve(probs, labels, returns, thresholds=(0.55, 0.60, 0.65, 0.70)):
+    curve = []
+    for threshold in thresholds:
+        idx = [
+            i for i, p in enumerate(probs)
+            if p >= threshold or p <= (1.0 - threshold)
+        ]
+        if not idx:
+            curve.append({
+                "threshold": threshold,
+                "n": 0,
+                "coverage": 0.0,
+                "accuracy": None,
+                "mean_signed_return": None,
+                "brier": None,
+            })
+            continue
+        signed = []
+        for i in idx:
+            side = 1 if probs[i] >= threshold else -1
+            signed.append(side * math.expm1(returns[i]))
+        curve.append({
+            "threshold": threshold,
+            "n": len(idx),
+            "coverage": len(idx) / len(probs),
+            "accuracy": sum(
+                (probs[i] >= threshold) == bool(labels[i])
+                if probs[i] >= threshold
+                else (probs[i] <= 1.0 - threshold and not bool(labels[i]))
+                for i in idx
+            ) / len(idx),
+            "mean_signed_return": statistics.mean(signed),
+            "brier": brier([probs[i] for i in idx], [labels[i] for i in idx]),
+        })
+    return curve
+
+
 def percentile(values, q):
     if not values:
         return None
@@ -412,6 +449,7 @@ def run_oos(series, symbol: str, horizon: int):
         "rank_ic": rank_ic(probs, returns),
         "actual_up_rate": actual_rate,
         "mean_probability": sum(probs) / len(probs),
+        "confidence_tail_curve": confidence_tail_curve(probs, labels, returns),
         "strategy_costs": {str(c): strategy_from_probs(probs, returns, c, horizon) for c in COSTS_BPS},
         "benchmarks": {
             "always_long_50bps": always_long,
