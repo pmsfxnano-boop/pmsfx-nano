@@ -139,13 +139,13 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
             pending += 1
             continue
 
-        observed_at = outcome_row[0].isoformat() if hasattr(outcome_row[0], "isoformat") else str(outcome_row[0])
+        observed_at = outcome_row[1].isoformat() if hasattr(outcome_row[1], "isoformat") else str(outcome_row[1])
         observed_price_source = "exit_price"
         try:
             try:
-                observed_price = float(outcome_row[1])
+                observed_price = float(outcome_row[2])
             except (TypeError, ValueError):
-                realized_return_bps = float(outcome_row[3])
+                realized_return_bps = float(outcome_row[4])
                 entry_price = float(shadow["entry_price"])
                 observed_price = entry_price * (1.0 + realized_return_bps / 10000.0)
                 observed_price_source = "reconstructed_from_realized_return_bps"
@@ -162,10 +162,10 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                 metadata={
                     "resolution": "shared_quant_forecast_outcome",
                     "quant_forecast_id": forecast_id,
-                    "upstream_realized_direction": outcome_row[2],
-                    "upstream_realized_return_bps": outcome_row[3],
-                    "upstream_prediction_correct": outcome_row[4],
-                    "upstream_brier_loss": outcome_row[5],
+                    "upstream_realized_direction": outcome_row[3],
+                    "upstream_realized_return_bps": outcome_row[4],
+                    "upstream_prediction_correct": outcome_row[5],
+                    "upstream_brier_loss": outcome_row[6],
                     "observed_price_source": observed_price_source,
                 },
             )
