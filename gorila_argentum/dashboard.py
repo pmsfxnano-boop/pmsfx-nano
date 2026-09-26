@@ -63,7 +63,7 @@ async function refresh(){
     metric('PROMOTION',p.status||'UNKNOWN',(p.status==='BLOCKED'?'red':(p.status==='PROMOTED'?'green':''))),
     metric('DRIFT ALERTS',(ctl.drift||{}).warnings_or_alerts?.length ?? 0,((ctl.drift||{}).warnings_or_alerts?.length||0)>0?'red':'green'),
     metric('PREDICTION DRIFT',mon.prediction_drift||'UNKNOWN'),
-    metric('KILL SWITCH',mon.automatic_kill_switch||'UNKNOWN')
+    metric('KILL SWITCH',mon.automatic_kill_switch||'UNKNOWN') ,metric('SHADOW LEDGER',mon.shadow_ledger||'UNKNOWN')
   ].join('');
   $('control_detail').textContent=JSON.stringify({
     promotion_gate:p,
