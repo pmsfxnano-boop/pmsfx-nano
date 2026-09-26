@@ -39,6 +39,7 @@ from .promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
 from .regime import classify_regime
 from .security import require_runtime_tick_key, require_internal_key
 from .shadow import compute_shadow_outcome, validate_shadow_prediction
+from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_signal
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
@@ -580,6 +581,81 @@ async def gorila_forecast(ticker: str, force: bool = False):
         _FORECAST_CACHE[symbol] = (time.monotonic(), dict(result))
         result["cache"] = {"hit": False, "age_seconds": 0.0}
         return result
+
+
+@app.get("/api/gorila/signal/{ticker}")
+async def gorila_signal(ticker: str):
+    """Return the auditable research signal for one Argentine symbol."""
+    symbol = normalize_ticker(ticker)
+    if symbol not in SIGNAL_SYMBOLS:
+        raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
+    state = await _gorila_forecast(symbol)
+    store = Store()
+    store.init()
+    drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
+    shadow = store.shadow_summary()
+    series = store.recent_series(symbol, "close_5m", limit=240)
+    if not series:
+        series = store.recent_series(symbol, "close", limit=240)
+    signal = build_signal(
+        symbol=symbol,
+        state=state,
+        price_series=series,
+        drift=drift_rows[0] if drift_rows else None,
+        shadow_summary=shadow,
+    )
+    signal["session"] = market_session_state()
+    signal["source_health"] = [
+        row for row in store.health()
+        if row.get("source") in {
+            "BYMA/MarketData",
+            f"YahooChart/{symbol}.BA",
+            f"EODHD/{symbol}.BA/5m",
+        }
+    ]
+    return signal
+
+
+@app.get("/api/gorila/signal-matrix")
+async def gorila_signal_matrix():
+    """Return the complete Argentine research signal matrix."""
+    async def build_one(symbol: str):
+        try:
+            state = await _gorila_forecast(symbol)
+            store = Store()
+            store.init()
+            drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
+            series = store.recent_series(symbol, "close_5m", limit=240)
+            if not series:
+                series = store.recent_series(symbol, "close", limit=240)
+            return build_signal(
+                symbol=symbol,
+                state=state,
+                price_series=series,
+                drift=drift_rows[0] if drift_rows else None,
+                shadow_summary=store.shadow_summary(),
+            )
+        except Exception as exc:
+            return {
+                "symbol": symbol,
+                "signal": "NEUTRAL",
+                "status": "NO_DATA",
+                "actionable": False,
+                "signal_score": 0.0,
+                "error": f"{type(exc).__name__}: {exc}",
+                "research_only": True,
+                "no_execution_authority": True,
+            }
+
+    items = await asyncio.gather(*(build_one(symbol) for symbol in SIGNAL_SYMBOLS))
+    result = build_matrix(items)
+    result["session"] = market_session_state()
+    result["engine"] = {
+        "forecast_cache_seconds": 30.0,
+        "upstream_cache_seconds": _UPSTREAM_CACHE_SECONDS,
+        "universe": list(SIGNAL_SYMBOLS),
+    }
+    return result
 
 
 @app.get("/api/gorila/terminal/{ticker}")
