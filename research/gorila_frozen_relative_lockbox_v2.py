@@ -16,7 +16,7 @@ from research.gorila_quantitative_v1_oos import (
     _shift_probability,
     fit_logistic,
     predict,
-    rows_for_model,
+    dataset,
     select_candidate,
 )
 
@@ -149,7 +149,7 @@ def choose_variant_on_development(series, horizon, common_dates, dev_dates, symb
 
 
 def evaluate_symbol_horizon(series, horizon):
-    rows = {s: rows_for_model(series, s, horizon) for s in SYMBOLS}
+    rows = {s: dataset(series, s, horizon) for s in SYMBOLS}
     date_sets = [{r.date for r in rows[s]} for s in SYMBOLS]
     if not all(date_sets):
         return {"status": "INSUFFICIENT_DATA", "horizon_days": horizon}
