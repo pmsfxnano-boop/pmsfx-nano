@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from .storage import Store
 from .ingest import run_batch
@@ -72,12 +72,15 @@ def create_shadow_prediction(
     entry_price: float = 0.0,
     feature_hash: str = "",
 ):
-    values = validate_shadow_prediction(
-        symbol=symbol,
-        probability_up=probability_up,
-        horizon_seconds=horizon_seconds,
-        entry_price=entry_price,
-    )
+    try:
+        values = validate_shadow_prediction(
+            symbol=symbol,
+            probability_up=probability_up,
+            horizon_seconds=horizon_seconds,
+            entry_price=entry_price,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = Store(); store.init()
     return store.save_shadow_prediction(
         values["symbol"], model_version, values["probability_up"], values["horizon_seconds"],
@@ -89,11 +92,14 @@ def settle_shadow_prediction(prediction_id: str, observed_price: float):
     store = Store(); store.init()
     prediction = store.get_shadow_prediction(prediction_id)
     if not prediction:
-        return {"error": "shadow_prediction_not_found", "prediction_id": prediction_id}
-    outcome = compute_shadow_outcome(
-        prediction["probability_up"], prediction["entry_price"], observed_price
-    )
-    return store.settle_shadow_prediction(prediction_id, outcome)
+        raise HTTPException(status_code=404, detail="shadow_prediction_not_found")
+    try:
+        outcome = compute_shadow_outcome(
+            prediction["probability_up"], prediction["entry_price"], observed_price
+        )
+        return store.settle_shadow_prediction(prediction_id, outcome)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 @app.get("/api/drift/{symbol}/{field}")
 def drift(symbol: str, field: str, current_size: int = 30, reference_size: int = 90):
