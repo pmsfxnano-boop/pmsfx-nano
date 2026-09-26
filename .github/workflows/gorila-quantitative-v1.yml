@@ -31,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt pytest
       - name: Tests
-        run: pytest -q tests/test_research_validation.py tests/test_data_snapshot.py tests/test_quantitative_evidence.py
+        run: pytest -q tests/test_research_validation.py tests/test_data_snapshot.py tests/test_quantitative_evidence.py tests/test_frozen_relative_lockbox_v2.py
       - name: Build immutable market snapshot
         run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
       - uses: actions/upload-artifact@v4
@@ -135,8 +135,39 @@ jobs:
           name: gorila-v1-relative-alpha
           path: relative-alpha-evidence.json
 
+  frozen-relative-lockbox:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-market-snapshot
+      - name: Run frozen relative-alpha lockbox
+        env:
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
+          GORILA_FROZEN_RELATIVE_HORIZONS: "5,10"
+          GORILA_FROZEN_RELATIVE_LOCKBOX_DAYS: "756"
+          GORILA_FROZEN_RELATIVE_SELECTION_DAYS: "252"
+          GORILA_FROZEN_RELATIVE_PLACEBO_PERM: "128"
+        run: |
+          set -o pipefail
+          python research/gorila_frozen_relative_lockbox_v2.py | tee frozen-relative-lockbox-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-v1-frozen-relative-lockbox
+          path: frozen-relative-lockbox-evidence.json
+
   manifest:
-    needs: [per-symbol, lockbox, relative-alpha]
+    needs: [per-symbol, lockbox, relative-alpha, frozen-relative-lockbox]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -162,6 +193,11 @@ jobs:
         with:
           name: gorila-v1-relative-alpha
           path: artifacts
+      - name: Download frozen relative lockbox
+        uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-frozen-relative-lockbox
+          path: artifacts
       - name: Build canonical manifest
         run: |
           python - <<'PY'
@@ -179,7 +215,12 @@ jobs:
               return json.loads(path.read_text())
           lockbox = load_one("lockbox-evidence.json")
           relative_alpha = load_one("relative-alpha-evidence.json")
-          aux_snapshots = {lockbox.get("snapshot_sha256"), relative_alpha.get("snapshot_sha256")}
+          frozen_relative = load_one("frozen-relative-lockbox-evidence.json")
+          aux_snapshots = {
+              lockbox.get("snapshot_sha256"),
+              relative_alpha.get("snapshot_sha256"),
+              frozen_relative.get("snapshot_sha256"),
+          }
           if aux_snapshots != snapshots:
               raise SystemExit(f"AUX_SNAPSHOT_MISMATCH:{sorted(aux_snapshots)} vs {sorted(snapshots)}")
           manifest = {
@@ -193,6 +234,7 @@ jobs:
               "auxiliary": {
                   "lockbox": lockbox,
                   "relative_alpha": relative_alpha,
+                  "frozen_relative_lockbox": frozen_relative,
               },
           }
           canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
@@ -210,6 +252,7 @@ jobs:
               "validation_statuses": statuses,
               "lockbox_statuses": [x.get("validation_status") for x in lockbox.get("evidence", [])],
               "relative_alpha_statuses": [x.get("validation_status") for x in relative_alpha.get("evidence", [])],
+              "frozen_relative_statuses": [x.get("validation_status") for x in frozen_relative.get("evidence", [])],
           }, indent=2))
           PY
       - uses: actions/upload-artifact@v4
