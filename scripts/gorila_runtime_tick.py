@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import uuid
+
+import psycopg
 from datetime import datetime, timezone
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -316,6 +320,24 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
+def _acquire_autonomous_lock():
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        raise RuntimeError("durable_storage_required")
+    conn = psycopg.connect(url, sslmode="require", connect_timeout=10)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (2147483647,))
+            acquired = bool(cur.fetchone()[0])
+        if not acquired:
+            conn.close()
+            return None
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
 def run_autonomous_tick(
     *,
     store: Store | None = None,
@@ -327,23 +349,30 @@ def run_autonomous_tick(
     if not store.pg:
         raise RuntimeError("durable_storage_required")
 
+    lock_conn = _acquire_autonomous_lock()
+    if lock_conn is None:
+        return {
+            "status": "SKIPPED_ALREADY_RUNNING",
+            "kind": kind,
+            "autonomous": True,
+        }
+
     now = datetime.now(timezone.utc)
     if run_id is None:
-        slot_seconds = max(60, int(__import__("os").getenv("GORILA_AUTONOMOUS_INTERVAL_SECONDS", "300")))
-        slot = int(now.timestamp() // slot_seconds)
-        run_id = f"{kind}-{slot}"
+        run_id = f"{kind}-{int(now.timestamp())}-{uuid.uuid4().hex[:10]}"
 
     if not store.claim_runtime_run(run_id, kind):
+        lock_conn.close()
         return {
             "status": "SKIPPED_ALREADY_CLAIMED",
             "run_id": run_id,
             "kind": kind,
+            "autonomous": True,
         }
 
     started = now.isoformat()
     try:
-        payload = run_tick(store=store)
-        payload = dict(payload)
+        payload = dict(run_tick(store=store))
         payload.update(
             {
                 "run_id": run_id,
@@ -368,3 +397,6 @@ def run_autonomous_tick(
         }
         store.finish_runtime_run(run_id, "FAILED", result)
         raise
+    finally:
+        lock_conn.close()
+
