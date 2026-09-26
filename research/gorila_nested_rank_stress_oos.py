@@ -9,6 +9,8 @@ from itertools import combinations
 
 import httpx
 
+from research.gorila_data_snapshot import load_or_fetch_series
+
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 EXECUTION_LAGS = [0, 1, 2]
@@ -263,7 +265,7 @@ def run(series,horizon,lag):
     }
 
 
-series={s:yahoo(s) for s in SYMBOLS}
+series, SNAPSHOT_SHA256 = load_or_fetch_series(SYMBOLS, yahoo, os.getenv("GORILA_DATA_SNAPSHOT"))
 results={}
 for h in HORIZONS:
     results[str(h)]={}
@@ -274,6 +276,7 @@ print(json.dumps({
     "status":"COMPLETE",
     "method":"nested-purged-relative-ranking-execution-and-universe-stress-v1",
     "symbols":SYMBOLS,
+    "data_snapshot_sha256": SNAPSHOT_SHA256,
     "horizons":HORIZONS,
     "execution_lags_days":EXECUTION_LAGS,
     "costs_bps_roundtrip":COSTS_BPS,
