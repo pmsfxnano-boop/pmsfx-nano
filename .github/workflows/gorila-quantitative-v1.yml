@@ -99,6 +99,7 @@ jobs:
           GORILA_LOCKBOX_MAX_GROSS: "1.0"
           GORILA_LOCKBOX_PLACEBO_PERM: "64"
         run: |
+          set -o pipefail
           python research/gorila_lockbox_v1.py | tee lockbox-evidence.json
       - uses: actions/upload-artifact@v4
         with:
@@ -127,6 +128,7 @@ jobs:
           GORILA_RELATIVE_HORIZONS: "5,10"
           GORILA_RELATIVE_PLACEBO_PERM: "32"
         run: |
+          set -o pipefail
           python research/gorila_relative_alpha_v1.py | tee relative-alpha-evidence.json
       - uses: actions/upload-artifact@v4
         with:
