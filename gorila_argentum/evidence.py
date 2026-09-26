@@ -36,7 +36,7 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                       id,run_id,created_at,source,model_id,symbol,horizon_days,
                       dataset_sha256,sample_count,oos_samples,outer_folds,accuracy,
                       brier,baseline_brier,brier_skill,brier_skill_ci_low,brier_skill_ci_high,
-                      logloss,rank_ic,net_return_50bps,placebo_accuracy_p95,
+                      logloss,rank_ic,net_return_50bps,placebo_accuracy_p95,pbo,dsr,
                       execution_delta_50bps,stress_pass,data_health,point_in_time,
                       validation_status,validation_reasons,manifest_sha256,metrics
                     )
@@ -44,7 +44,7 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                       %(id)s,%(run_id)s,%(created_at)s,%(source)s,%(model_id)s,%(symbol)s,%(horizon_days)s,
                       %(dataset_sha256)s,%(sample_count)s,%(oos_samples)s,%(outer_folds)s,%(accuracy)s,
                       %(brier)s,%(baseline_brier)s,%(brier_skill)s,%(ci_low)s,%(ci_high)s,
-                      %(logloss)s,%(rank_ic)s,%(net_return_50bps)s,%(placebo_accuracy_p95)s,
+                      %(logloss)s,%(rank_ic)s,%(net_return_50bps)s,%(placebo_accuracy_p95)s,%(pbo)s,%(dsr)s,
                       %(execution_delta_50bps)s,%(stress_pass)s,%(data_health)s,%(point_in_time)s,
                       %(validation_status)s,%(validation_reasons)s,%(manifest_sha256)s,%(metrics)s
                     )
@@ -80,6 +80,8 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                         "rank_ic": item.get("rank_ic"),
                         "net_return_50bps": (item.get("strategy_costs", {}).get("50", {}) or {}).get("net_return"),
                         "placebo_accuracy_p95": item.get("placebo_accuracy_p95"),
+                        "pbo": (item.get("pbo") or {}).get("pbo") if isinstance(item.get("pbo"), dict) else item.get("pbo"),
+                        "dsr": item.get("dsr"),
                         "execution_delta_50bps": item.get("execution_delta_vs_flat_50bps"),
                         "stress_pass": item.get("validation_status") == "VALIDATED",
                         "data_health": bool(item.get("data_health", True)),
@@ -114,7 +116,7 @@ def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int |
                 SELECT run_id,created_at,model_id,symbol,horizon_days,dataset_sha256,
                        sample_count,oos_samples,outer_folds,accuracy,brier,baseline_brier,
                        brier_skill,brier_skill_ci_low,brier_skill_ci_high,logloss,rank_ic,
-                       net_return_50bps,placebo_accuracy_p95,execution_delta_50bps,
+                       net_return_50bps,placebo_accuracy_p95,pbo,dsr,execution_delta_50bps,
                        stress_pass,data_health,point_in_time,validation_status,
                        validation_reasons,manifest_sha256,metrics
                 FROM research_evidence
