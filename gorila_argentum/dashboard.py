@@ -39,7 +39,7 @@ const $=id=>document.getElementById(id);
 function metric(k,v,cls=""){return '<div class="metric"><div class="label">'+k+'</div><div class="value '+cls+'">'+(v==null?'—':v)+'</div></div>'}
 async function refresh(){
  try{
-  const [s,h,c,dv,ctl,ss,si]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json()),fetch('/api/shadow/summary').then(r=>r.json()),fetch('/api/shadow?limit=20').then(r=>r.json())]);
+  const [s,h,c,dv,ctl,ss,si,promo]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json()),fetch('/api/shadow/summary').then(r=>r.json()),fetch('/api/shadow?limit=20').then(r=>r.json()),fetch('/api/promotion').then(r=>r.json())]);
   const fx=s.fx||{}, sp=fx.spreads||{};
   $('fx').innerHTML=[
     metric('USD OFICIAL',fx.official),metric('MEP',fx.mep),metric('CCL',fx.ccl),
@@ -63,13 +63,14 @@ async function refresh(){
     metric('PROMOTION',p.status||'UNKNOWN',(p.status==='BLOCKED'?'red':(p.status==='PROMOTED'?'green':''))),
     metric('DRIFT ALERTS',(ctl.drift||{}).warnings_or_alerts?.length ?? 0,((ctl.drift||{}).warnings_or_alerts?.length||0)>0?'red':'green'),
     metric('PREDICTION DRIFT',mon.prediction_drift||'UNKNOWN'),
-    metric('KILL SWITCH',mon.automatic_kill_switch||'UNKNOWN') ,metric('SHADOW LEDGER',mon.shadow_ledger||'UNKNOWN')
+    metric('KILL SWITCH',mon.automatic_kill_switch||'UNKNOWN') ,metric('SHADOW LEDGER',mon.shadow_ledger||'UNKNOWN'),metric('PROMOTION GATE',promo.current_evaluation?.status||'UNKNOWN',promo.current_evaluation?.status==='BLOCKED'?'red':'green')
   ].join('');
   $('control_detail').textContent=JSON.stringify({
     promotion_gate:p,
     monitoring:mon,
     drift:{snapshots_seen:ctl.drift?.snapshots_seen,latest_series:ctl.drift?.latest_series},
-    runtime:rt
+    runtime:rt,
+    promotion:promo.current_evaluation
   },null,2);
   $('shadow').innerHTML=[
     metric('PREDICTIONS',ss.predictions),
