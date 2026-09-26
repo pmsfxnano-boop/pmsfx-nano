@@ -100,7 +100,11 @@ def _pair_return(scores, rows, cost_bps_per_leg, use_vol_target):
 
 
 def evaluate_lockbox(series, symbol_rows, horizon):
-    common_dates = sorted(set.intersection(*(set(symbol_rows[s]) for s in SYMBOLS)))
+    date_sets = []
+    for symbol in SYMBOLS:
+        dates = {row.date for row in symbol_rows[symbol]}
+        date_sets.append(dates)
+    common_dates = sorted(set.intersection(*date_sets))
     if len(common_dates) <= LOCKBOX_DAYS + TRAIN_MIN:
         return {"status": "INSUFFICIENT_DATA", "horizon_days": horizon}
 
