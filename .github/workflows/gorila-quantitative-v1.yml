@@ -55,16 +55,16 @@ jobs:
           name: gorila-v1-market-snapshot
       - name: Validate per symbol and horizon
         env:
-          GORILA_HORIZONS: "\${{ matrix.horizon }}"
-          GORILA_DATA_SNAPSHOT: "\${{ github.workspace }}/gorila-market-snapshot.json"
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
           GORILA_PLACEBO_PERM: "16"
         run: |
           set -o pipefail
-          python research/gorila_quantitative_v1_oos.py | tee evidence-\${{ matrix.horizon }}d.json
+          python research/gorila_quantitative_v1_oos.py | tee evidence-${{ matrix.horizon }}d.json
       - uses: actions/upload-artifact@v4
         with:
-          name: gorila-v1-evidence-\${{ matrix.horizon }}d
-          path: evidence-\${{ matrix.horizon }}d.json
+          name: gorila-v1-evidence-${{ matrix.horizon }}d
+          path: evidence-${{ matrix.horizon }}d.json
 
   manifest:
     needs: per-symbol
