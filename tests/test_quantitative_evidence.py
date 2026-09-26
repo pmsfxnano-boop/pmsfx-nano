@@ -20,6 +20,8 @@ def test_quantitative_validator_gate_is_conservative():
             "1": {"50": {"net_return": 0.02}},
             "2": {"50": {"net_return": 0.01}},
         },
+        "pbo": {"status": "COMPLETE", "pbo": 0.0},
+        "dsr": 0.20,
     })
     assert status == "VALIDATED"
     assert reasons == []
