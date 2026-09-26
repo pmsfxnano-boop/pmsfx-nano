@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import math
 import statistics
 import time
 from itertools import combinations
 
 import httpx
+
+from research.gorila_data_snapshot import load_or_fetch_series
 
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 HORIZONS = [5, 10]
@@ -247,12 +250,13 @@ def run_horizon(series,horizon):
 
 
 if __name__ == "__main__":
-    series={s:yahoo(s) for s in SYMBOLS}
+    series, SNAPSHOT_SHA256 = load_or_fetch_series(SYMBOLS, yahoo, os.getenv("GORILA_DATA_SNAPSHOT"))
     results={str(h):run_horizon(series,h) for h in HORIZONS}
     print(json.dumps({
         "status":"COMPLETE",
         "method":"nested-purged-pairwise-ranking-feature-selection-v1",
         "symbols":SYMBOLS,
+    "data_snapshot_sha256": SNAPSHOT_SHA256,
         "horizons":HORIZONS,
         "costs_bps_roundtrip":COSTS_BPS,
         "outer_train_min":OUTER_TRAIN_MIN,
