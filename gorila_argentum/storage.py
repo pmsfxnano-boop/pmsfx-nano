@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS promotion_decisions (
  evidence TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_promotion_model_time ON promotion_decisions(model_id,created_at);
+CREATE TABLE IF NOT EXISTS learning_runs (
+ id TEXT PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ symbol TEXT NOT NULL,
+ horizon_days INTEGER NOT NULL,
+ status TEXT NOT NULL,
+ dataset_hash TEXT,
+ samples INTEGER NOT NULL DEFAULT 0,
+ result TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_learning_symbol_time ON learning_runs(symbol,created_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -453,6 +464,51 @@ class Store:
             try: out[key]=json.loads(out[key] or ("[]" if key=="reasons" else "{}"))
             except Exception: pass
         out["automatic_promotion"]=bool(out["automatic_promotion"])
+        return out
+
+
+    def save_learning_run(self, symbol, horizon_days, result):
+        run_id = uuid.uuid4().hex
+        conn = self.connect(); now = utc_now()
+        values = (
+            run_id, now, symbol, int(horizon_days), result.get("status","UNKNOWN"),
+            result.get("dataset_hash"), int(result.get("samples",0)), json.dumps(result)
+        )
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO learning_runs(
+                    id,created_at,symbol,horizon_days,status,dataset_hash,samples,result)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""", values)
+        else:
+            conn.execute("""INSERT INTO learning_runs(
+                id,created_at,symbol,horizon_days,status,dataset_hash,samples,result)
+                VALUES(?,?,?,?,?,?,?,?)""", values)
+        conn.commit(); conn.close(); self.conn=None
+        return {"id": run_id, "created_at": now, "status": result.get("status","UNKNOWN")}
+
+    def latest_learning(self, symbol=None, limit=20):
+        conn=self.connect()
+        params=[]
+        if self.pg:
+            sql="SELECT id,created_at,symbol,horizon_days,status,dataset_hash,samples,result FROM learning_runs"
+            if symbol is not None:
+                sql += " WHERE symbol=%s"; params.append(symbol)
+            sql += " ORDER BY created_at DESC LIMIT %s"; params.append(max(1,min(100,int(limit))))
+            with conn.cursor() as cur:
+                cur.execute(sql,tuple(params)); rows=cur.fetchall()
+        else:
+            sql="SELECT id,created_at,symbol,horizon_days,status,dataset_hash,samples,result FROM learning_runs"
+            if symbol is not None:
+                sql += " WHERE symbol=?"; params.append(symbol)
+            sql += " ORDER BY created_at DESC LIMIT ?"; params.append(max(1,min(100,int(limit))))
+            rows=conn.execute(sql,tuple(params)).fetchall()
+        conn.close(); self.conn=None
+        out=[]
+        for row in rows:
+            item=dict(zip(["id","created_at","symbol","horizon_days","status","dataset_hash","samples","result"],row))
+            try: item["result"]=json.loads(item["result"] or "{}")
+            except Exception: pass
+            out.append(item)
         return out
 
     def health(self):
