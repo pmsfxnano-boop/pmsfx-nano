@@ -223,7 +223,12 @@ function renderTerminal(d){
   setStatus($('modelState'),f.forecast_status||'NO_FORECAST',!!fc?.validated,!fc);
   $('valStatus').textContent=ev.validated?'VALIDATED':(ev.validation_reason||'EXPERIMENTAL');
   $('oosAcc').textContent=pct(ev.accuracy);$('brier').textContent=fmt(ev.brier,5);$('brierSkill').textContent=fmt(ev.brier_skill,5);
-  $('modelId').textContent=fc?.model_id||'—';$('healthState').textContent=f.model_health?.safe_mode?'SAFE_MODE':(f.data_health?.status||'—');$('triggerState').textContent=f.gatillazo||'BLOCKED';
+  $('modelId').textContent=fc?.model_id||'—';
+  $('engineSource').textContent=f.engine_source||f.data_source||'—';
+  const age=f.engine_freshness?.age_seconds;
+  $('engineAge').textContent=age===undefined||age===null?'—':(Number(age)<60?Number(age).toFixed(0)+' s':(Number(age)/60).toFixed(1)+' min');
+  $('healthState').textContent=f.model_health?.safe_mode?'SAFE_MODE':(f.data_health?.status||'—');
+  $('triggerState').textContent=f.gatillazo||'BLOCKED';
   $('samples').textContent=f.model?.resolved_flow_samples??f.historical_bars??'—';$('bars').textContent=f.model?.historical_bars??f.historical_bars??'—';$('forecastId').textContent=f.forecast_id??'—';
   const mh=d.forecast?.multi_horizon||{};
   const hs=mh?.horizons||{};
@@ -265,7 +270,7 @@ async function refresh(){
     $('sourceState').textContent=requiredHealthy+'/'+requiredRows.length+' core healthy';
     const feed=h.primary_market_data||{};
     $('primaryFeed').textContent=feed.status||'—';
-    $('primaryFeed').style.color=feed.configured?'':'#ffafba';
+    $('primaryFeed').style.color=(String(feed.status||'').startsWith('READY'))?'#9beec8':'#ffafba';
     setStatus($('runtimeStatus'),latest?.status||'NO TICK',latest?.status==='COMPLETED',latest&&latest.status!=='COMPLETED');
     const e=p.current_evaluation||{};$('gateAcc').textContent=pct(e.evidence?.oos_accuracy);$('rankIc').textContent=fmt(e.evidence?.rank_ic,4);$('cpcv').textContent=fmt(e.evidence?.cpcv_mean_return_pct,2)+'%';
     const reasons=(e.reasons||[]).slice(0,5);$('gateReasons').innerHTML=reasons.map(x=>'<div class="row"><span class="muted">gate</span><b>'+x+'</b></div>').join('')||'<div class="row"><span class="muted">gate</span><b>—</b></div>';
