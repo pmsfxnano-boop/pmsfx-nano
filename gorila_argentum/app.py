@@ -124,6 +124,22 @@ def ingest(x_gorila_internal_key: str | None = Header(default=None, alias="X-Gor
 def features(symbol: str):
     return build_features(symbol)
 
+@app.get("/api/regime/{symbol}")
+def regime(symbol: str):
+    from math import log
+    store = Store(); store.init()
+    series = store.recent_series(symbol, "close", limit=40)
+    returns_bps = [10000.0 * log(b/a) for (_,a),(_,b) in zip(series, series[1:]) if a > 0 and b > 0]
+    fx_series = store.recent_series("USD_MEP", "sell", limit=2)
+    risk_series = store.recent_series("EMBI_ARG", "embi_bps", limit=2)
+    fx_stress = None
+    risk_delta = None
+    if len(fx_series) == 2 and fx_series[-2][1] != 0:
+        fx_stress = (fx_series[-1][1] / fx_series[-2][1]) - 1.0
+    if len(risk_series) == 2:
+        risk_delta = risk_series[-1][1] - risk_series[-2][1]
+    return classify_regime(returns_bps, fx_stress=fx_stress, risk_delta_bps=risk_delta)
+
 @app.get("/api/drift")
 def drift_summary(symbol: str | None = None, field: str | None = None, limit: int = 100):
     store=Store(); store.init()
