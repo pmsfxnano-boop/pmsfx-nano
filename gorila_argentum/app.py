@@ -45,8 +45,10 @@ from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
-# The public service uses a single process. The cache keeps the latency-critical
-# UI path independent of the expensive historical/multi-horizon research call.
+# The public service uses a single process. The autonomous runtime loop is
+# intentionally part of this process so research continues without a cron.
+# The cache keeps the latency-critical UI path independent of the expensive
+# historical/multi-horizon research call.
 _FORECAST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _FORECAST_LOCK = asyncio.Lock()
 _MACRO_TASK: asyncio.Task | None = None
