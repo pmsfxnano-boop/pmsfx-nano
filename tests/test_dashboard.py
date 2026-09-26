@@ -2,7 +2,7 @@ from gorila_argentum.dashboard import HTML
 
 
 def test_dashboard_contains_drift_monitor():
-    html = str(HTML.body)
+    html = HTML.body.decode('utf-8')
     assert "DRIFT MONITOR" in html
     assert "/api/drift?limit=50" in html
     assert "CONTROL ROOM — BATCH 13" in html
