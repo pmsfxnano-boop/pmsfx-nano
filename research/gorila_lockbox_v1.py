@@ -56,6 +56,30 @@ def _ci(values, z=1.96):
     return [m - z * se, m + z * se]
 
 
+def _block_bootstrap_ci(values, seed, replicates=2000):
+    values = [float(v) for v in values if math.isfinite(float(v))]
+    n = len(values)
+    if n < 10:
+        return _ci(values)
+    rng = random.Random(seed)
+    block = max(2, int(math.sqrt(n)))
+    samples = []
+    for _ in range(replicates):
+        draw = []
+        while len(draw) < n:
+            start = rng.randrange(0, n)
+            for j in range(block):
+                draw.append(values[(start + j) % n])
+                if len(draw) >= n:
+                    break
+        samples.append(statistics.mean(draw[:n]))
+    samples.sort()
+    return [
+        samples[int(0.025 * (len(samples) - 1))],
+        samples[int(0.975 * (len(samples) - 1))],
+    ]
+
+
 def _zscore_map(values: dict[str, float]) -> dict[str, float]:
     xs = list(values.values())
     if len(xs) < 2:
@@ -136,6 +160,7 @@ def evaluate_lockbox(series, symbol_rows, horizon):
 
     lock_rows = {s: {r.date: r for r in symbol_rows[s] if r.date in set(lockbox_dates)} for s in SYMBOLS}
     rank_ics = []
+    rebalance_rank_ics = []
     fixed_returns = {c: [] for c in COSTS_BPS_PER_LEG}
     vol_returns = {c: [] for c in COSTS_BPS_PER_LEG}
     momentum_returns = {c: [] for c in COSTS_BPS_PER_LEG}
@@ -173,10 +198,12 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         }
         ensemble = _ensemble_score(scores)
         returns = {s: rows[s].forward_return for s in common}
-        rank_ics.append(_rank_corr([ensemble[s] for s in common], [returns[s] for s in common]))
+        rank_value = _rank_corr([ensemble[s] for s in common], [returns[s] for s in common])
+        rank_ics.append(rank_value)
 
         if date_idx % horizon != 0:
             continue
+        rebalance_rank_ics.append(rank_value)
 
         if max(ensemble.values()) - min(ensemble.values()) < MIN_SPREAD_Z:
             continue
@@ -235,13 +262,17 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         ordered = sorted(placebo_means)
         placebo_p95 = ordered[min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)]
 
-    mean_rank = statistics.mean(rank_ics) if rank_ics else None
-    rank_ci = _ci(rank_ics)
+    mean_rank = statistics.mean(rebalance_rank_ics) if rebalance_rank_ics else None
+    rank_ci = _block_bootstrap_ci(rebalance_rank_ics, SEED + horizon)
     lockbox_net_50 = math.prod(1.0 + r for r in target) - 1.0 if target else 0.0
     momentum_net_50 = math.prod(1.0 + r for r in mom) - 1.0 if mom else 0.0
     fixed_net_50 = math.prod(1.0 + r for r in fixed) - 1.0 if fixed else 0.0
 
-    prediction_ok = bool(rank_ci and rank_ci[0] > 0 and mean_rank is not None)
+    prediction_ok = (
+        len(rebalance_rank_ics) >= 50
+        and bool(rank_ci and rank_ci[0] > 0 and mean_rank is not None)
+        and (placebo_p95 is None or mean_rank > placebo_p95)
+    )
     strategy_ok = (
         len(target) >= 20
         and lockbox_net_50 > 0
@@ -250,19 +281,22 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         and (placebo_p95 is None or mean_rank > placebo_p95)
     )
 
-    reasons = []
-    if not prediction_ok:
-        reasons.append("LOCKBOX_RANK_IC_CI_NOT_POSITIVE")
+    prediction_reasons = []
+    strategy_reasons = []
+    if len(rebalance_rank_ics) < 50:
+        prediction_reasons.append("LOCKBOX_MIN_REBALANCE_OBS")
+    if not rank_ci or rank_ci[0] <= 0:
+        prediction_reasons.append("LOCKBOX_RANK_IC_BLOCK_BOOTSTRAP_CI_NOT_POSITIVE")
+    if placebo_p95 is not None and (mean_rank is None or mean_rank <= placebo_p95):
+        prediction_reasons.append("LOCKBOX_PLACEBO_NOT_BEATEN")
     if len(target) < 20:
-        reasons.append("LOCKBOX_MIN_TRADES")
+        strategy_reasons.append("LOCKBOX_MIN_TRADES")
     if lockbox_net_50 <= 0:
-        reasons.append("LOCKBOX_NET_RETURN_50BPS_NOT_POSITIVE")
+        strategy_reasons.append("LOCKBOX_NET_RETURN_50BPS_NOT_POSITIVE")
     if lockbox_net_50 - momentum_net_50 <= 0:
-        reasons.append("LOCKBOX_DELTA_VS_MOMENTUM_NOT_POSITIVE")
+        strategy_reasons.append("LOCKBOX_DELTA_VS_MOMENTUM_NOT_POSITIVE")
     if (perf.get("deflated_sharpe_probability") or 0.0) < 0.95:
-        reasons.append("LOCKBOX_DSR_LT_0_95")
-    if placebo_p95 is not None and mean_rank <= placebo_p95:
-        reasons.append("LOCKBOX_PLACEBO_NOT_BEATEN")
+        strategy_reasons.append("LOCKBOX_DSR_LT_0_95")
 
     return {
         "status": "COMPLETE",
@@ -275,6 +309,7 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         "model_specs": model_specs,
         "mean_rank_ic": mean_rank,
         "rank_ic_ci95": rank_ci,
+        "rebalance_rank_ic_observations": len(rebalance_rank_ics),
         "placebo_rank_ic_p95": placebo_p95,
         "trade_count_50bps": len(target),
         "net_return_50bps": lockbox_net_50,
@@ -282,10 +317,20 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         "momentum_net_return_50bps": momentum_net_50,
         "delta_vs_momentum_50bps": lockbox_net_50 - momentum_net_50,
         "performance_audit": perf,
+        "prediction_status": "VALIDATED" if prediction_ok else "BLOCKED",
+        "prediction_reasons": prediction_reasons,
+        "strategy_status": "VALIDATED" if strategy_ok else "BLOCKED",
+        "strategy_reasons": strategy_reasons,
         "fixed_performance_audit": fixed_perf,
         "momentum_performance_audit": mom_perf,
-        "validation_status": "VALIDATED" if prediction_ok and strategy_ok else "BLOCKED",
-        "validation_reasons": reasons,
+        "validation_status": (
+            "VALIDATED"
+            if prediction_ok and strategy_ok
+            else "PREDICTOR_VALIDATED_EXECUTION_BLOCKED"
+            if prediction_ok
+            else "BLOCKED"
+        ),
+        "validation_reasons": prediction_reasons + strategy_reasons,
         "execution_assumptions": {
             "cost_bps_per_leg": 50,
             "min_score_spread_z": MIN_SPREAD_Z,
