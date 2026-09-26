@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, sqlite3, os
+import json, sqlite3, os, uuid
 from datetime import datetime, timezone
 
 SCHEMA = """
@@ -53,6 +53,37 @@ CREATE TABLE IF NOT EXISTS drift_snapshots (
  metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_drift_symbol_field_time ON drift_snapshots(symbol,field,created_at);
+CREATE TABLE IF NOT EXISTS shadow_predictions (
+ id TEXT PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ symbol TEXT NOT NULL,
+ model_version TEXT NOT NULL,
+ probability_up DOUBLE PRECISION NOT NULL,
+ direction TEXT NOT NULL,
+ horizon_seconds INTEGER NOT NULL,
+ regime TEXT NOT NULL,
+ entry_price DOUBLE PRECISION NOT NULL,
+ feature_hash TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL DEFAULT 'OPEN',
+ settled_at TEXT,
+ metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_symbol_time ON shadow_predictions(symbol,created_at);
+CREATE INDEX IF NOT EXISTS idx_shadow_status_time ON shadow_predictions(status,created_at);
+CREATE TABLE IF NOT EXISTS shadow_outcomes (
+ id TEXT PRIMARY KEY,
+ prediction_id TEXT NOT NULL,
+ observed_at TEXT NOT NULL,
+ observed_price DOUBLE PRECISION NOT NULL,
+ realized_direction TEXT NOT NULL,
+ return_pct DOUBLE PRECISION,
+ correct INTEGER,
+ brier DOUBLE PRECISION,
+ logloss DOUBLE PRECISION,
+ metadata TEXT NOT NULL DEFAULT '{}',
+ UNIQUE(prediction_id)
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_outcome_time ON shadow_outcomes(observed_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -202,6 +233,156 @@ class Store:
             try: row["metadata"]=json.loads(row["metadata"] or "{}")
             except Exception: pass
         return out
+
+
+    def save_shadow_prediction(
+        self,
+        symbol,
+        model_version,
+        probability_up,
+        horizon_seconds,
+        regime,
+        entry_price,
+        feature_hash="",
+        metadata=None,
+    ):
+        prediction_id = uuid.uuid4().hex
+        conn = self.connect(); now = utc_now()
+        values = (
+            prediction_id, now, symbol, model_version, float(probability_up),
+            "UP" if float(probability_up) >= 0.5 else "DOWN",
+            int(horizon_seconds), regime, float(entry_price), feature_hash or "",
+            "OPEN", None, json.dumps(metadata or {})
+        )
+        if self.pg:
+            q = """INSERT INTO shadow_predictions(
+                id,created_at,symbol,model_version,probability_up,direction,horizon_seconds,
+                regime,entry_price,feature_hash,status,settled_at,metadata)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+            with conn.cursor() as cur: cur.execute(q, values)
+        else:
+            conn.execute("""INSERT INTO shadow_predictions(
+                id,created_at,symbol,model_version,probability_up,direction,horizon_seconds,
+                regime,entry_price,feature_hash,status,settled_at,metadata)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+        conn.commit(); conn.close(); self.conn=None
+        return {"id": prediction_id, "created_at": now, "status": "OPEN"}
+
+    def get_shadow_prediction(self, prediction_id):
+        conn = self.connect()
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT id,created_at,symbol,model_version,probability_up,direction,
+                                      horizon_seconds,regime,entry_price,feature_hash,status,settled_at,metadata
+                               FROM shadow_predictions WHERE id=%s""", (prediction_id,))
+                row = cur.fetchone()
+            keys = ["id","created_at","symbol","model_version","probability_up","direction",
+                    "horizon_seconds","regime","entry_price","feature_hash","status","settled_at","metadata"]
+            out = dict(zip(keys, row)) if row else None
+        else:
+            row = conn.execute("""SELECT id,created_at,symbol,model_version,probability_up,direction,
+                                         horizon_seconds,regime,entry_price,feature_hash,status,settled_at,metadata
+                                  FROM shadow_predictions WHERE id=?""",(prediction_id,)).fetchone()
+            out = dict(row) if row else None
+        conn.close(); self.conn=None
+        if out:
+            try: out["metadata"] = json.loads(out["metadata"] or "{}")
+            except Exception: pass
+        return out
+
+    def settle_shadow_prediction(self, prediction_id, outcome, metadata=None):
+        prediction = self.get_shadow_prediction(prediction_id)
+        if not prediction:
+            raise KeyError("shadow_prediction_not_found")
+        if prediction["status"] != "OPEN":
+            raise ValueError("shadow_prediction_not_open")
+
+        outcome_id = uuid.uuid4().hex
+        observed_at = utc_now()
+        values = (
+            outcome_id, prediction_id, observed_at, float(outcome["observed_price"]),
+            outcome["realized_direction"], outcome.get("return_pct"),
+            None if outcome.get("correct") is None else int(bool(outcome["correct"])),
+            outcome.get("brier"), outcome.get("logloss"), json.dumps(metadata or {})
+        )
+        conn = self.connect()
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute("""INSERT INTO shadow_outcomes(
+                    id,prediction_id,observed_at,observed_price,realized_direction,
+                    return_pct,correct,brier,logloss,metadata)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", values)
+                cur.execute("UPDATE shadow_predictions SET status=%s,settled_at=%s WHERE id=%s",
+                            ("SETTLED", observed_at, prediction_id))
+        else:
+            conn.execute("""INSERT INTO shadow_outcomes(
+                id,prediction_id,observed_at,observed_price,realized_direction,
+                return_pct,correct,brier,logloss,metadata)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""", values)
+            conn.execute("UPDATE shadow_predictions SET status=?,settled_at=? WHERE id=?",
+                         ("SETTLED", observed_at, prediction_id))
+        conn.commit(); conn.close(); self.conn=None
+        return {"id": outcome_id, "prediction_id": prediction_id, "observed_at": observed_at}
+
+    def latest_shadow(self, symbol=None, status=None, limit=100):
+        conn = self.connect()
+        where = []; params = []
+        if symbol is not None:
+            where.append("p.symbol=%s" if self.pg else "p.symbol=?"); params.append(symbol)
+        if status is not None:
+            where.append("p.status=%s" if self.pg else "p.status=?"); params.append(status)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        limit = int(max(1, min(500, limit)))
+        sql = f"""SELECT p.id,p.created_at,p.symbol,p.model_version,p.probability_up,p.direction,
+                         p.horizon_seconds,p.regime,p.entry_price,p.feature_hash,p.status,p.settled_at,
+                         o.observed_at,o.observed_price,o.realized_direction,o.return_pct,o.correct,o.brier,o.logloss
+                  FROM shadow_predictions p
+                  LEFT JOIN shadow_outcomes o ON o.prediction_id=p.id
+                  {clause} ORDER BY p.created_at DESC LIMIT {"%s" if self.pg else "?"}"""
+        params.append(limit)
+        keys = ["id","created_at","symbol","model_version","probability_up","direction","horizon_seconds",
+                "regime","entry_price","feature_hash","status","settled_at","observed_at","observed_price",
+                "realized_direction","return_pct","correct","brier","logloss"]
+        if self.pg:
+            with conn.cursor() as cur: cur.execute(sql, tuple(params)); rows = cur.fetchall()
+            out = [dict(zip(keys,r)) for r in rows]
+        else:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            out = [dict(r) for r in rows]
+        conn.close(); self.conn=None
+        return out
+
+    def shadow_summary(self):
+        conn = self.connect()
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT COUNT(*)::int,
+                                      COALESCE(SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),0)::int
+                               FROM shadow_predictions""")
+                counts = cur.fetchone()
+                cur.execute("""SELECT COUNT(*)::int,
+                                      AVG(correct),
+                                      AVG(brier),
+                                      AVG(logloss),
+                                      AVG(return_pct)
+                               FROM shadow_outcomes""")
+                metrics = cur.fetchone()
+        else:
+            counts = conn.execute("""SELECT COUNT(*),
+                                             COALESCE(SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END),0)
+                                      FROM shadow_predictions""").fetchone()
+            metrics = conn.execute("""SELECT COUNT(*),AVG(correct),AVG(brier),AVG(logloss),AVG(return_pct)
+                                      FROM shadow_outcomes""").fetchone()
+        conn.close(); self.conn=None
+        return {
+            "predictions": int(counts[0]),
+            "open": int(counts[1]),
+            "settled": int(metrics[0]),
+            "accuracy": metrics[1],
+            "mean_brier": metrics[2],
+            "mean_logloss": metrics[3],
+            "mean_return_pct": metrics[4],
+        }
 
     def health(self):
         conn=self.connect()
