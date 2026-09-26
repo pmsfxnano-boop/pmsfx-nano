@@ -12,27 +12,37 @@ def _spread(a,b):
 
 def build_market_state():
     store=Store(); store.init()
-    values={
-        "USD_BCRA":_latest(store,"USD_BCRA","reference"),
-        "USD_MEP":_latest(store,"USD_MEP","sell"),
-        "USD_CCL":_latest(store,"USD_CCL","sell"),
-        "USD_BLUE":_latest(store,"USD_BLUE","sell"),
-        "USD_MAYORISTA":_latest(store,"USD_MAYORISTA","sell"),
-        "USD_CRYPTO":_latest(store,"USD_CRIPTO","sell"),
-        "EMBI_ARG":_latest(store,"EMBI_ARG","embi_bps"),
+    values={}
+    errors={}
+    requested = {
+        "USD_BCRA": ("USD_BCRA", "reference"),
+        "USD_MEP": ("USD_MEP", "sell"),
+        "USD_CCL": ("USD_CCL", "sell"),
+        "USD_BLUE": ("USD_BLUE", "sell"),
+        "USD_MAYORISTA": ("USD_MAYORISTA", "sell"),
+        "USD_CRYPTO": ("USD_CRIPTO", "sell"),
+        "EMBI_ARG": ("EMBI_ARG", "embi_bps"),
     }
+    for key, (symbol, field) in requested.items():
+        try:
+            values[key] = _latest(store, symbol, field)
+        except Exception as exc:
+            values[key] = None
+            errors[key] = f"{type(exc).__name__}: {exc}"
+
     mep=values["USD_MEP"][1] if values["USD_MEP"] else None
     ccl=values["USD_CCL"][1] if values["USD_CCL"] else None
     blue=values["USD_BLUE"][1] if values["USD_BLUE"] else None
     oficial=values["USD_BCRA"][1] if values["USD_BCRA"] else None
     embi=values["EMBI_ARG"][1] if values["EMBI_ARG"] else None
     return {
+        "status": "READY" if not errors else "DEGRADED",
         "fx":{
             "official":oficial,
             "mep":mep,
             "ccl":ccl,
             "blue":blue,
-            "crypto":values["USD_CRIPTO"][1] if values["USD_CRIPTO"] else None,
+            "crypto":values["USD_CRYPTO"][1] if values["USD_CRYPTO"] else None,
             "spreads":{
                 "mep_official":_spread(mep,oficial),
                 "ccl_official":_spread(ccl,oficial),
@@ -44,5 +54,6 @@ def build_market_state():
         "as_of":{
             k:(v[0] if v else None) for k,v in values.items()
         },
+        "errors": errors,
         "sources":store.health()
     }
