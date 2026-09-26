@@ -7,7 +7,7 @@ def test_live_evidence_contract_module_imports():
 
 def test_quantitative_validator_gate_is_conservative():
     from research.gorila_quantitative_v1_oos import validation_gate
-    status, reasons = validation_gate({
+    gate = validation_gate({
         "status": "COMPLETE",
         "oos_samples": 800,
         "brier_skill": 0.04,
@@ -25,8 +25,11 @@ def test_quantitative_validator_gate_is_conservative():
         "dsr": 0.20,
         "execution_delta_vs_momentum_50bps": 0.10,
     })
-    assert status == "VALIDATED"
-    assert reasons == []
+    assert gate["validation_status"] == "VALIDATED"
+    assert gate["prediction_status"] == "VALIDATED"
+    assert gate["strategy_status"] == "VALIDATED"
+    assert gate["prediction_reasons"] == []
+    assert gate["strategy_reasons"] == []
 
 
 def test_execution_uses_simple_return_not_log_return():
