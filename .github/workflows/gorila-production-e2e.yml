@@ -81,9 +81,15 @@ jobs:
           assert "forecast" in d, d
           assert "macro" in d, d
           assert "chart" in d, d
+          quote_source=(d.get("quote") or {}).get("source")
+          forecast=d.get("forecast") or {}
+          assert quote_source, d
+          assert forecast.get("forecast_status") not in {"ERROR","BLOCKED_DATA_HEALTH"}, d
+          assert forecast.get("forecast") is not None, d
           print("GORILA_TERMINAL_PASS", {
-              "quote_source": (d.get("quote") or {}).get("source"),
-              "forecast_status": (d.get("forecast") or {}).get("forecast_status"),
+              "quote_source": quote_source,
+              "forecast_status": forecast.get("forecast_status"),
+              "engine_source": forecast.get("engine_source"),
               "chart_points": len(d.get("chart") or []),
           })
           PY
