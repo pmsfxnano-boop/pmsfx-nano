@@ -295,6 +295,8 @@ def run_oos(series, symbol: str, horizon: int):
             "group": group,
             "l2": l2,
             "prior_window": window,
+            "train_rate": train_rate,
+            "prior_rate": prior,
             "selection": selection,
             "probs": probs,
             "labels": [r.y for r in test],
@@ -315,9 +317,9 @@ def run_oos(series, symbol: str, horizon: int):
     fold_model_logloss = []
 
     for f in outer:
-        rate = sum(f["labels"]) / len(f["labels"])
-        bb = sum((rate - y) ** 2 for y in f["labels"]) / len(f["labels"])
-        bl = logloss([rate] * len(f["labels"]), f["labels"])
+        prior = float(f.get("prior_rate", f.get("train_rate", 0.5)))
+        bb = sum((prior - y) ** 2 for y in f["labels"]) / len(f["labels"])
+        bl = logloss([prior] * len(f["labels"]), f["labels"])
         ml = logloss(f["probs"], f["labels"])
         fold_base_briers.append(bb * len(f["labels"]))
         fold_base_logloss.append(bl * len(f["labels"]))
