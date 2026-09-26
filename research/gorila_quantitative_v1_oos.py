@@ -481,7 +481,7 @@ def _fetch(symbol):
     import httpx
     response = httpx.get(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.BA",
-        params={"range": "5y", "interval": "1d", "events": "history"},
+        params={"range": "10y", "interval": "1d", "events": "history"},
         timeout=30,
         headers={"User-Agent": "Gorila-Quantitative-V1/1.0"},
     )
@@ -491,7 +491,7 @@ def _fetch(symbol):
     if not result:
         raise RuntimeError(f"{symbol}: empty")
     ts = result.get("timestamp") or []
-    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    closes = ((result.get("indicators") or {}).get("adjclose") or [{}])[0].get("adjclose") or []
     return {time.strftime("%Y-%m-%d", time.gmtime(t)): float(c) for t, c in zip(ts, closes) if c is not None and c > 0}
 
 
