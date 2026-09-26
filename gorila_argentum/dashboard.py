@@ -39,7 +39,7 @@ const $=id=>document.getElementById(id);
 function metric(k,v,cls=""){return '<div class="metric"><div class="label">'+k+'</div><div class="value '+cls+'">'+(v==null?'—':v)+'</div></div>'}
 async function refresh(){
  try{
-  const [s,h,c,dv,ctl,ss,si,promo]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json()),fetch('/api/shadow/summary').then(r=>r.json()),fetch('/api/shadow?limit=20').then(r=>r.json()),fetch('/api/promotion').then(r=>r.json())]);
+  const [s,h,c,dv,ctl,ss,si,promo,learn]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json()),fetch('/api/shadow/summary').then(r=>r.json()),fetch('/api/shadow?limit=20').then(r=>r.json()),fetch('/api/promotion').then(r=>r.json()),fetch('/api/learning?limit=1').then(r=>r.json())]);
   const fx=s.fx||{}, sp=fx.spreads||{};
   $('fx').innerHTML=[
     metric('USD OFICIAL',fx.official),metric('MEP',fx.mep),metric('CCL',fx.ccl),
@@ -70,7 +70,8 @@ async function refresh(){
     monitoring:mon,
     drift:{snapshots_seen:ctl.drift?.snapshots_seen,latest_series:ctl.drift?.latest_series},
     runtime:rt,
-    promotion:promo.current_evaluation
+    promotion:promo.current_evaluation,
+    learning:learn.items?.[0] || null
   },null,2);
   $('shadow').innerHTML=[
     metric('PREDICTIONS',ss.predictions),
