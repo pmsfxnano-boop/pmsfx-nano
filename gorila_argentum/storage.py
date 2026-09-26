@@ -34,6 +34,25 @@ CREATE TABLE IF NOT EXISTS coupling_snapshots (
  matrix_json TEXT NOT NULL,
  metadata TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS drift_snapshots (
+ id BIGSERIAL PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ symbol TEXT NOT NULL,
+ field TEXT NOT NULL,
+ status TEXT NOT NULL,
+ reference_n INTEGER NOT NULL,
+ current_n INTEGER NOT NULL,
+ psi DOUBLE PRECISION,
+ ks DOUBLE PRECISION,
+ mean_shift_z DOUBLE PRECISION,
+ std_ratio DOUBLE PRECISION,
+ reference_mean DOUBLE PRECISION,
+ current_mean DOUBLE PRECISION,
+ reference_window INTEGER NOT NULL,
+ current_window INTEGER NOT NULL,
+ metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_drift_symbol_field_time ON drift_snapshots(symbol,field,created_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -123,6 +142,66 @@ class Store:
         else:
             conn.execute("INSERT INTO coupling_snapshots(created_at,horizon,matrix_json,metadata) VALUES(?,?,?,?)",(now,horizon,payload,json.dumps(metadata)))
         conn.commit(); conn.close(); self.conn=None
+
+    def save_drift(self, symbol, field, result, metadata=None):
+        conn=self.connect(); now=utc_now()
+        values=(
+            now, symbol, field, result.get("status","UNKNOWN"),
+            int(result.get("reference_n",0)), int(result.get("current_n",0)),
+            result.get("psi"), result.get("ks"), result.get("mean_shift_z"),
+            result.get("std_ratio"), result.get("reference_mean"), result.get("current_mean"),
+            int(result.get("reference_window",0)), int(result.get("current_window",0)),
+            json.dumps(metadata or {})
+        )
+        if self.pg:
+            q="""INSERT INTO drift_snapshots(
+                created_at,symbol,field,status,reference_n,current_n,psi,ks,mean_shift_z,
+                std_ratio,reference_mean,current_mean,reference_window,current_window,metadata)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+            with conn.cursor() as cur: cur.execute(q,values)
+        else:
+            q="""INSERT INTO drift_snapshots(
+                created_at,symbol,field,status,reference_n,current_n,psi,ks,mean_shift_z,
+                std_ratio,reference_mean,current_mean,reference_window,current_window,metadata)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+            conn.execute(q,values)
+        conn.commit(); conn.close(); self.conn=None
+
+    def latest_drift(self, symbol=None, field=None, limit=100):
+        conn=self.connect()
+        where=[]; params=[]
+        if symbol is not None:
+            where.append("symbol=%s" if self.pg else "symbol=?")
+            params.append(symbol)
+        if field is not None:
+            where.append("field=%s" if self.pg else "field=?")
+            params.append(field)
+        clause=(" WHERE "+" AND ".join(where)) if where else ""
+        limit=int(max(1,min(500,limit)))
+        if self.pg:
+            q=f"""SELECT created_at,symbol,field,status,reference_n,current_n,psi,ks,mean_shift_z,
+                         std_ratio,reference_mean,current_mean,reference_window,current_window,metadata
+                  FROM drift_snapshots{clause}
+                  ORDER BY created_at DESC LIMIT %s"""
+            params.append(limit)
+            with conn.cursor() as cur:
+                cur.execute(q,tuple(params)); rows=cur.fetchall()
+            keys=["created_at","symbol","field","status","reference_n","current_n","psi","ks","mean_shift_z",
+                  "std_ratio","reference_mean","current_mean","reference_window","current_window","metadata"]
+            out=[dict(zip(keys,r)) for r in rows]
+        else:
+            q=f"""SELECT created_at,symbol,field,status,reference_n,current_n,psi,ks,mean_shift_z,
+                         std_ratio,reference_mean,current_mean,reference_window,current_window,metadata
+                  FROM drift_snapshots{clause}
+                  ORDER BY created_at DESC LIMIT ?"""
+            params.append(limit)
+            rows=conn.execute(q,tuple(params)).fetchall()
+            out=[dict(r) for r in rows]
+        conn.close(); self.conn=None
+        for row in out:
+            try: row["metadata"]=json.loads(row["metadata"] or "{}")
+            except Exception: pass
+        return out
 
     def health(self):
         conn=self.connect()
