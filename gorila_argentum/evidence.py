@@ -38,7 +38,7 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                       brier,baseline_brier,brier_skill,brier_skill_ci_low,brier_skill_ci_high,
                       logloss,rank_ic,net_return_50bps,placebo_accuracy_p95,pbo,dsr,
                       execution_delta_50bps,stress_pass,data_health,point_in_time,
-                      validation_status,validation_reasons,manifest_sha256,metrics
+                      validation_status,prediction_status,strategy_status,validation_reasons,prediction_reasons,strategy_reasons,manifest_sha256,metrics
                     )
                     VALUES(
                       %(id)s,%(run_id)s,%(created_at)s,%(source)s,%(model_id)s,%(symbol)s,%(horizon_days)s,
@@ -46,7 +46,7 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                       %(brier)s,%(baseline_brier)s,%(brier_skill)s,%(ci_low)s,%(ci_high)s,
                       %(logloss)s,%(rank_ic)s,%(net_return_50bps)s,%(placebo_accuracy_p95)s,%(pbo)s,%(dsr)s,
                       %(execution_delta_50bps)s,%(stress_pass)s,%(data_health)s,%(point_in_time)s,
-                      %(validation_status)s,%(validation_reasons)s,%(manifest_sha256)s,%(metrics)s
+                      %(validation_status)s,%(prediction_status)s,%(strategy_status)s,%(validation_reasons)s,%(prediction_reasons)s,%(strategy_reasons)s,%(manifest_sha256)s,%(metrics)s
                     )
                     ON CONFLICT (run_id,symbol,horizon_days) DO UPDATE SET
                       created_at=EXCLUDED.created_at,
@@ -87,7 +87,11 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                         "data_health": bool(item.get("data_health", True)),
                         "point_in_time": bool(item.get("point_in_time", True)),
                         "validation_status": item.get("validation_status", "BLOCKED"),
+                        "prediction_status": item.get("prediction_status", "BLOCKED"),
+                        "strategy_status": item.get("strategy_status", "BLOCKED"),
                         "validation_reasons": json.dumps(item.get("validation_reasons", []), sort_keys=True),
+                        "prediction_reasons": json.dumps(item.get("prediction_reasons", []), sort_keys=True),
+                        "strategy_reasons": json.dumps(item.get("strategy_reasons", []), sort_keys=True),
                         "manifest_sha256": digest,
                         "metrics": json.dumps(item, sort_keys=True, default=str),
                     },
