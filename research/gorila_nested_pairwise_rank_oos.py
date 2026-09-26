@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import os
 import math
 import statistics
 import time
@@ -12,7 +13,7 @@ import httpx
 from research.gorila_data_snapshot import load_or_fetch_series
 
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
-HORIZONS = [5, 10]
+HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 COSTS_BPS = [25, 50, 100]
 OUTER_TRAIN_MIN = 504
 OUTER_TEST_SIZE = 126
