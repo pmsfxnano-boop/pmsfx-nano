@@ -32,7 +32,7 @@ jobs:
           pip install -r requirements-gorila.txt pytest
       - name: Tests
         run: |
-          pytest -q tests/test_cross_sectional_predictor_v2.py tests/test_research_validation.py tests/test_data_snapshot.py
+          pytest -q tests/test_cross_sectional_predictor_v2.py tests/test_cross_sectional_live.py tests/test_research_validation.py tests/test_data_snapshot.py
       - name: Build immutable snapshot
         run: python research/gorila_snapshot_oos.py --output gorila-v2-market-snapshot.json
       - name: Run frozen predictor
