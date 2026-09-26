@@ -30,6 +30,7 @@ pre{white-space:pre-wrap;color:#bdbdbd;margin:0;font-size:12px}.wide{grid-column
 </div></section>
 <section><h2>COUPLING MATRIX</h2><pre id="coupling">WAITING FOR DEPTH…</pre></section>
 <section class="wide"><h2>DRIFT MONITOR</h2><div class="grid" id="drift"></div><pre id="drift_detail">cargando…</pre></section>
+<section class="wide"><h2>CONTROL ROOM — BATCH 13</h2><div class="grid" id="control"></div><pre id="control_detail">cargando…</pre></section>
 <section class="wide"><h2>WORKFLOW</h2><pre id="workflow">INGEST → STATE → COUPLING → FEATURES → REGIME → PREDICTION → TIMING → OUTCOME</pre></section>
 </main>
 <script>
@@ -37,7 +38,7 @@ const $=id=>document.getElementById(id);
 function metric(k,v,cls=""){return '<div class="metric"><div class="label">'+k+'</div><div class="value '+cls+'">'+(v==null?'—':v)+'</div></div>'}
 async function refresh(){
  try{
-  const [s,h,c,dv]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json())]);
+  const [s,h,c,dv,ctl]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json())]);
   const fx=s.fx||{}, sp=fx.spreads||{};
   $('fx').innerHTML=[
     metric('USD OFICIAL',fx.official),metric('MEP',fx.mep),metric('CCL',fx.ccl),
@@ -52,6 +53,23 @@ async function refresh(){
   for(const row of (dv.items||[])){ const k=row.symbol+'|'+row.field; if(!latest[k]) latest[k]=row; }
   $('drift').innerHTML=Object.values(latest).map(x=>metric(x.symbol+' '+x.field,x.status||'UNKNOWN',x.status==='OK'?'green':(x.status==='ALERT'?'red':''))).join('')||metric('DRIFT','NO DATA');
   $('drift_detail').textContent=JSON.stringify(Object.values(latest).map(x=>({symbol:x.symbol,field:x.field,status:x.status,psi:x.psi,ks:x.ks,mean_shift_z:x.mean_shift_z,std_ratio:x.std_ratio,reference_n:x.reference_n,current_n:x.current_n,created_at:x.created_at})),null,2);
+  const p=ctl.promotion_gate||{};
+  const rt=ctl.runtime||{};
+  const mon=ctl.monitoring||{};
+  $('control').innerHTML=[
+    metric('RUNTIME',rt.mode||'UNKNOWN'),
+    metric('STORAGE',rt.storage||'UNKNOWN'),
+    metric('PROMOTION',p.status||'UNKNOWN',(p.status==='BLOCKED'?'red':(p.status==='PROMOTED'?'green':''))),
+    metric('DRIFT ALERTS',(ctl.drift||{}).warnings_or_alerts?.length ?? 0,((ctl.drift||{}).warnings_or_alerts?.length||0)>0?'red':'green'),
+    metric('PREDICTION DRIFT',mon.prediction_drift||'UNKNOWN'),
+    metric('KILL SWITCH',mon.automatic_kill_switch||'UNKNOWN')
+  ].join('');
+  $('control_detail').textContent=JSON.stringify({
+    promotion_gate:p,
+    monitoring:mon,
+    drift:{snapshots_seen:ctl.drift?.snapshots_seen,latest_series:ctl.drift?.latest_series},
+    runtime:rt
+  },null,2);
  }catch(e){$('status').textContent='DEGRADED';}
 }
 refresh();setInterval(refresh,1000);
