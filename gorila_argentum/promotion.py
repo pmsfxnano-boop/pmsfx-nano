@@ -115,3 +115,66 @@ CURRENT_BATCH10_EVIDENCE = {
     "source": "Batch 10 V2 archived research evidence",
     "source_digest": "sha256:afebda5082e1ab512480183b9db7927e733f12b6c8f2ade1bd89e3fbe8794545",
 }
+
+
+def evaluate_live_promotion(
+    store,
+    *,
+    symbols=("GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"),
+    horizons=(5,10),
+) -> dict[str, Any]:
+    """Evaluate promotion only from the freshest persisted evidence matrix.
+
+    Historical Batch-10 evidence is deliberately not used as a live gate.
+    A production candidate must have fresh PIT/OOS evidence for every required
+    symbol/horizon cell, and every cell must satisfy the same conservative gate.
+    """
+    from .evidence import latest_evidence
+
+    rows = latest_evidence(store, limit=500)
+    required = {(s, int(h)) for s in symbols for h in horizons}
+    latest = {}
+    for row in rows:
+        key = (str(row.get("symbol","")).upper(), int(row.get("horizon_days",0)))
+        if key not in latest:
+            latest[key] = row
+
+    missing = sorted(required - set(latest))
+    if missing:
+        return {
+            "status": "BLOCKED",
+            "eligible": False,
+            "automatic_promotion": False,
+            "reasons": ["FRESH_EVIDENCE_INCOMPLETE"],
+            "missing_cells": [{"symbol": s, "horizon_days": h} for s, h in missing],
+            "cells": list(latest.values()),
+            "source": "persisted_research_evidence",
+        }
+
+    failed = []
+    for key in sorted(required):
+        row = latest[key]
+        if row.get("validation_status") != "VALIDATED":
+            failed.append({
+                "symbol": key[0],
+                "horizon_days": key[1],
+                "status": row.get("validation_status"),
+                "reasons": row.get("validation_reasons") or [],
+            })
+
+    dataset_hashes = {str(latest[k].get("dataset_sha256")) for k in required}
+    same_dataset = len(dataset_hashes) == 1 and "None" not in dataset_hashes
+    if not same_dataset:
+        failed.append({"reason": "DATASET_HASH_MISMATCH"})
+
+    eligible = not failed
+    return {
+        "status": "ELIGIBLE" if eligible else "BLOCKED",
+        "eligible": eligible,
+        "automatic_promotion": False,
+        "reasons": [] if eligible else ["SYMBOL_HORIZON_EVIDENCE_FAILED"],
+        "failed_cells": failed,
+        "dataset_sha256": next(iter(dataset_hashes)) if same_dataset else None,
+        "cells": [latest[k] for k in sorted(required)],
+        "source": "persisted_research_evidence",
+    }
