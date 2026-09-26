@@ -1,0 +1,185 @@
+name: Gorila Argentum Final Validation V2
+
+on:
+  push:
+    branches: [gorila-argentum-v0-hardening]
+  workflow_dispatch:
+
+concurrency:
+  group: gorila-argentum-final-v2
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  ranking:
+    name: Ranking/placebo/LOO H${{ matrix.horizon }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        horizon: [5, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - name: Core tests
+        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py tests/test_research_validation.py tests/test_data_snapshot.py
+      - name: Snapshot
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
+      - name: Nested ranking
+        env:
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+        run: set -o pipefail; python research/gorila_nested_pairwise_rank_oos.py | tee ranking-${{ matrix.horizon }}d.json
+      - name: Temporal placebo
+        env:
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+        run: set -o pipefail; python research/gorila_nested_rank_placebo_oos.py | tee placebo-${{ matrix.horizon }}d.json
+      - name: Universe LOO
+        env:
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+        run: set -o pipefail; python research/gorila_rank_universe_loo_oos.py | tee loo-${{ matrix.horizon }}d.json
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-final-ranking-${{ matrix.horizon }}d
+          path: |
+            gorila-market-snapshot.json
+            ranking-${{ matrix.horizon }}d.json
+            placebo-${{ matrix.horizon }}d.json
+            loo-${{ matrix.horizon }}d.json
+
+  cpcv:
+    name: True CPCV search audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Snapshot
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
+      - name: CPCV
+        env:
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+        run: set -o pipefail; python research/gorila_true_cpcv_search_audit_oos.py | tee gorila-true-cpcv.json
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-final-cpcv
+          path: |
+            gorila-market-snapshot.json
+            gorila-true-cpcv.json
+
+  robustness:
+    name: Execution stress H${{ matrix.horizon }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        horizon: [5, 10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Snapshot
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
+      - name: Stress
+        env:
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+        run: set -o pipefail; python research/gorila_nested_rank_stress_oos.py | tee stress-${{ matrix.horizon }}d.json
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-final-stress-${{ matrix.horizon }}d
+          path: |
+            gorila-market-snapshot.json
+            stress-${{ matrix.horizon }}d.json
+
+  jacobian:
+    name: Jacobian diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - name: Snapshot
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
+      - name: Jacobian stress
+        env:
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+        run: set -o pipefail; python research/gorila_jacobian_stress_oos.py | tee jacobian-stress.json
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-final-jacobian
+          path: |
+            gorila-market-snapshot.json
+            jacobian-stress.json
+
+  audit:
+    name: Promotion manifest
+    needs: [ranking, cpcv, robustness, jacobian]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build manifest
+        env:
+          R5: "${{ needs.ranking.result }}"
+          C: "${{ needs.cpcv.result }}"
+          S: "${{ needs.robustness.result }}"
+          J: "${{ needs.jacobian.result }}"
+        run: |
+          python - <<'PY'
+          import json, os
+          gates={"ranking":os.environ["R5"],"cpcv":os.environ["C"],"robustness":os.environ["S"],"jacobian_diagnostic":os.environ["J"]}
+          production_promotion = gates["ranking"]=="success" and gates["cpcv"]=="success" and gates["robustness"]=="success"
+          manifest={
+              "status":"READY_FOR_RESEARCH_RUNTIME" if production_promotion else "RESEARCH_ONLY",
+              "promotion_decision":"BLOCKED_BY_STATISTICAL_EVIDENCE",
+              "gates":gates,
+              "notes":[
+                  "CPCV/PBO/DSR is a mandatory search-audit gate.",
+                  "Jacobian is diagnostic and never gates runtime promotion.",
+                  "Runtime may remain live in RESEARCH mode while predictive promotion is blocked."
+              ]
+          }
+          print(json.dumps(manifest,indent=2))
+          with open("gorila-final-promotion-manifest.json","w") as f: json.dump(manifest,f,indent=2)
+          PY
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-final-promotion-manifest
+          path: gorila-final-promotion-manifest.json
