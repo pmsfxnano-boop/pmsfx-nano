@@ -117,7 +117,7 @@ pre{margin:0;background:#06080a;border:1px solid var(--line);border-radius:9px;p
         <div class="metric"><div class="label">Spread</div><div id="spread" class="val">—</div></div>
         <div class="metric"><div class="label">Confidence</div><div id="confidence" class="val">—</div></div>
       </div>
-      <div class="chart"><svg viewBox="0 0 800 150" preserveAspectRatio="none"><path d="M0 115 L70 105 L140 112 L210 86 L280 91 L350 66 L420 74 L490 48 L560 60 L630 39 L700 51 L800 24" fill="none" stroke="currentColor" stroke-width="2"/></svg></div>
+      <div class="chart"><svg id="priceChart" viewBox="0 0 800 150" preserveAspectRatio="none"><path id="pricePath" d="" fill="none" stroke="currentColor" stroke-width="2.2"/></svg></div>
       <div class="mainLayout">
         <div class="box"><h3>OOS validation</h3><div class="row"><span class="muted">status</span><b id="valStatus">—</b></div><div class="row"><span class="muted">accuracy</span><b id="oosAcc">—</b></div><div class="row"><span class="muted">Brier</span><b id="brier">—</b></div><div class="row"><span class="muted">Brier skill</span><b id="brierSkill">—</b></div></div>
         <div class="box"><h3>Multi-horizon</h3><div id="horizons"><div class="row"><span class="muted">300 / 900 / 1800 s</span><b>—</b></div></div><div class="progress"><i id="horizonBar" style="width:0%"></i></div></div>
@@ -192,6 +192,19 @@ const pct=(v,d=1)=>v===null||v===undefined?'—':(Number(v)*100).toFixed(d)+'%';
 let timer=null;
 async function json(url,opts={}){const r=await fetch(url,{cache:'no-store',...opts});const t=await r.text();let d;try{d=JSON.parse(t)}catch{throw new Error('Non-JSON '+url)}if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
 function setStatus(el,text,good=false,bad=false){el.textContent=text;el.className='status '+(good?'good':bad?'bad':'')}
+function renderChart(rows){
+  const pts=(rows||[]).map(x=>({t:x.time,v:Number(x.close)})).filter(x=>Number.isFinite(x.v));
+  const path=$('pricePath');
+  if(!pts.length){path.setAttribute('d','');return}
+  const vals=pts.map(x=>x.v), min=Math.min(...vals), max=Math.max(...vals), span=(max-min)||1;
+  const w=800,h=150,pad=7;
+  const d=pts.map((x,i)=>{
+    const xx=pad+(i/Math.max(1,pts.length-1))*(w-2*pad);
+    const yy=pad+(1-(x.v-min)/span)*(h-2*pad);
+    return (i?'L':'M')+xx.toFixed(2)+' '+yy.toFixed(2);
+  }).join(' ');
+  path.setAttribute('d',d);
+}
 function renderTerminal(d){
   const q=d.quote?.quote||{};
   const f=d.forecast||{};
@@ -205,6 +218,7 @@ function renderTerminal(d){
   $('direction').textContent=fc?.direction||'NEUTRAL';
   $('prob').textContent='P(UP) '+pct(fc?.raw_probability_up);
   $('confidence').textContent=pct(fc?.confidence_raw);
+  renderChart(d.chart);
   setStatus($('modelState'),f.forecast_status||'NO_FORECAST',!!fc?.validated,!fc);
   $('valStatus').textContent=ev.validated?'VALIDATED':(ev.validation_reason||'EXPERIMENTAL');
   $('oosAcc').textContent=pct(ev.accuracy);$('brier').textContent=fmt(ev.brier,5);$('brierSkill').textContent=fmt(ev.brier_skill,5);
