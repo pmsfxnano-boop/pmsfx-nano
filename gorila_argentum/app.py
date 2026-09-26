@@ -327,6 +327,6 @@ def coupling(
     pairs=[("USD_MEP","sell","USD_CCL","sell"),("USD_BLUE","sell","USD_MEP","sell"),("USD_MEP","sell","EMBI_ARG","embi_bps"),("USD_CCL","sell","EMBI_ARG","embi_bps"),("USD_MEP","sell","USD_BCRA","reference")]
     return build_matrix(pairs)
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 def root():
-    return {"name":"Gorila Argentum","status":"ONLINE","mode":"RESEARCH","next":"data-fabric → coupling → features → regime → prediction → timing"}
+    return DASHBOARD_HTML
