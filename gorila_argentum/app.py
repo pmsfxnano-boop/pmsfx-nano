@@ -41,6 +41,11 @@ def ingest():
 def features(symbol: str):
     return build_features(symbol)
 
+@app.get("/api/drift")
+def drift_summary(symbol: str | None = None, field: str | None = None, limit: int = 100):
+    store=Store(); store.init()
+    return {"items":store.latest_drift(symbol=symbol,field=field,limit=limit)}
+
 @app.get("/api/drift/{symbol}/{field}")
 def drift(symbol: str, field: str, current_size: int = 30, reference_size: int = 90):
     current_size = max(10, min(120, int(current_size)))
