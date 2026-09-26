@@ -43,7 +43,7 @@ def main() -> None:
         series,
         {
             "provider": "Yahoo Finance chart API / adjusted close",
-            "range": "5y",
+            "range": "10y",
             "interval": "1d",
             "symbols": SYMBOLS,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
