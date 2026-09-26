@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from .storage import Store
+
+
+def _utc() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def manifest_digest(manifest: dict[str, Any]) -> str:
+    payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "research_ci") -> dict[str, Any]:
+    store.init()
+    if not store.pg:
+        raise RuntimeError("durable_storage_required")
+    run_id = str(manifest.get("run_id") or uuid.uuid4().hex)
+    digest = str(manifest.get("manifest_sha256") or manifest_digest(manifest))
+    rows = manifest.get("evidence") or []
+    if not rows and manifest.get("runs"):
+        rows = [item for run in manifest["runs"] for item in run.get("evidence", [])]
+    with store.connect() as conn:
+        with conn.cursor() as cur:
+            for item in rows:
+                cur.execute(
+                    """
+                    INSERT INTO research_evidence(
+                      id,run_id,created_at,source,model_id,symbol,horizon_days,
+                      dataset_sha256,sample_count,oos_samples,outer_folds,accuracy,
+                      brier,baseline_brier,brier_skill,brier_skill_ci_low,brier_skill_ci_high,
+                      logloss,rank_ic,net_return_50bps,placebo_accuracy_p95,
+                      execution_delta_50bps,stress_pass,data_health,point_in_time,
+                      validation_status,validation_reasons,manifest_sha256,metrics
+                    )
+                    VALUES(
+                      %(id)s,%(run_id)s,%(created_at)s,%(source)s,%(model_id)s,%(symbol)s,%(horizon_days)s,
+                      %(dataset_sha256)s,%(sample_count)s,%(oos_samples)s,%(outer_folds)s,%(accuracy)s,
+                      %(brier)s,%(baseline_brier)s,%(brier_skill)s,%(ci_low)s,%(ci_high)s,
+                      %(logloss)s,%(rank_ic)s,%(net_return_50bps)s,%(placebo_accuracy_p95)s,
+                      %(execution_delta_50bps)s,%(stress_pass)s,%(data_health)s,%(point_in_time)s,
+                      %(validation_status)s,%(validation_reasons)s,%(manifest_sha256)s,%(metrics)s
+                    )
+                    ON CONFLICT (run_id,symbol,horizon_days) DO UPDATE SET
+                      created_at=EXCLUDED.created_at,
+                      source=EXCLUDED.source,
+                      model_id=EXCLUDED.model_id,
+                      dataset_sha256=EXCLUDED.dataset_sha256,
+                      validation_status=EXCLUDED.validation_status,
+                      validation_reasons=EXCLUDED.validation_reasons,
+                      manifest_sha256=EXCLUDED.manifest_sha256,
+                      metrics=EXCLUDED.metrics
+                    """,
+                    {
+                        "id": uuid.uuid4().hex,
+                        "run_id": run_id,
+                        "created_at": item.get("generated_at") or manifest.get("generated_at") or _utc(),
+                        "source": source,
+                        "model_id": manifest.get("method", "unknown"),
+                        "symbol": item.get("symbol"),
+                        "horizon_days": int(item.get("horizon_days")),
+                        "dataset_sha256": item.get("dataset_sha256") or manifest.get("snapshot_sha256"),
+                        "sample_count": int(item.get("dataset_samples", 0)),
+                        "oos_samples": int(item.get("oos_samples", 0)),
+                        "outer_folds": int(item.get("outer_folds", 0)),
+                        "accuracy": item.get("accuracy"),
+                        "brier": item.get("brier"),
+                        "baseline_brier": item.get("baseline_brier"),
+                        "brier_skill": item.get("brier_skill"),
+                        "ci_low": (item.get("brier_skill_ci95") or [None, None])[0],
+                        "ci_high": (item.get("brier_skill_ci95") or [None, None])[1],
+                        "logloss": item.get("logloss"),
+                        "rank_ic": item.get("rank_ic"),
+                        "net_return_50bps": (item.get("strategy_costs", {}).get("50", {}) or {}).get("net_return"),
+                        "placebo_accuracy_p95": item.get("placebo_accuracy_p95"),
+                        "execution_delta_50bps": item.get("execution_delta_vs_flat_50bps"),
+                        "stress_pass": item.get("validation_status") == "VALIDATED",
+                        "data_health": bool(item.get("data_health", True)),
+                        "point_in_time": bool(item.get("point_in_time", True)),
+                        "validation_status": item.get("validation_status", "BLOCKED"),
+                        "validation_reasons": json.dumps(item.get("validation_reasons", []), sort_keys=True),
+                        "manifest_sha256": digest,
+                        "metrics": json.dumps(item, sort_keys=True, default=str),
+                    },
+                )
+        conn.commit()
+    return {"run_id": run_id, "manifest_sha256": digest, "rows_saved": len(rows)}
+
+
+def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    store.init()
+    if not store.pg:
+        return []
+    clauses, params = [], []
+    if symbol:
+        clauses.append("symbol=%s")
+        params.append(symbol)
+    if horizon_days is not None:
+        clauses.append("horizon_days=%s")
+        params.append(int(horizon_days))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(500, int(limit))))
+    with store.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT run_id,created_at,model_id,symbol,horizon_days,dataset_sha256,
+                       sample_count,oos_samples,outer_folds,accuracy,brier,baseline_brier,
+                       brier_skill,brier_skill_ci_low,brier_skill_ci_high,logloss,rank_ic,
+                       net_return_50bps,placebo_accuracy_p95,execution_delta_50bps,
+                       stress_pass,data_health,point_in_time,validation_status,
+                       validation_reasons,manifest_sha256,metrics
+                FROM research_evidence
+                {where}
+                ORDER BY created_at DESC,symbol,horizon_days
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            columns = [d.name for d in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+    for row in rows:
+        try:
+            row["validation_reasons"] = json.loads(row["validation_reasons"] or "[]")
+        except Exception:
+            pass
+        try:
+            row["metrics"] = json.loads(row["metrics"] or "{}")
+        except Exception:
+            pass
+    return rows
