@@ -49,5 +49,5 @@ def test_relative_alpha_module_imports_and_schema():
 
 def test_lockbox_module_imports():
     from research.gorila_lockbox_v1 import MIN_SPREAD_Z, LOCKBOX_DAYS
-    assert LOCKBOX_DAYS == 252
+    assert LOCKBOX_DAYS == 756
     assert MIN_SPREAD_Z > 0
