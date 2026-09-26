@@ -50,6 +50,7 @@ def build_control_state(store: Store | None = None) -> dict:
             "realized_vs_predicted": "NOT_IMPLEMENTED",
             "automatic_recalibration": "NOT_IMPLEMENTED",
             "automatic_kill_switch": "NOT_IMPLEMENTED",
+            "shadow_ledger": "IMPLEMENTED",
         },
         "source_health": store.health(),
         "drift": {
