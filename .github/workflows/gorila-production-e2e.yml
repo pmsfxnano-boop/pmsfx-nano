@@ -20,7 +20,9 @@ jobs:
         run: |
           set -euo pipefail
           URL="https://gorila-argentum-research.onrender.com"
-          for attempt in $(seq 1 24); do
+          echo "Allow Render enough time to roll the same commit before accepting health."
+          sleep 75
+          for attempt in $(seq 1 18); do
             echo "health probe $attempt/24"
             if curl --fail --silent --show-error --connect-timeout 15 --max-time 30 \
               "$URL/api/gorila/health" -o /tmp/health.json; then
