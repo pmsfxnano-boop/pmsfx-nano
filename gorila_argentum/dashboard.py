@@ -71,9 +71,79 @@ input{accent-color:var(--cyan)}
 .stage{border:1px solid var(--line);border-radius:8px;background:#07090b;padding:9px}.stage b{display:block;font-size:8px}.stage small{display:block;color:var(--dim);font-size:7px;margin-top:5px;line-height:1.35}
 .footer{padding:10px 2px 20px;color:#46535c;font-size:7px;letter-spacing:.07em;text-transform:uppercase;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
 pre{margin:0;background:#06080a;border:1px solid var(--line);border-radius:9px;padding:9px;color:#90a0aa;font:8px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:190px;overflow:auto}
-@media(max-width:1100px){.grid{grid-template-columns:1fr}.rail{grid-template-columns:repeat(15,100px)}}
-@media(max-width:760px){.shell{padding:10px}.top{padding:11px 12px}.name{font-size:12px}.grid,.mainLayout{grid-template-columns:1fr}.metrics,.kpiGrid{grid-template-columns:1fr 1fr}.pipeline{grid-template-columns:repeat(4,1fr)}.price{font-size:33px}.hero{padding:17px}.auto{margin-left:0}}
-@media(max-width:450px){.metrics,.kpiGrid,.pipeline{grid-template-columns:1fr 1fr}}
+@media(max-width:1100px){
+  .grid{grid-template-columns:1fr}
+  .rail{grid-template-columns:repeat(15,104px)}
+}
+@media(max-width:760px){
+  :root{--mobile-pad:12px}
+  .shell{padding:var(--mobile-pad)}
+  .top{
+    padding:10px 12px;
+    align-items:flex-start;
+    flex-direction:column;
+    gap:9px;
+  }
+  .brand{width:100%}
+  .g{font-size:31px}
+  .name{font-size:14px;letter-spacing:.12em}
+  .sub{font-size:7px;letter-spacing:.12em}
+  .right{width:100%;justify-content:flex-start;overflow:auto;flex-wrap:nowrap;padding-bottom:2px}
+  .chip,.top .btn{font-size:9px;padding:7px 10px;flex:0 0 auto}
+  .hero{padding:16px 14px;border-radius:14px}
+  .eyebrow{font-size:9px}
+  h1{font-size:24px;line-height:1.12}
+  .hero p{font-size:12px;line-height:1.55}
+  .rail{
+    margin-left:-2px;margin-right:-2px;
+    grid-template-columns:repeat(15,128px);
+    gap:7px;
+    padding:4px 2px 7px;
+    scroll-snap-type:x proximity;
+  }
+  .node{padding:10px 9px;scroll-snap-align:start}
+  .node small{font-size:9px}
+  .node b{font-size:10px}
+  .toolbar{gap:8px}
+  select,.btn{font-size:11px;padding:10px 12px}
+  .auto{font-size:10px;margin-left:0}
+  .grid,.mainLayout{grid-template-columns:1fr}
+  .card{border-radius:13px}
+  .head{padding:13px 14px}
+  .title{font-size:10px}
+  .tiny{font-size:9px}
+  .body{padding:13px}
+  .symbol{font-size:25px}
+  .price{font-size:36px}
+  .quoteMeta{font-size:9px;line-height:1.35}
+  .label{font-size:8px}
+  .status{font-size:9px;padding:6px 9px}
+  .metrics,.kpiGrid{grid-template-columns:1fr 1fr}
+  .metric{padding:12px}
+  .val{font-size:17px}
+  .chart{height:170px}
+  .mainLayout{gap:9px}
+  .box{padding:12px}
+  .box h3{font-size:10px}
+  .row{font-size:10px;padding:9px 0}
+  .big{font-size:25px}
+  .kpi{padding:11px}
+  .kpi b{font-size:16px}
+  .pipeline{grid-template-columns:repeat(2,1fr);padding:11px;gap:8px}
+  .stage{padding:11px}
+  .stage b{font-size:9px}
+  .stage small{font-size:8px}
+  table{font-size:9px}
+  th{font-size:8px}
+  th,td{padding:9px}
+  pre{font-size:9px}
+  .footer{font-size:8px;line-height:1.45}
+}
+@media(max-width:450px){
+  .metrics,.kpiGrid{grid-template-columns:1fr 1fr}
+  .price{font-size:34px}
+  h1{font-size:22px}
+}
 </style>
 </head>
 <body>
@@ -240,7 +310,7 @@ function renderTerminal(d){
 function renderMacro(m){
   $('bcra').textContent=fmt(m.fx?.official,2);$('mep').textContent=fmt(m.fx?.mep,2);$('ccl').textContent=fmt(m.fx?.ccl,2);$('blue').textContent=fmt(m.fx?.blue,2);$('embi').textContent=fmt(m.risk?.embi_bps,0);$('spreadMep').textContent=pct(m.fx?.spreads?.mep_official);
 }
-async function refresh(){
+async function refreshTerminal(){
   const symbol=$('ticker').value;
   try{
     const d=await json('/api/gorila/terminal/'+encodeURIComponent(symbol));
@@ -252,17 +322,14 @@ async function refresh(){
     setStatus($('live'),'ERROR',false,true);
     $('telemetry').textContent=String(e);
   }
+}
+async function refreshControl(){
   try{
-    const [h,p,s,r]=await Promise.all([
-      json('/api/gorila/health'),
-      json('/api/promotion'),
-      json('/api/shadow/summary'),
-      json('/api/runtime/runs?limit=1')
-    ]);
+    const snap=await json('/api/gorila/control');
+    const h=snap.health||{}, p=snap.promotion||{}, sh=snap.shadow||{}, latest=(snap.runtime?.items||[])[0];
     setStatus($('storage'),h.database?.ready?'STORAGE · POSTGRES':'STORAGE · DEGRADED',!!h.database?.ready,!h.database?.ready);
-    const latest=(r.items||[])[0];
     $('tick').textContent=latest?.status||'—';$('pg').textContent=h.database?.ready?'READY':'—';
-    const sh=s||{};$('shadowPred').textContent=sh.predictions??'—';$('shadowSettled').textContent=sh.settled??'—';$('shadowAcc').textContent=pct(sh.accuracy);
+    $('shadowPred').textContent=sh.predictions??'—';$('shadowSettled').textContent=sh.settled??'—';$('shadowAcc').textContent=pct(sh.accuracy);
     $('macroUpdated').textContent=h.macro_ingest?.updated_at||'—';
     const required=new Set(['BCRA/FX','ArgentinaDatos/FX','ArgentinaDatos/EMBI+']);
     const requiredRows=(h.sources||[]).filter(x=>required.has(x.source));
@@ -272,16 +339,33 @@ async function refresh(){
     $('primaryFeed').textContent=feed.status||'—';
     $('primaryFeed').style.color=(String(feed.status||'').startsWith('READY'))?'#9beec8':'#ffafba';
     setStatus($('runtimeStatus'),latest?.status||'NO TICK',latest?.status==='COMPLETED',latest&&latest.status!=='COMPLETED');
-    const e=p.current_evaluation||{};$('gateAcc').textContent=pct(e.evidence?.oos_accuracy);$('rankIc').textContent=fmt(e.evidence?.rank_ic,4);$('cpcv').textContent=fmt(e.evidence?.cpcv_mean_return_pct,2)+'%';
-    const reasons=(e.reasons||[]).slice(0,5);$('gateReasons').innerHTML=reasons.map(x=>'<div class="row"><span class="muted">gate</span><b>'+x+'</b></div>').join('')||'<div class="row"><span class="muted">gate</span><b>—</b></div>';
+    const e=p.current_evaluation||{};
+    $('gateAcc').textContent=pct(e.evidence?.oos_accuracy);
+    $('rankIc').textContent=fmt(e.evidence?.rank_ic,4);
+    $('cpcv').textContent=fmt(e.evidence?.cpcv_mean_return_pct,2)+'%';
+    const reasons=(e.reasons||[]).slice(0,5);
+    $('gateReasons').innerHTML=reasons.map(x=>'<div class="row"><span class="muted">gate</span><b>'+x+'</b></div>').join('')||'<div class="row"><span class="muted">gate</span><b>—</b></div>';
     setStatus($('gate'),'PROMOTION · '+(e.status||'BLOCKED'),false,e.status!=='ELIGIBLE');
     $('sources').innerHTML=(h.sources||[]).map(x=>'<tr><td>'+x.source+'</td><td>'+x.status+'</td><td>'+x.rows_last_batch+'</td><td>'+fmt(x.latency_ms,1)+' ms</td><td>'+(x.last_success_at||'—')+'</td></tr>').join('');
-    $('telemetry').textContent=JSON.stringify({health:h,latest_runtime:latest,shadow:sh,promotion:e},null,2);
+    $('telemetry').textContent=JSON.stringify(snap,null,2);
     setStatus($('pipelineState'),latest?.status||'WAITING',latest?.status==='COMPLETED',false);
   }catch(e){$('telemetry').textContent=String(e)}
 }
-$('ticker').addEventListener('change',refresh);$('hardRefresh').addEventListener('click',refresh);$('refresh').addEventListener('click',refresh);$('auto').addEventListener('change',e=>{if(timer){clearInterval(timer);timer=null}if(e.target.checked)timer=setInterval(refresh,2000)});
-refresh();timer=setInterval(refresh,2000);
+let controlTimer=null, terminalTimer=null;
+$('ticker').addEventListener('change',()=>{refreshTerminal();refreshControl()});
+$('hardRefresh').addEventListener('click',()=>{refreshTerminal();refreshControl()});
+$('refresh').addEventListener('click',()=>{refreshTerminal();refreshControl()});
+$('auto').addEventListener('change',e=>{
+  if(terminalTimer){clearInterval(terminalTimer);terminalTimer=null}
+  if(controlTimer){clearInterval(controlTimer);controlTimer=null}
+  if(e.target.checked){
+    terminalTimer=setInterval(refreshTerminal,2000);
+    controlTimer=setInterval(refreshControl,10000);
+  }
+});
+refreshTerminal();refreshControl();
+terminalTimer=setInterval(refreshTerminal,2000);
+controlTimer=setInterval(refreshControl,10000);
 </script>
 <!-- Compatibility markers preserved for the research dashboard contract:
      /api/drift?limit=50
