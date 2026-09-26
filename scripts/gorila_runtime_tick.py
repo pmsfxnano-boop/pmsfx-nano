@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from gorila_argentum.audit import build_audit_state
 from gorila_argentum.calibration import build_recalibration_candidate
@@ -11,11 +12,11 @@ from gorila_argentum.promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promoti
 from gorila_argentum.storage import Store
 
 
-def main() -> int:
-    store = Store()
+def run_tick(store: Store | None = None) -> dict[str, Any]:
+    store = store or Store()
     store.init()
     if not store.pg:
-        raise SystemExit("durable_storage_required")
+        raise RuntimeError("durable_storage_required")
 
     ingestion = run_batch()
     learning = [
@@ -40,7 +41,7 @@ def main() -> int:
     )
 
     audit = build_audit_state(store)
-    payload = {
+    return {
         "status": "COMPLETED",
         "ingestion": ingestion,
         "learning": learning,
@@ -56,6 +57,13 @@ def main() -> int:
         },
         "audit": audit,
     }
+
+
+def main() -> int:
+    try:
+        payload = run_tick()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     print(json.dumps(payload, sort_keys=True, default=str, indent=2))
     return 0
 
