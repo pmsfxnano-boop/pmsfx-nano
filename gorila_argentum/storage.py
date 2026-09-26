@@ -162,7 +162,11 @@ class Store:
     def init(self):
         conn=self.connect()
         if self.pg:
-            with conn.cursor() as cur: cur.execute(SCHEMA)
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA)
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_shadow_feature_hash ON shadow_predictions(feature_hash)"
+                )
             conn.commit()
         conn.close(); self.conn=None
 
@@ -430,6 +434,26 @@ class Store:
         return out
 
 
+    def shadow_exists_by_feature_hash(self, feature_hash: str) -> bool:
+        if not feature_hash:
+            return False
+        conn = self.connect()
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM shadow_predictions WHERE feature_hash=%s LIMIT 1",
+                    (feature_hash,),
+                )
+                row = cur.fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM shadow_predictions WHERE feature_hash=? LIMIT 1",
+                (feature_hash,),
+            ).fetchone()
+        conn.close()
+        self.conn = None
+        return bool(row)
+
     def save_shadow_prediction(
         self,
         symbol,
@@ -440,9 +464,28 @@ class Store:
         entry_price,
         feature_hash="",
         metadata=None,
+        created_at=None,
     ):
+        if feature_hash and self.shadow_exists_by_feature_hash(feature_hash):
+            conn = self.connect()
+            if self.pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id,created_at,status FROM shadow_predictions WHERE feature_hash=%s LIMIT 1",
+                        (feature_hash,),
+                    )
+                    row = cur.fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id,created_at,status FROM shadow_predictions WHERE feature_hash=? LIMIT 1",
+                    (feature_hash,),
+                ).fetchone()
+            conn.close(); self.conn = None
+            if row:
+                return {"id": row[0], "created_at": row[1], "status": row[2], "existing": True}
+
         prediction_id = uuid.uuid4().hex
-        conn = self.connect(); now = utc_now()
+        conn = self.connect(); now = created_at or utc_now()
         values = (
             prediction_id, now, symbol, model_version, float(probability_up),
             "UP" if float(probability_up) >= 0.5 else "DOWN",
@@ -461,7 +504,7 @@ class Store:
                 regime,entry_price,feature_hash,status,settled_at,metadata)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
         conn.commit(); conn.close(); self.conn=None
-        return {"id": prediction_id, "created_at": now, "status": "OPEN"}
+        return {"id": prediction_id, "created_at": now, "status": "OPEN", "existing": False}
 
     def get_shadow_prediction(self, prediction_id):
         conn = self.connect()
