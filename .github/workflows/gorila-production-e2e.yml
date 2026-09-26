@@ -58,16 +58,7 @@ jobs:
             echo "autonomous cycle probe $attempt/18"
             curl --fail --silent --show-error --connect-timeout 15 --max-time 30 "$URL" -o /tmp/control.json || true
             if test -s /tmp/control.json; then
-              python - <<'PY'
-              import json
-              from pathlib import Path
-              d=json.loads(Path("/tmp/control.json").read_text())
-              items=(d.get("runtime") or {}).get("items") or []
-              latest=items[0] if items else {}
-              print("LATEST_RUNTIME", latest)
-              if latest.get("kind") == "autonomous" and latest.get("status") == "COMPLETED":
-                  raise SystemExit(0)
-              PY
+              python -c 'import json; d=json.load(open("/tmp/control.json")); items=(d.get("runtime") or {}).get("items") or []; latest=items[0] if items else {}; print("LATEST_RUNTIME", latest); raise SystemExit(0 if latest.get("kind") == "autonomous" and latest.get("status") == "COMPLETED" else 1)'
             fi
             sleep 15
           done
