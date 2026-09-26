@@ -22,10 +22,12 @@ def yahoo(symbol: str) -> dict[str, float]:
     if not result:
         raise RuntimeError(f"{symbol}: empty Yahoo response")
     timestamps = result.get("timestamp") or []
-    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    adjusted = ((result.get("indicators") or {}).get("adjclose") or [{}])[0].get("adjclose") or []
+    if not adjusted:
+        raise RuntimeError(f"{symbol}: adjusted close unavailable")
     return {
         time.strftime("%Y-%m-%d", time.gmtime(ts)): float(close)
-        for ts, close in zip(timestamps, closes)
+        for ts, close in zip(timestamps, adjusted)
         if close is not None and close > 0
     }
 
@@ -40,7 +42,7 @@ def main() -> None:
         args.output,
         series,
         {
-            "provider": "Yahoo Finance chart API",
+            "provider": "Yahoo Finance chart API / adjusted close",
             "range": "5y",
             "interval": "1d",
             "symbols": SYMBOLS,
