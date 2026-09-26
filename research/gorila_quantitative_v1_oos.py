@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 
 from research.gorila_data_snapshot import load_or_fetch_series
+from quant.research_validation import audit_returns, pbo_from_train_test
 
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
@@ -27,6 +28,7 @@ FEATURE_GROUPS = {
     "risk_adjusted": ("r1", "r3", "r5", "vol20", "z20", "r1_vol", "r5_z"),
 }
 L2_VALUES = [0.0005, 0.001, 0.003, 0.01]
+CANDIDATES = [(g, l2) for g in FEATURE_GROUPS for l2 in L2_VALUES]
 
 
 @dataclass(frozen=True)
@@ -92,23 +94,22 @@ def feature_row(series: dict[str, float], dates: list[str], i: int, horizon: int
     window = [series[dates[k]] for k in range(max(0, i - 20), i)]
     sd = statistics.pstdev(window)
     z20 = (p0 - statistics.mean(window)) / sd if sd > 0 else 0.0
-    x["vol20"] = vol20
-    x["z20"] = z20
-    x["r1_vol"] = x["r1"] / max(vol20, 1e-8)
-    x["r5_z"] = x["r5"] * z20
+    x.update(
+        {
+            "vol20": vol20,
+            "z20": z20,
+            "r1_vol": x["r1"] / max(vol20, 1e-8),
+            "r5_z": x["r5"] * z20,
+        }
+    )
     p1 = series[dates[i + horizon]]
     return Row(dates[i], {k: float(v) for k, v in x.items()}, 1 if p1 > p0 else 0, math.log(p1 / p0))
 
 
 def dataset(series: dict[str, dict[str, float]], symbol: str, horizon: int, lag: int = 0) -> list[Row]:
     dates = sorted(series[symbol])
-    rows = []
     target = horizon + lag
-    for i in range(65, len(dates) - target):
-        row = feature_row(series[symbol], dates, i, target)
-        if row is not None:
-            rows.append(row)
-    return rows
+    return [row for i in range(65, len(dates) - target) if (row := feature_row(series[symbol], dates, i, target)) is not None]
 
 
 def brier(probs, labels):
@@ -131,47 +132,14 @@ def rank_ic(probs, returns):
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den if den else 0.0
 
 
-def select_candidate(train: list[Row], horizon: int):
-    split = max(INNER_MIN, len(train) - INNER_TEST)
-    inner_train = train[:max(INNER_MIN, split - horizon)]
-    inner_test = train[split:]
-    if len(inner_test) < 20 or len(inner_train) < INNER_MIN:
-        return "base", 0.001, {"status": "FALLBACK"}
-    candidates = []
-    for group, names in FEATURE_GROUPS.items():
-        for l2 in L2_VALUES:
-            if len({r.y for r in inner_train}) < 2:
-                continue
-            model = fit_logistic(inner_train, names, l2)
-            probs = [predict(model, r, names) for r in inner_test]
-            labels = [r.y for r in inner_test]
-            baseline = sum(labels) / len(labels)
-            candidates.append((
-                brier(probs, labels) - sum((baseline - y) ** 2 for y in labels) / len(labels),
-                group, l2,
-            ))
-    if not candidates:
-        return "base", 0.001, {"status": "NO_CANDIDATE"}
-    candidates.sort()
-    delta, group, l2 = candidates[0]
-    return group, l2, {"status": "OK", "inner_delta_brier": delta, "candidate_count": len(candidates)}
-
-
-def evaluate_oos_rows(rows: list[Row], horizon: int):
-    out = []
-    start = TRAIN_MIN
-    while start + TEST_SIZE <= len(rows):
-        train = rows[:max(0, start - horizon)]
-        test = rows[start:start + TEST_SIZE]
-        if len(train) < TRAIN_MIN or len({r.y for r in train}) < 2:
-            start += TEST_SIZE
-            continue
-        group, l2, _ = select_candidate(train, horizon)
-        names = FEATURE_GROUPS[group]
-        model = fit_logistic(train, names, l2)
-        out.extend({"prob": predict(model, r, names), "ret": r.forward_return} for r in test)
-        start += TEST_SIZE
-    return out
+def normal_ci(values, z=1.96):
+    if not values:
+        return None
+    mean = statistics.mean(values)
+    if len(values) == 1:
+        return [mean, mean]
+    se = statistics.pstdev(values) / math.sqrt(len(values))
+    return [mean - z * se, mean + z * se]
 
 
 def percentile(values, q):
@@ -183,40 +151,115 @@ def percentile(values, q):
     return vals[lo] if lo == hi else vals[lo] + (vals[hi] - vals[lo]) * (pos - lo)
 
 
-def normal_ci(values, z=1.96):
-    if not values:
-        return None
-    mean = statistics.mean(values)
-    if len(values) == 1:
-        return [mean, mean]
-    se = statistics.pstdev(values) / math.sqrt(len(values))
-    return [mean - z * se, mean + z * se]
+def select_candidate(train: list[Row], horizon: int):
+    split = max(INNER_MIN, len(train) - INNER_TEST)
+    inner_train = train[: max(INNER_MIN, split - horizon)]
+    inner_test = train[split:]
+    if len(inner_test) < 20 or len(inner_train) < INNER_MIN:
+        return "base", 0.001, {"status": "FALLBACK"}
+    candidates = []
+    baseline = sum(r.y for r in inner_train) / len(inner_train)
+    for group, names in FEATURE_GROUPS.items():
+        for l2 in L2_VALUES:
+            if len({r.y for r in inner_train}) < 2:
+                continue
+            model = fit_logistic(inner_train, names, l2)
+            probs = [predict(model, r, names) for r in inner_test]
+            labels = [r.y for r in inner_test]
+            loss = brier(probs, labels)
+            base = sum((baseline - y) ** 2 for y in labels) / len(labels)
+            candidates.append((loss - base, group, l2))
+    if not candidates:
+        return "base", 0.001, {"status": "NO_CANDIDATE"}
+    candidates.sort(key=lambda x: (x[0], x[1], x[2]))
+    delta, group, l2 = candidates[0]
+    return group, l2, {"status": "OK", "inner_delta_brier": delta, "candidate_count": len(candidates)}
 
 
-def evaluate_symbol(series, symbol: str, horizon: int):
-    rows = dataset(series, symbol, horizon)
-    outer = []
+def split_folds(rows: list[Row], horizon: int):
     start = TRAIN_MIN
     while start + TEST_SIZE <= len(rows):
-        train = rows[:max(0, start - horizon)]
-        test = rows[start:start + TEST_SIZE]
-        if len(train) < TRAIN_MIN or len({r.y for r in train}) < 2:
-            start += TEST_SIZE
+        train = rows[: max(0, start - horizon)]
+        test = rows[start : start + TEST_SIZE]
+        if len(train) >= TRAIN_MIN and len({r.y for r in train}) >= 2:
+            yield train, test
+        start += TEST_SIZE
+
+
+def score_candidate_on(rows: list[Row], train: list[Row], test: list[Row], group: str, l2: float, cost_bps: float):
+    names = FEATURE_GROUPS[group]
+    model = fit_logistic(train, names, l2)
+    probs = [predict(model, r, names) for r in test]
+    trades = []
+    for r, p in zip(test, probs):
+        side = 1 if p >= 0.55 else (-1 if p <= 0.45 else 0)
+        if side:
+            trades.append(side * r.forward_return - cost_bps / 10000.0)
+    return probs, trades
+
+
+def strategy_from_probs(probs, returns, cost_bps, horizon):
+    selected = []
+    last = -10**9
+    for i, (p, ret) in enumerate(zip(probs, returns)):
+        if i - last < horizon:
             continue
+        side = 1 if p >= 0.55 else (-1 if p <= 0.45 else 0)
+        if side:
+            selected.append(side * ret - cost_bps / 10000.0)
+            last = i
+    eq, peak, max_dd = 1.0, 1.0, 0.0
+    for r in selected:
+        eq *= 1.0 + r
+        peak = max(peak, eq)
+        max_dd = max(max_dd, (peak - eq) / peak)
+    return {"trades": len(selected), "net_return": eq - 1.0, "max_drawdown": max_dd, "returns": selected}
+
+
+def run_oos(series, symbol: str, horizon: int):
+    rows = dataset(series, symbol, horizon, 0)
+    outer = []
+    pbo_train, pbo_test = [[] for _ in CANDIDATES], [[] for _ in CANDIDATES]
+    selected_returns = []
+    momentum_returns = []
+    always_long_returns = []
+
+    for train, test in split_folds(rows, horizon):
         group, l2, selection = select_candidate(train, horizon)
         names = FEATURE_GROUPS[group]
         model = fit_logistic(train, names, l2)
+        probs = [predict(model, r, names) for r in test]
+
+        for ci, (cg, cl2) in enumerate(CANDIDATES):
+            cand_names = FEATURE_GROUPS[cg]
+            cand_model = fit_logistic(train, cand_names, cl2)
+            train_probs = [predict(cand_model, r, cand_names) for r in train[-INNER_TEST:]]
+            test_probs = [predict(cand_model, r, cand_names) for r in test]
+            tr = strategy_from_probs(train_probs, [r.forward_return for r in train[-INNER_TEST:]], 50, horizon)["net_return"]
+            te = strategy_from_probs(test_probs, [r.forward_return for r in test], 50, horizon)["net_return"]
+            pbo_train[ci].append(tr)
+            pbo_test[ci].append(te)
+
+        oos = strategy_from_probs(probs, [r.forward_return for r in test], 0, horizon)
+        selected_50 = strategy_from_probs(probs, [r.forward_return for r in test], 50, horizon)
+        selected_returns.extend(selected_50["returns"])
+
+        mom_probs = [1.0 if r.x["r5"] > 0 else 0.0 for r in test]
+        momentum_returns.extend(strategy_from_probs(mom_probs, [r.forward_return for r in test], 50, horizon)["returns"])
+        always_long_returns.extend(
+            strategy_from_probs([1.0] * len(test), [r.forward_return for r in test], 50, horizon)["returns"]
+        )
+
         outer.append({
             "test_start": test[0].date,
             "test_end": test[-1].date,
             "group": group,
             "l2": l2,
             "selection": selection,
-            "probs": [predict(model, r, names) for r in test],
+            "probs": probs,
             "labels": [r.y for r in test],
             "returns": [r.forward_return for r in test],
         })
-        start += TEST_SIZE
 
     probs = [p for f in outer for p in f["probs"]]
     labels = [y for f in outer for y in f["labels"]]
@@ -233,36 +276,63 @@ def evaluate_symbol(series, symbol: str, horizon: int):
         bb = sum((rate - y) ** 2 for y in f["labels"]) / len(f["labels"])
         fold_skills.append(1.0 - brier(f["probs"], f["labels"]) / bb if bb > 0 else 0.0)
 
-    def strategy(cost_bps, lag):
-        scored = [{"prob": p, "ret": r} for p, r in zip(probs, returns)] if lag == 0 else evaluate_oos_rows(dataset(series, symbol, horizon, lag), horizon)
-        trades = []
-        for item in scored:
-            p = item["prob"]
-            side = 1 if p >= 0.55 else (-1 if p <= 0.45 else 0)
-            if side:
-                trades.append(side * item["ret"] - cost_bps / 10000.0)
-        equity, peak, max_dd = 1.0, 1.0, 0.0
-        for r in trades:
-            equity *= 1.0 + r
-            peak = max(peak, equity)
-            max_dd = max(max_dd, (peak - equity) / peak)
-        return {"trades": len(trades), "net_return": equity - 1.0, "max_drawdown": max_dd}
-
-    costs = {str(c): strategy(c, 0) for c in COSTS_BPS}
-    stress = {str(lag): {str(c): strategy(c, lag) for c in (25, 50, 100)} for lag in LAGS}
+    strategy_50 = strategy_from_probs(probs, returns, 50, horizon)
+    momentum = {
+        "net_return": (lambda x: x["net_return"])(
+            {"net_return": (lambda rs: (math.prod([1.0 + r for r in rs]) - 1.0) if rs else 0.0)(momentum_returns)}
+        ),
+        "trades": len(momentum_returns),
+    }
+    always_long = {
+        "net_return": (math.prod([1.0 + r for r in always_long_returns]) - 1.0) if always_long_returns else 0.0,
+        "trades": len(always_long_returns),
+    }
+    model_audit = audit_returns(selected_returns, trials=len(CANDIDATES), periods_per_year=252.0 / horizon)
+    momentum_audit = audit_returns(momentum_returns, trials=1, periods_per_year=252.0 / horizon)
 
     rng = random.Random(SEED + horizon + sum(map(ord, symbol)))
     placebo_acc = []
     for _ in range(PLACEBO_PERM):
-        shuffled = rows[:]
-        labels_source = [r.y for r in shuffled]
-        rng.shuffle(labels_source)
-        placebo_rows = [Row(r.date, r.x, y, r.forward_return) for r, y in zip(rows, labels_source)]
-        pp = evaluate_oos_rows(placebo_rows, horizon)
-        if pp:
-            placebo_acc.append(sum((x["prob"] >= 0.5) == bool(placebo_rows[min(i, len(placebo_rows)-1)].y) for i, x in enumerate(pp)) / len(pp))
+        perm = rows[:]
+        yvals = [r.y for r in perm]
+        rng.shuffle(yvals)
+        placebo = [Row(r.date, r.x, y, r.forward_return) for r, y in zip(perm, yvals)]
+        correct = 0
+        total = 0
+        for train_p, _unused in split_folds(placebo, horizon):
+            # Use the same fold boundaries; evaluate on the original OOS labels.
+            fold_start = len(train_p) + horizon
+            test_start = min(fold_start, len(rows) - TEST_SIZE)
+            test_original = rows[test_start : test_start + TEST_SIZE]
+            if len(test_original) < 20:
+                continue
+            g, l2, _ = select_candidate(train_p, horizon)
+            n = FEATURE_GROUPS[g]
+            m = fit_logistic(train_p, n, l2)
+            pp = [predict(m, r, n) for r in test_original]
+            correct += sum((p >= 0.5) == bool(r.y) for p, r in zip(pp, test_original))
+            total += len(pp)
+        if total:
+            placebo_acc.append(correct / total)
 
-    result = {
+    pbo = pbo_from_train_test(pbo_train, pbo_test)
+    stress = {}
+    for lag in LAGS:
+        lag_rows = dataset(series, symbol, horizon, lag)
+        lag_probs = []
+        lag_returns = []
+        for train, test in split_folds(lag_rows, horizon + lag):
+            g, l2, _ = select_candidate(train, horizon + lag)
+            n = FEATURE_GROUPS[g]
+            m = fit_logistic(train, n, l2)
+            lag_probs.extend(predict(m, r, n) for r in test)
+            lag_returns.extend(r.forward_return for r in test)
+        stress[str(lag)] = {
+            str(cost): strategy_from_probs(lag_probs, lag_returns, cost, horizon + lag)
+            for cost in (25, 50, 100)
+        }
+
+    return {
         "status": "COMPLETE",
         "symbol": symbol,
         "horizon_days": horizon,
@@ -279,17 +349,39 @@ def evaluate_symbol(series, symbol: str, horizon: int):
         "rank_ic": rank_ic(probs, returns),
         "actual_up_rate": actual_rate,
         "mean_probability": sum(probs) / len(probs),
-        "strategy_costs": costs,
-        "stress": stress,
+        "strategy_costs": {str(c): strategy_from_probs(probs, returns, c, horizon) for c in COSTS_BPS},
+        "benchmarks": {
+            "always_long_50bps": always_long,
+            "momentum_r5_50bps": momentum,
+            "model_delta_vs_momentum_50bps": strategy_50["net_return"] - momentum["net_return"],
+            "model_delta_vs_always_long_50bps": strategy_50["net_return"] - always_long["net_return"],
+        },
+        "performance_audit": model_audit,
+        "momentum_audit": momentum_audit,
+        "pbo": pbo,
+        "dsr": model_audit.get("deflated_sharpe_probability"),
+        "stress": {
+            k: {c: {x: v for x, v in m.items() if x != "returns"} for c, m in val.items()}
+            for k, val in stress.items()
+        },
         "placebo_accuracy_mean": statistics.mean(placebo_acc) if placebo_acc else None,
         "placebo_accuracy_p95": percentile(placebo_acc, 0.95) if placebo_acc else None,
         "placebo_count": len(placebo_acc),
-        "execution_delta_vs_flat_50bps": costs["50"]["net_return"],
+        "execution_delta_vs_flat_50bps": strategy_50["net_return"],
+        "execution_delta_vs_momentum_50bps": strategy_50["net_return"] - momentum["net_return"],
         "point_in_time": True,
         "data_health": True,
-        "model_spec": {"selection": "nested-inner-brier-v1", "purge_days": horizon, "outer_train_min": TRAIN_MIN, "outer_test_size": TEST_SIZE},
+        "model_spec": {
+            "selection": "nested-inner-brier-v1",
+            "candidates": len(CANDIDATES),
+            "purge_days": horizon,
+            "outer_train_min": TRAIN_MIN,
+            "outer_test_size": TEST_SIZE,
+            "inner_test_size": INNER_TEST,
+            "costs_bps": COSTS_BPS,
+            "stress_lags_days": LAGS,
+        },
     }
-    return result
 
 
 def validation_gate(result):
@@ -307,9 +399,16 @@ def validation_gate(result):
         reasons.append("RANK_IC_NOT_POSITIVE")
     if result.get("strategy_costs", {}).get("50", {}).get("net_return", 0.0) <= 0:
         reasons.append("NET_RETURN_50BPS_NOT_POSITIVE")
+    if result.get("execution_delta_vs_momentum_50bps", 0.0) <= 0:
+        reasons.append("EXECUTION_DELTA_VS_MOMENTUM_NOT_POSITIVE")
     placebo = result.get("placebo_accuracy_p95")
-    if placebo is not None and result.get("accuracy", 0.0) <= placebo:
+    if placebo is None or result.get("accuracy", 0.0) <= placebo:
         reasons.append("PLACEBO_NOT_BEATEN")
+    pbo = result.get("pbo") or {}
+    if pbo.get("status") != "COMPLETE" or pbo.get("pbo", 1.0) > 0.05:
+        reasons.append("PBO_GATE_FAILED")
+    if result.get("dsr") is None or result.get("dsr", 0.0) <= 0:
+        reasons.append("DSR_GATE_FAILED")
     for lag in ("0", "1", "2"):
         if result.get("stress", {}).get(lag, {}).get("50", {}).get("net_return", -1.0) <= 0:
             reasons.append(f"STRESS_LAG_{lag}_FAILED")
@@ -329,7 +428,8 @@ def _fetch(symbol):
     result = (payload.get("chart", {}).get("result") or [None])[0]
     if not result:
         raise RuntimeError(f"{symbol}: empty")
-    ts, closes = result.get("timestamp") or [], ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    ts = result.get("timestamp") or []
+    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
     return {time.strftime("%Y-%m-%d", time.gmtime(t)): float(c) for t, c in zip(ts, closes) if c is not None and c > 0}
 
 
@@ -339,7 +439,7 @@ def main():
     evidence = []
     for horizon in HORIZONS:
         for symbol in SYMBOLS:
-            result = evaluate_symbol(series, symbol, horizon)
+            result = run_oos(series, symbol, horizon)
             status, reasons = validation_gate(result)
             result["validation_status"] = status
             result["validation_reasons"] = reasons
@@ -349,7 +449,7 @@ def main():
     print(json.dumps({
         "schema": "gorila-quantitative-evidence-v1",
         "status": "COMPLETE",
-        "method": "nested-wfo-model-selection-with-cost-and-adversarial-stress-v1",
+        "method": "nested-wfo-model-selection-with-cost-pbo-dsr-and-adversarial-stress-v2",
         "snapshot_sha256": snapshot_hash,
         "symbols": SYMBOLS,
         "horizons": HORIZONS,
