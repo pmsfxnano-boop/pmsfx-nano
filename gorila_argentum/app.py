@@ -37,7 +37,7 @@ from .coupling import current_coupling_state
 from .dashboard_terminal import HTML as DASHBOARD_HTML
 from .drift import rolling_drift
 from .features import build_features
-from .promotion import evaluate_live_promotion
+from .promotion import evaluate_live_promotion, evaluate_predictive_promotion
 from .regime import classify_regime
 from .security import require_runtime_tick_key, require_internal_key
 from .shadow import compute_shadow_outcome, validate_shadow_prediction
@@ -560,6 +560,7 @@ def gorila_control_snapshot():
         "health": gorila_health(),
         "promotion": {
             "current_evaluation": evaluate_live_promotion(store),
+        "predictive_evaluation": evaluate_predictive_promotion(store),
             "latest_decision": store.latest_promotion_decision(),
         },
         "shadow": store.shadow_summary(),
