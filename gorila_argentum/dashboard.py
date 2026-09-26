@@ -158,6 +158,7 @@ pre{margin:0;background:#06080a;border:1px solid var(--line);border-radius:9px;p
       <div class="head"><div><div class="title">Runtime & shadow</div><div class="tiny">durability, outcomes, continuous cycle</div></div><span id="runtimeStatus" class="status">—</span></div>
       <div class="body">
         <div class="row"><span class="muted">Postgres</span><b id="pg">—</b></div>
+        <div class="row"><span class="muted">primary feed</span><b id="primaryFeed">—</b></div>
         <div class="row"><span class="muted">latest tick</span><b id="tick">—</b></div>
         <div class="row"><span class="muted">shadow predictions</span><b id="shadowPred">—</b></div>
         <div class="row"><span class="muted">shadow settled</span><b id="shadowSettled">—</b></div>
@@ -258,7 +259,13 @@ async function refresh(){
     $('tick').textContent=latest?.status||'—';$('pg').textContent=h.database?.ready?'READY':'—';
     const sh=s||{};$('shadowPred').textContent=sh.predictions??'—';$('shadowSettled').textContent=sh.settled??'—';$('shadowAcc').textContent=pct(sh.accuracy);
     $('macroUpdated').textContent=h.macro_ingest?.updated_at||'—';
-    $('sourceState').textContent=(h.sources||[]).filter(x=>x.status==='HEALTHY').length+'/'+(h.sources||[]).length+' healthy';
+    const required=new Set(['BCRA/FX','ArgentinaDatos/FX','ArgentinaDatos/EMBI+']);
+    const requiredRows=(h.sources||[]).filter(x=>required.has(x.source));
+    const requiredHealthy=requiredRows.filter(x=>x.status==='HEALTHY').length;
+    $('sourceState').textContent=requiredHealthy+'/'+requiredRows.length+' core healthy';
+    const feed=h.primary_market_data||{};
+    $('primaryFeed').textContent=feed.status||'—';
+    $('primaryFeed').style.color=feed.configured?'':'#ffafba';
     setStatus($('runtimeStatus'),latest?.status||'NO TICK',latest?.status==='COMPLETED',latest&&latest.status!=='COMPLETED');
     const e=p.current_evaluation||{};$('gateAcc').textContent=pct(e.evidence?.oos_accuracy);$('rankIc').textContent=fmt(e.evidence?.rank_ic,4);$('cpcv').textContent=fmt(e.evidence?.cpcv_mean_return_pct,2)+'%';
     const reasons=(e.reasons||[]).slice(0,5);$('gateReasons').innerHTML=reasons.map(x=>'<div class="row"><span class="muted">gate</span><b>'+x+'</b></div>').join('')||'<div class="row"><span class="muted">gate</span><b>—</b></div>';
