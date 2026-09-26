@@ -13,7 +13,7 @@ SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 def yahoo(symbol: str) -> dict[str, float]:
     response = httpx.get(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.BA",
-        params={"range": "5y", "interval": "1d", "events": "history"},
+        params={"range": "10y", "interval": "1d", "events": "history"},
         timeout=30,
         headers={"User-Agent": "Gorila-Argentum-DataSnapshot/1.0"},
     )
@@ -22,10 +22,12 @@ def yahoo(symbol: str) -> dict[str, float]:
     if not result:
         raise RuntimeError(f"{symbol}: empty Yahoo response")
     timestamps = result.get("timestamp") or []
-    closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+    adjusted = ((result.get("indicators") or {}).get("adjclose") or [{}])[0].get("adjclose") or []
+    if not adjusted:
+        raise RuntimeError(f"{symbol}: adjusted close unavailable")
     return {
         time.strftime("%Y-%m-%d", time.gmtime(ts)): float(close)
-        for ts, close in zip(timestamps, closes)
+        for ts, close in zip(timestamps, adjusted)
         if close is not None and close > 0
     }
 
@@ -40,8 +42,8 @@ def main() -> None:
         args.output,
         series,
         {
-            "provider": "Yahoo Finance chart API",
-            "range": "5y",
+            "provider": "Yahoo Finance chart API / adjusted close",
+            "range": "10y",
             "interval": "1d",
             "symbols": SYMBOLS,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

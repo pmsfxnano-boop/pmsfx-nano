@@ -140,6 +140,46 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
  result TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_runs_time ON runtime_runs(started_at);
+CREATE TABLE IF NOT EXISTS research_evidence (
+ id TEXT PRIMARY KEY,
+ run_id TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ source TEXT NOT NULL,
+ model_id TEXT NOT NULL,
+ symbol TEXT NOT NULL,
+ horizon_days INTEGER NOT NULL,
+ dataset_sha256 TEXT,
+ sample_count INTEGER NOT NULL DEFAULT 0,
+ oos_samples INTEGER NOT NULL DEFAULT 0,
+ outer_folds INTEGER NOT NULL DEFAULT 0,
+ accuracy DOUBLE PRECISION,
+ brier DOUBLE PRECISION,
+ baseline_brier DOUBLE PRECISION,
+ brier_skill DOUBLE PRECISION,
+ brier_skill_ci_low DOUBLE PRECISION,
+ brier_skill_ci_high DOUBLE PRECISION,
+ logloss DOUBLE PRECISION,
+ rank_ic DOUBLE PRECISION,
+ net_return_50bps DOUBLE PRECISION,
+ placebo_accuracy_p95 DOUBLE PRECISION,
+ pbo DOUBLE PRECISION,
+ dsr DOUBLE PRECISION,
+ execution_delta_50bps DOUBLE PRECISION,
+ stress_pass INTEGER NOT NULL DEFAULT 0,
+ data_health INTEGER NOT NULL DEFAULT 0,
+ point_in_time INTEGER NOT NULL DEFAULT 0,
+ validation_status TEXT NOT NULL,
+ prediction_status TEXT NOT NULL DEFAULT 'BLOCKED',
+ strategy_status TEXT NOT NULL DEFAULT 'BLOCKED',
+ validation_reasons TEXT NOT NULL DEFAULT '[]',
+ prediction_reasons TEXT NOT NULL DEFAULT '[]',
+ strategy_reasons TEXT NOT NULL DEFAULT '[]',
+ manifest_sha256 TEXT NOT NULL,
+ metrics TEXT NOT NULL DEFAULT '{}',
+ UNIQUE(run_id,symbol,horizon_days)
+);
+CREATE INDEX IF NOT EXISTS idx_research_evidence_symbol_horizon ON research_evidence(symbol,horizon_days,created_at);
+CREATE INDEX IF NOT EXISTS idx_research_evidence_dataset ON research_evidence(dataset_sha256);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -175,6 +215,27 @@ class Store:
                 cur.execute(SCHEMA)
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_shadow_feature_hash ON shadow_predictions(feature_hash)"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS pbo DOUBLE PRECISION"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_status TEXT DEFAULT 'BLOCKED'"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_status TEXT DEFAULT 'BLOCKED'"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_reasons TEXT DEFAULT '[]'"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_reasons TEXT DEFAULT '[]'"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_research_evidence_validation ON research_evidence(validation_status,created_at)"
                 )
             conn.commit()
         conn.close(); self.conn=None

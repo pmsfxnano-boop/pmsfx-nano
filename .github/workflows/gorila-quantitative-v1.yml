@@ -1,0 +1,141 @@
+name: Gorila Quantitative V1 Validation
+
+on:
+  push:
+    branches: [gorila-quantitative-hardening-v1]
+    paths-ignore:
+      - 'research/evidence_manifest.json'
+  workflow_dispatch:
+
+concurrency:
+  group: gorila-quantitative-v1
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - name: Tests
+        run: pytest -q tests/test_research_validation.py tests/test_data_snapshot.py tests/test_quantitative_evidence.py
+      - name: Build immutable market snapshot
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-v1-market-snapshot
+          path: gorila-market-snapshot.json
+
+  per-symbol:
+    needs: snapshot
+    strategy:
+      fail-fast: false
+      matrix:
+        horizon: [5, 10]
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-market-snapshot
+      - name: Validate per symbol and horizon
+        env:
+          GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: "${{ github.workspace }}/gorila-market-snapshot.json"
+          GORILA_PLACEBO_PERM: "16"
+        run: |
+          set -o pipefail
+          python research/gorila_quantitative_v1_oos.py | tee evidence-${{ matrix.horizon }}d.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-v1-evidence-${{ matrix.horizon }}d
+          path: evidence-${{ matrix.horizon }}d.json
+
+  manifest:
+    needs: per-symbol
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download H5
+        uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-evidence-5d
+          path: artifacts
+      - name: Download H10
+        uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-evidence-10d
+          path: artifacts
+      - name: Build canonical manifest
+        run: |
+          python - <<'PY'
+          import glob, hashlib, json, pathlib, time
+          files = sorted(glob.glob("artifacts/evidence-*.json"))
+          payload = [json.loads(pathlib.Path(fn).read_text()) for fn in files]
+          snapshots = {p.get("snapshot_sha256") for p in payload}
+          if len(snapshots) != 1:
+              raise SystemExit(f"SNAPSHOT_MISMATCH:{sorted(snapshots)}")
+          rows = [row for p in payload for row in p.get("evidence", [])]
+          manifest = {
+              "schema": "gorila-quantitative-evidence-v1",
+              "status": "COMPLETE",
+              "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "snapshot_sha256": next(iter(snapshots)),
+              "method": "nested-wfo-model-selection-with-cost-pbo-dsr-and-adversarial-stress-v2",
+              "evidence": rows,
+              "source_files": files,
+          }
+          canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+          manifest["manifest_sha256"] = hashlib.sha256(canonical).hexdigest()
+          pathlib.Path("research-evidence-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True)
+          )
+          statuses = {}
+          for row in rows:
+              statuses[row["validation_status"]] = statuses.get(row["validation_status"], 0) + 1
+          print(json.dumps({
+              "manifest_sha256": manifest["manifest_sha256"],
+              "snapshot_sha256": manifest["snapshot_sha256"],
+              "evidence_rows": len(rows),
+              "validation_statuses": statuses,
+          }, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-v1-canonical-evidence
+          path: research-evidence-manifest.json
+
+      - name: Publish canonical manifest to repository
+        run: |
+          cp research-evidence-manifest.json research/evidence_manifest.json
+          git config user.name "gorila-quantitative-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/evidence_manifest.json
+          if git diff --cached --quiet; then
+            echo "No manifest changes"
+          else
+            git commit -m "research: publish canonical quantitative evidence manifest"
+            git push origin HEAD:gorila-quantitative-hardening-v1
+          fi

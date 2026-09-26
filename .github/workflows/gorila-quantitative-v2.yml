@@ -1,0 +1,86 @@
+name: Gorila Quantitative V2 Cross-Sectional Validation
+
+on:
+  push:
+    branches: [gorila-quantitative-v2-crosssectional]
+    paths-ignore:
+      - 'research/gorila_v2_evidence.json'
+  workflow_dispatch:
+
+concurrency:
+  group: gorila-quantitative-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: .
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - name: Tests
+        run: |
+          pytest -q tests/test_cross_sectional_predictor_v2.py tests/test_cross_sectional_live.py tests/test_research_validation.py tests/test_data_snapshot.py
+      - name: Build immutable snapshot
+        run: python research/gorila_snapshot_oos.py --output gorila-v2-market-snapshot.json
+      - name: Run frozen predictor
+        env:
+          GORILA_DATA_SNAPSHOT: \${{ github.workspace }}/gorila-v2-market-snapshot.json
+          GORILA_V2_HORIZON_DAYS: "5"
+          GORILA_V2_ONE_WAY_COST_BPS: "10"
+          GORILA_V2_BOOTSTRAPS: "1000"
+          GORILA_V2_PLACEBOS: "24"
+          GORILA_V2_BLOCK_LENGTH: "20"
+        run: |
+          set -o pipefail
+          python research/gorila_cross_sectional_predictor_v2.py | tee gorila-v2-evidence.json
+      - name: Contract gate
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open("gorila-v2-evidence.json"))
+          assert d["point_in_time"] is True
+          assert d["frozen_spec"] is True
+          assert d["predictor"]["selection_trials"] == 1
+          assert d["oos"]["observations"] >= 500
+          print(json.dumps({
+            "validation_status": d["validation_status"],
+            "reasons": d["validation_reasons"],
+            "mean_rank_ic": d["oos"]["mean_rank_ic"],
+            "rank_ic_ci95": d["oos"]["rank_ic_ci95"],
+            "net_return_ci95": d["economics"]["net_return_ci95"],
+            "delta_vs_momentum_ci95": d["economics"]["delta_vs_momentum_ci95"],
+            "placebo_p95": d["placebo"]["rank_ic_mean_distribution_p95"],
+          }, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-v2-cross-sectional-evidence
+          path: |
+            gorila-v2-market-snapshot.json
+            gorila-v2-evidence.json
+
+      - name: Publish V2 evidence
+        run: |
+          cp gorila-v2-evidence.json research/gorila_v2_evidence.json
+          git config user.name "gorila-quantitative-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/gorila_v2_evidence.json
+          if git diff --cached --quiet; then
+            echo "No evidence changes"
+          else
+            git commit -m "research: publish validated cross-sectional evidence v2"
+            git push origin HEAD:gorila-quantitative-v2-crosssectional
+          fi

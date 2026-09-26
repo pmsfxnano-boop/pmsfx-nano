@@ -115,3 +115,84 @@ CURRENT_BATCH10_EVIDENCE = {
     "source": "Batch 10 V2 archived research evidence",
     "source_digest": "sha256:afebda5082e1ab512480183b9db7927e733f12b6c8f2ade1bd89e3fbe8794545",
 }
+
+
+def evaluate_live_promotion(
+    store,
+    *,
+    symbols=("GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"),
+    horizons=(5,10),
+) -> dict[str, Any]:
+    """Evaluate fresh evidence with separate predictor and strategy gates."""
+    from .evidence import latest_evidence
+
+    rows = latest_evidence(store, limit=500)
+    required = {(s, int(h)) for s in symbols for h in horizons}
+    latest = {}
+    for row in rows:
+        key = (str(row.get("symbol","")).upper(), int(row.get("horizon_days",0)))
+        if key not in latest:
+            latest[key] = row
+
+    missing = sorted(required - set(latest))
+    if missing:
+        return {
+            "status": "BLOCKED",
+            "predictor_status": "BLOCKED",
+            "strategy_status": "BLOCKED",
+            "eligible": False,
+            "automatic_promotion": False,
+            "reasons": ["FRESH_EVIDENCE_INCOMPLETE"],
+            "missing_cells": [{"symbol": s, "horizon_days": h} for s, h in missing],
+            "cells": list(latest.values()),
+            "source": "persisted_research_evidence",
+        }
+
+    prediction_failed = []
+    strategy_failed = []
+    for key in sorted(required):
+        row = latest[key]
+        if row.get("prediction_status") != "VALIDATED":
+            prediction_failed.append({
+                "symbol": key[0],
+                "horizon_days": key[1],
+                "status": row.get("prediction_status", "BLOCKED"),
+                "reasons": row.get("prediction_reasons") or [],
+            })
+        if row.get("strategy_status") != "VALIDATED":
+            strategy_failed.append({
+                "symbol": key[0],
+                "horizon_days": key[1],
+                "status": row.get("strategy_status", "BLOCKED"),
+                "reasons": row.get("strategy_reasons") or [],
+            })
+
+    dataset_hashes = {str(latest[k].get("dataset_sha256")) for k in required}
+    same_dataset = len(dataset_hashes) == 1 and "None" not in dataset_hashes
+    if not same_dataset:
+        prediction_failed.append({"reason": "DATASET_HASH_MISMATCH"})
+
+    predictor_status = "VALIDATED" if not prediction_failed else "BLOCKED"
+    strategy_status = "VALIDATED" if not strategy_failed else "BLOCKED"
+    overall = "VALIDATED" if predictor_status == "VALIDATED" else "BLOCKED"
+
+    return {
+        "status": overall,
+        "predictor_status": predictor_status,
+        "strategy_status": strategy_status,
+        "eligible": predictor_status == "VALIDATED",
+        "execution_eligible": predictor_status == "VALIDATED" and strategy_status == "VALIDATED",
+        "automatic_promotion": False,
+        "reasons": [] if predictor_status == "VALIDATED" else ["PREDICTOR_EVIDENCE_FAILED"],
+        "strategy_reasons": [] if strategy_status == "VALIDATED" else ["STRATEGY_EVIDENCE_FAILED"],
+        "failed_prediction_cells": prediction_failed,
+        "failed_strategy_cells": strategy_failed,
+        "dataset_sha256": next(iter(dataset_hashes)) if same_dataset else None,
+        "cells": [latest[k] for k in sorted(required)],
+        "source": "persisted_research_evidence",
+        "policy": {
+            "predictor_gate": "OOS probability evidence",
+            "strategy_gate": "net-cost return + PBO + DSR + execution stress",
+            "execution_authority": False,
+        },
+    }
