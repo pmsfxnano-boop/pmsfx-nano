@@ -14,6 +14,8 @@ import time
 import httpx
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from datetime import datetime, time as dt_time, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import Header, HTTPException
 
@@ -88,6 +90,28 @@ _UPSTREAM_ENGINE_URL = os.getenv(
 _UPSTREAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _UPSTREAM_LOCK = asyncio.Lock()
 _UPSTREAM_CACHE_SECONDS = 10.0
+
+ARGENTINA_TIMEZONE = ZoneInfo("America/Argentina/Buenos_Aires")
+ARGENTINA_SESSION_OPEN = dt_time(11, 0)
+ARGENTINA_SESSION_CLOSE = dt_time(17, 0)
+
+
+def argentina_session_state(now: datetime | None = None) -> dict[str, Any]:
+    current = (now or datetime.now(timezone.utc)).astimezone(ARGENTINA_TIMEZONE)
+    weekday = current.weekday()
+    open_now = weekday < 5 and ARGENTINA_SESSION_OPEN <= current.time() <= ARGENTINA_SESSION_CLOSE
+    return {
+        "timezone": "America/Argentina/Buenos_Aires",
+        "local_time": current.isoformat(),
+        "weekday": weekday,
+        "open": open_now,
+        "regular_window": {
+            "open": ARGENTINA_SESSION_OPEN.isoformat(),
+            "close": ARGENTINA_SESSION_CLOSE.isoformat(),
+        },
+        "calendar_source": "BYMA",
+    }
+
 
 
 async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]:
@@ -650,6 +674,7 @@ async def gorila_signal_matrix():
     items = await asyncio.gather(*(build_one(symbol) for symbol in SIGNAL_SYMBOLS))
     result = build_matrix(items)
     result["session"] = market_session_state()
+    result["argentina_session"] = argentina_session_state()
     result["engine"] = {
         "forecast_cache_seconds": 30.0,
         "upstream_cache_seconds": _UPSTREAM_CACHE_SECONDS,
