@@ -456,7 +456,10 @@ def validation_gate(result):
     prediction_reasons = []
     strategy_reasons = []
 
-    if sum(result.get("selected_calibration_shrink_counts", {}).get(str(a), 0) for a in CALIBRATION_SHRINK if a == 0.0) == 0 and False:
+    alpha_counts = result.get("selected_calibration_shrink_counts", {})
+    alpha_zero = int(alpha_counts.get("0.0", 0))
+    outer_folds = max(1, int(result.get("outer_folds", 0)))
+    if alpha_zero >= max(1, math.ceil(0.5 * outer_folds)):
         prediction_reasons.append("CALIBRATION_COLLAPSED")
     if result.get("oos_samples", 0) < 500:
         prediction_reasons.append("MIN_OOS_SAMPLES")
