@@ -44,32 +44,23 @@ def sigmoid(z: float) -> float:
 
 
 def fit_logistic(rows: list[Row], names: tuple[str, ...], l2: float):
-    X = [[r.x[n] for n in names] for r in rows]
-    y = [r.y for r in rows]
-    means = [sum(v[j] for v in X) / len(X) for j in range(len(names))]
-    scales = [
-        max(1e-12, math.sqrt(sum((v[j] - means[j]) ** 2 for v in X) / len(X)))
-        for j in range(len(names))
-    ]
-    rate = max(1e-6, min(1.0 - 1e-6, sum(y) / len(y)))
-    w = [0.0] * len(names)
-    b = math.log(rate / (1.0 - rate))
-    lr = 0.035
-    for _ in range(160):
-        grad_w = [0.0] * len(w)
-        grad_b = 0.0
-        for row, target in zip(X, y):
-            zrow = [(v - m) / s for v, m, s in zip(row, means, scales)]
-            p = sigmoid(b + sum(a * v for a, v in zip(w, zrow)))
-            e = p - target
-            for j, v in enumerate(zrow):
-                grad_w[j] += e * v / len(X)
-            grad_b += e / len(X)
-        for j in range(len(w)):
-            grad_w[j] += l2 * w[j]
-            w[j] -= lr * grad_w[j]
-        b -= lr * grad_b
-    return means, scales, w, b
+    import numpy as np
+    X = np.asarray([[r.x[n] for n in names] for r in rows], dtype=np.float64)
+    y = np.asarray([r.y for r in rows], dtype=np.float64)
+    means = X.mean(axis=0)
+    scales = np.maximum(X.std(axis=0), 1e-12)
+    Z = (X - means) / scales
+    rate = float(np.clip(y.mean(), 1e-6, 1.0 - 1e-6))
+    w = np.zeros(Z.shape[1], dtype=np.float64)
+    b = float(np.log(rate / (1.0 - rate)))
+    lr = 0.08
+    for _ in range(80):
+        z = np.clip(b + Z @ w, -30.0, 30.0)
+        p = 1.0 / (1.0 + np.exp(-z))
+        e = p - y
+        w -= lr * ((Z.T @ e) / len(Z) + l2 * w)
+        b -= lr * float(e.mean())
+    return means.tolist(), scales.tolist(), w.tolist(), b
 
 
 def predict(model, row: Row, names: tuple[str, ...]) -> float:
