@@ -52,3 +52,15 @@ def test_calibration_persistence_roundtrip(tmp_path, monkeypatch):
     assert latest[0]["id"] == saved["id"]
     assert latest[0]["status"] == "CANDIDATE_READY"
     assert latest[0]["result"]["intercept"] == -0.42
+
+
+
+def test_persistence_roundtrip_uses_fresh_connection(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "persistence.sqlite3"))
+    store = Store()
+    store.init()
+    proof = store.verify_persistence()
+    assert proof["verified"] is True
+    assert proof["backend"] == "sqlite-fallback"
+    assert proof["heartbeat_id"]
