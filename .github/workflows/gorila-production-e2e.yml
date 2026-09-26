@@ -49,6 +49,32 @@ jobs:
           print("GORILA_HEALTH_PASS", json.dumps(d, indent=2, sort_keys=True))
           PY
 
+      - name: Verify autonomous runtime completed
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com/api/gorila/control"
+          for attempt in $(seq 1 18); do
+            echo "autonomous cycle probe $attempt/18"
+            curl --fail --silent --show-error --connect-timeout 15 --max-time 30 "$URL" -o /tmp/control.json || true
+            if test -s /tmp/control.json; then
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              d=json.loads(Path("/tmp/control.json").read_text())
+              items=(d.get("runtime") or {}).get("items") or []
+              latest=items[0] if items else {}
+              print("LATEST_RUNTIME", latest)
+              if latest.get("kind") == "autonomous" and latest.get("status") == "COMPLETED":
+                  raise SystemExit(0)
+              PY
+            fi
+            sleep 15
+          done
+          echo "Autonomous runtime did not complete during the production probe window."
+          cat /tmp/control.json || true
+          exit 1
+
       - name: Verify Argentina data surface
         shell: bash
         run: |
