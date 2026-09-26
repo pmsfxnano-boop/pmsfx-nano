@@ -136,7 +136,7 @@ jobs:
           path: relative-alpha-evidence.json
 
   manifest:
-    needs: per-symbol
+    needs: [per-symbol, lockbox, relative-alpha]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -151,6 +151,17 @@ jobs:
         with:
           name: gorila-v1-evidence-10d
           path: artifacts
+
+      - name: Download lockbox
+        uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-lockbox
+          path: artifacts
+      - name: Download relative alpha
+        uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-relative-alpha
+          path: artifacts
       - name: Build canonical manifest
         run: |
           python - <<'PY'
@@ -161,6 +172,16 @@ jobs:
           if len(snapshots) != 1:
               raise SystemExit(f"SNAPSHOT_MISMATCH:{sorted(snapshots)}")
           rows = [row for p in payload for row in p.get("evidence", [])]
+          def load_one(name):
+              path = pathlib.Path("artifacts") / name
+              if not path.exists():
+                  raise SystemExit(f"MISSING_AUX_ARTIFACT:{path}")
+              return json.loads(path.read_text())
+          lockbox = load_one("lockbox-evidence.json")
+          relative_alpha = load_one("relative-alpha-evidence.json")
+          aux_snapshots = {lockbox.get("snapshot_sha256"), relative_alpha.get("snapshot_sha256")}
+          if aux_snapshots != snapshots:
+              raise SystemExit(f"AUX_SNAPSHOT_MISMATCH:{sorted(aux_snapshots)} vs {sorted(snapshots)}")
           manifest = {
               "schema": "gorila-quantitative-evidence-v1",
               "status": "COMPLETE",
@@ -169,6 +190,10 @@ jobs:
               "method": "nested-wfo-model-selection-with-cost-pbo-dsr-and-adversarial-stress-v2",
               "evidence": rows,
               "source_files": files,
+              "auxiliary": {
+                  "lockbox": lockbox,
+                  "relative_alpha": relative_alpha,
+              },
           }
           canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
           manifest["manifest_sha256"] = hashlib.sha256(canonical).hexdigest()
@@ -183,6 +208,8 @@ jobs:
               "snapshot_sha256": manifest["snapshot_sha256"],
               "evidence_rows": len(rows),
               "validation_statuses": statuses,
+              "lockbox_statuses": [x.get("validation_status") for x in lockbox.get("evidence", [])],
+              "relative_alpha_statuses": [x.get("validation_status") for x in relative_alpha.get("evidence", [])],
           }, indent=2))
           PY
       - uses: actions/upload-artifact@v4
