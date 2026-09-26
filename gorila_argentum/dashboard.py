@@ -397,7 +397,7 @@ pre{
     <article class="step" id="step08">
       <div class="stepNo">09</div>
       <div class="stepInfo">
-        <div class="stepTitle">Shadow Ledger</div>
+        <div class="stepTitle">SHADOW LEDGER — BATCH 14</div>
         <div class="stepWhat">Qué es: almacena predicciones sin ejecución real y permite su settlement point-in-time.</div>
         <div class="stepWhy">Por qué importa: convierte hipótesis en evidencia evaluable.</div>
       </div>
@@ -428,7 +428,7 @@ pre{
     <article class="step" id="step10">
       <div class="stepNo">11</div>
       <div class="stepInfo">
-        <div class="stepTitle">Drift Monitor</div>
+        <div class="stepTitle">DRIFT MONITOR</div>
         <div class="stepWhat">Qué es: compara ventanas de referencia y actuales para detectar cambios de distribución.</div>
         <div class="stepWhy">Por qué importa: un modelo puede degradarse aunque el código siga sano.</div>
       </div>
@@ -441,7 +441,7 @@ pre{
     <article class="step" id="step11">
       <div class="stepNo">12</div>
       <div class="stepInfo">
-        <div class="stepTitle">Control Room</div>
+        <div class="stepTitle">CONTROL ROOM — BATCH 13</div>
         <div class="stepWhat">Qué es: consolida durabilidad, salud de fuentes, drift, circuit breaker y compuerta operacional.</div>
         <div class="stepWhy">Por qué importa: separa el estado operativo de la evidencia científica de promoción.</div>
       </div>
