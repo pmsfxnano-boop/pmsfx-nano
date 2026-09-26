@@ -1,0 +1,76 @@
+{
+  "dataset": {
+    "common_dates": 2445,
+    "dataset_sha256": "916f31d9c0bc7a07ca88c7676547ddae452db61dd864a25fd9ec85cb93e8b7bb",
+    "symbols": ["GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"]
+  },
+  "economics": {
+    "benchmark_momentum_ci95": [-0.008389812450040723,0.001723015512155272],
+    "benchmark_momentum_mean_net_return": -0.003452694928541894,
+    "delta_vs_momentum_ci95": [-0.004661128516560108,0.014571885500422009],
+    "delta_vs_momentum_mean": 0.004649372411008664,
+    "mean_net_return_per_rebalance": 0.0011966774824667705,
+    "net_return_ci95": [-0.0038399137875008266,0.006334216423484696],
+    "one_way_cost_bps": 10.0,
+    "performance_audit": {
+      "compound_return": -0.3055940386350452,
+      "deflated_sharpe_probability": 0.0,
+      "kurtosis": 3.695562659814165,
+      "max_drawdown": -0.6814180655081463,
+      "mean_return": 0.0011966774824667698,
+      "observations": 378,
+      "periods_per_year": 50.4,
+      "sharpe": 0.12952586132570484,
+      "skew": -0.035937619888839305,
+      "status": "COMPLETE",
+      "std_return": 0.06558973834369453,
+      "trials": 1
+    },
+    "round_trip_cost_bps": 20.0
+  },
+  "frozen_spec": true,
+  "generated_at": "2026-09-26T19:45:40Z",
+  "oos": {
+    "folds": 15,
+    "mean_probability": 0.4993250480774954,
+    "mean_rank_ic": 0.04039304610733181,
+    "median_rank_ic": 0.08571428571428573,
+    "observations": 1890,
+    "oos_residual_up_rate": 0.5,
+    "per_symbol": {
+      "BMA": {"hit_rate": 0.5047619047619047,"mean_probability": 0.49934394509750507,"mean_residual_log_return": 0.0007425466219800631,"observations": 1890},
+      "CEPU": {"hit_rate": 0.517989417989418,"mean_probability": 0.499479824877578,"mean_residual_log_return": 0.0002868396651891569,"observations": 1890},
+      "GGAL": {"hit_rate": 0.46984126984126984,"mean_probability": 0.4993656463879937,"mean_residual_log_return": 0.0007422432036923606,"observations": 1890},
+      "PAMP": {"hit_rate": 0.5211640211640212,"mean_probability": 0.49927776789681927,"mean_residual_log_return": 0.0017988485742607655,"observations": 1890},
+      "TGSU2": {"hit_rate": 0.5465608465608466,"mean_probability": 0.4993358979844945,"mean_residual_log_return": 0.0011737708353454415,"observations": 1890},
+      "YPFD": {"hit_rate": 0.49523809523809526,"mean_probability": 0.4991472062205809,"mean_residual_log_return": 0.0026651786388777804,"observations": 1890}
+    },
+    "positive_rank_ic_fraction": 0.5444444444444444,
+    "rank_ic_ci95": [0.0015056689342403617,0.07998261526832956]
+  },
+  "placebo": {
+    "permutations": 24,
+    "rank_ic_mean_distribution_p95": 0.02684051398337112
+  },
+  "point_in_time": true,
+  "predictor": {
+    "features": ["r1","r3","r5"],
+    "horizon_days": 5,
+    "iterations": 100,
+    "l2": 0.001,
+    "model": "fixed-pooled-logit-v1",
+    "selection_trials": 1,
+    "target": "cross-sectional residual future return sign"
+  },
+  "schema": "gorila-cross-sectional-evidence-v2",
+  "status": "COMPLETE",
+  "stress": {
+    "0": {"net_return_ci95":[-0.0037795850546548096,0.005835844481264789],"net_return_mean":0.0011966774824667705,"rank_ic_ci95":[0.000642479213907786,0.08438548752834465],"rank_ic_mean":0.04039304610733181},
+    "1": {"net_return_ci95":[-0.0040514725618672025,0.005882483223786043],"net_return_mean":0.0009578471780967197,"rank_ic_ci95":[-0.014092214663643236,0.06413756613756613],"rank_ic_mean":0.026938775510204082,"retention_vs_base":0.6669161676646709},
+    "2": {"net_return_ci95":[-0.005117837496814525,0.004142189327930967],"net_return_mean":-0.00035922498154911006,"rank_ic_ci95":[-0.019099017384731673,0.04806727135298561],"rank_ic_mean":0.014361300075585788,"retention_vs_base":0.35553892215568866}
+  },
+  "trading_validation_reasons": ["DELTA_VS_MOMENTUM_CI_NOT_ABOVE_ZERO","NET_RETURN_CI_NOT_ABOVE_ZERO"],
+  "trading_validation_status": "BLOCKED",
+  "validation_reasons": [],
+  "validation_status": "VALIDATED_RESEARCH"
+}
