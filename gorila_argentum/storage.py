@@ -380,6 +380,63 @@ class Store:
         conn.commit(); conn.close(); self.conn=None
         return {"id": outcome_id, "prediction_id": prediction_id, "observed_at": observed_at}
 
+
+    def settle_due_shadow_from_observations(self, *, max_lateness_seconds=3600, limit=50):
+        import datetime as _dt
+
+        predictions = self.latest_shadow(status="OPEN", limit=limit)
+        settled = []
+        for prediction in predictions:
+            created = _dt.datetime.fromisoformat(prediction["created_at"].replace("Z", "+00:00"))
+            due = created + _dt.timedelta(seconds=int(prediction["horizon_seconds"]))
+            conn = self.connect()
+            if self.pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT event_time,value
+                           FROM observations
+                           WHERE symbol=%s AND field='close' AND value IS NOT NULL
+                           ORDER BY event_time ASC""",
+                        (prediction["symbol"],),
+                    )
+                    rows = cur.fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT event_time,value
+                       FROM observations
+                       WHERE symbol=? AND field='close' AND value IS NOT NULL
+                       ORDER BY event_time ASC""",
+                    (prediction["symbol"],),
+                ).fetchall()
+            conn.close(); self.conn = None
+
+            chosen = None
+            for event_time, value in rows:
+                observed = _dt.datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=_dt.timezone.utc)
+                observed = observed.astimezone(_dt.timezone.utc)
+                if observed < due:
+                    continue
+                if observed > due + _dt.timedelta(seconds=int(max_lateness_seconds)):
+                    break
+                chosen = (observed, float(value))
+                break
+            if chosen is None:
+                continue
+
+            from .shadow import compute_shadow_outcome
+            outcome = compute_shadow_outcome(
+                prediction["probability_up"], prediction["entry_price"], chosen[1]
+            )
+            settled.append(
+                self.settle_shadow_prediction(
+                    prediction["id"], outcome, chosen[0].isoformat(),
+                    metadata={"resolution": "observation_event_time", "field": "close"},
+                )
+            )
+        return {"attempted": len(predictions), "settled": len(settled), "items": settled}
+
     def latest_shadow(self, symbol=None, status=None, limit=100):
         conn = self.connect()
         where = []; params = []
