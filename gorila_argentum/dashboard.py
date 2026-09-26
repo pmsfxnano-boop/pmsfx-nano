@@ -31,6 +31,7 @@ pre{white-space:pre-wrap;color:#bdbdbd;margin:0;font-size:12px}.wide{grid-column
 <section><h2>COUPLING MATRIX</h2><pre id="coupling">WAITING FOR DEPTH…</pre></section>
 <section class="wide"><h2>DRIFT MONITOR</h2><div class="grid" id="drift"></div><pre id="drift_detail">cargando…</pre></section>
 <section class="wide"><h2>CONTROL ROOM — BATCH 13</h2><div class="grid" id="control"></div><pre id="control_detail">cargando…</pre></section>
+<section class="wide"><h2>SHADOW LEDGER — BATCH 14</h2><div class="grid" id="shadow"></div><pre id="shadow_detail">cargando…</pre></section>
 <section class="wide"><h2>WORKFLOW</h2><pre id="workflow">INGEST → STATE → COUPLING → FEATURES → REGIME → PREDICTION → TIMING → OUTCOME</pre></section>
 </main>
 <script>
@@ -38,7 +39,7 @@ const $=id=>document.getElementById(id);
 function metric(k,v,cls=""){return '<div class="metric"><div class="label">'+k+'</div><div class="value '+cls+'">'+(v==null?'—':v)+'</div></div>'}
 async function refresh(){
  try{
-  const [s,h,c,dv,ctl]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json())]);
+  const [s,h,c,dv,ctl,ss,si]=await Promise.all([fetch('/api/state/live').then(r=>r.json()),fetch('/health').then(r=>r.json()),fetch('/api/coupling/current').then(r=>r.json()),fetch('/api/drift?limit=50').then(r=>r.json()),fetch('/api/control').then(r=>r.json()),fetch('/api/shadow/summary').then(r=>r.json()),fetch('/api/shadow?limit=20').then(r=>r.json())]);
   const fx=s.fx||{}, sp=fx.spreads||{};
   $('fx').innerHTML=[
     metric('USD OFICIAL',fx.official),metric('MEP',fx.mep),metric('CCL',fx.ccl),
@@ -70,6 +71,20 @@ async function refresh(){
     drift:{snapshots_seen:ctl.drift?.snapshots_seen,latest_series:ctl.drift?.latest_series},
     runtime:rt
   },null,2);
+  $('shadow').innerHTML=[
+    metric('PREDICTIONS',ss.predictions),
+    metric('OPEN',ss.open),
+    metric('SETTLED',ss.settled),
+    metric('ACCURACY',ss.accuracy==null?null:(ss.accuracy*100).toFixed(1)+'%',ss.accuracy==null?'':(ss.accuracy>=0.5?'green':'red')),
+    metric('MEAN BRIER',ss.mean_brier==null?null:ss.mean_brier.toFixed(4)),
+    metric('MEAN RETURN',ss.mean_return_pct==null?null:ss.mean_return_pct.toFixed(3)+'%')
+  ].join('');
+  $('shadow_detail').textContent=JSON.stringify((si.items||[]).map(x=>({
+    id:x.id,symbol:x.symbol,model_version:x.model_version,status:x.status,
+    p_up:x.probability_up,direction:x.direction,entry_price:x.entry_price,
+    realized_direction:x.realized_direction,return_pct:x.return_pct,correct:x.correct,
+    brier:x.brier,logloss:x.logloss,created_at:x.created_at,observed_at:x.observed_at
+  })),null,2);
  }catch(e){$('status').textContent='DEGRADED';}
 }
 refresh();setInterval(refresh,1000);
