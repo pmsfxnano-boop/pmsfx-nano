@@ -43,6 +43,7 @@ from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick
+from quant.db import connection as quant_connection
 
 # The public service uses a single process. The cache keeps the latency-critical
 # UI path independent of the expensive historical/multi-horizon research call.
@@ -109,6 +110,89 @@ async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]
         return payload
 
 
+def _latest_persisted_engine_state(symbol: str) -> dict[str, Any] | None:
+    sql = """
+    SELECT
+        created_at, symbol, last, bid, ask, spread_bps, microprice,
+        model_id, status, direction, p_up, p_down, confidence,
+        horizon_seconds, validated, gatillazo, data_source,
+        quote_timestamp, evaluation
+    FROM forecasts
+    WHERE symbol = %(symbol)s
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+    """
+    try:
+        with quant_connection() as conn:
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(sql, {"symbol": symbol})
+                row = cur.fetchone()
+        if row is None:
+            return None
+        created_at = row[0]
+        age_seconds = max(
+            0.0,
+            (time.time() - created_at.timestamp())
+            if hasattr(created_at, "timestamp")
+            else 0.0,
+        )
+        probability_up = float(row[10]) if row[10] is not None else None
+        probability_down = float(row[11]) if row[11] is not None else (
+            1.0 - probability_up if probability_up is not None else None
+        )
+        forecast = None
+        if probability_up is not None:
+            forecast = {
+                "direction": row[9] or (
+                    "UP" if probability_up >= 0.55
+                    else ("DOWN" if probability_up <= 0.45 else "NEUTRAL")
+                ),
+                "raw_probability_up": probability_up,
+                "raw_probability_down": probability_down,
+                "confidence_raw": float(row[12]) if row[12] is not None else abs(probability_up - 0.5) * 2.0,
+                "model_id": row[7],
+                "status": row[8],
+                "validated": bool(row[14]),
+                "calibrated": False,
+                "horizon_seconds": int(row[13]) if row[13] is not None else None,
+            }
+        return {
+            "symbol": row[1],
+            "last": row[2],
+            "bid": row[3],
+            "ask": row[4],
+            "spread_bps": row[5],
+            "microprice": row[6],
+            "data_source": row[16],
+            "quote_timestamp": row[17].isoformat() if row[17] is not None else None,
+            "received_at": created_at.isoformat(),
+            "forecast": forecast,
+            "forecast_status": row[8],
+            "gatillazo": row[15],
+            "evaluation": row[18] or {},
+            "model": {
+                "id": row[7],
+                "status": row[8],
+                "validated": bool(row[14]),
+            },
+            "engine_source": "shared_postgres_pmsf_x",
+            "engine_freshness": {
+                "created_at": created_at.isoformat(),
+                "age_seconds": round(age_seconds, 1),
+                "stale": age_seconds > 3600.0,
+            },
+        }
+    except Exception as exc:
+        print(
+            "GORILA_PERSISTED_ENGINE_READ_ERROR",
+            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
+            flush=True,
+        )
+        return None
+
+
 def _upstream_forecast_payload(symbol: str, state: dict[str, Any]) -> dict[str, Any]:
     result = dict(state)
     result["engine_source"] = "upstream_pmsf_x"
@@ -141,6 +225,11 @@ def _upstream_quote_payload(symbol: str, state: dict[str, Any]) -> dict[str, Any
 async def _gorila_forecast(symbol: str, *, force: bool = False) -> dict[str, Any]:
     if os.getenv("TIINGO_API_KEY", "").strip():
         return await gorila_forecast(symbol, force=force)
+
+    persisted = _latest_persisted_engine_state(symbol)
+    if persisted is not None:
+        return persisted
+
     state = await _upstream_state(symbol, force=force)
     return _upstream_forecast_payload(symbol, state)
 
@@ -148,6 +237,9 @@ async def _gorila_forecast(symbol: str, *, force: bool = False) -> dict[str, Any
 async def _gorila_quote(symbol: str) -> dict[str, Any]:
     if os.getenv("TIINGO_API_KEY", "").strip():
         return await advanced_quote(symbol)
+    persisted = _latest_persisted_engine_state(symbol)
+    if persisted is not None:
+        return _upstream_quote_payload(symbol, persisted)
     state = await _upstream_state(symbol)
     return _upstream_quote_payload(symbol, state)
 
@@ -273,8 +365,24 @@ def gorila_health():
             "provider": "TIINGO",
             "configured": tiingo_configured,
             "upstream_engine": "PMSF-X" if upstream_available else None,
-            "source": "LOCAL_TIINGO" if tiingo_configured else ("UPSTREAM_PMSF_X" if upstream_available else "NONE"),
-            "status": "READY" if engine_ready else "MISSING_FEED",
+            "source": (
+                "LOCAL_TIINGO"
+                if tiingo_configured
+                else "SHARED_POSTGRES_FORECAST"
+                if persistence_summary().get("forecast_count")
+                else "UPSTREAM_PMSF_X"
+                if upstream_available
+                else "NONE"
+            ),
+            "status": (
+                "READY"
+                if tiingo_configured
+                else "READY_LAST_FORECAST"
+                if persistence_summary().get("forecast_count")
+                else "READY_BRIDGE"
+                if upstream_available
+                else "MISSING_FEED"
+            ),
         },
         "database": persistence_summary(),
         "market_stream": stream_status(),
