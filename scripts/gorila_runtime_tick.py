@@ -262,6 +262,8 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
                 run_learning_cycle,
                 symbol,
                 horizon_days=5,
+                store=Store(),
+                initialize_store=False,
             ): symbol
             for symbol in symbols
         }
