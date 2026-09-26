@@ -13,7 +13,7 @@ SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 def yahoo(symbol: str) -> dict[str, float]:
     response = httpx.get(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.BA",
-        params={"range": "5y", "interval": "1d", "events": "history"},
+        params={"range": "10y", "interval": "1d", "events": "history"},
         timeout=30,
         headers={"User-Agent": "Gorila-Argentum-DataSnapshot/1.0"},
     )
