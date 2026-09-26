@@ -150,7 +150,12 @@ def build_signal(
     p_down = 1.0 - p_up if p_up is not None else None
     confidence = _finite(forecast.get("confidence_raw"))
     age_seconds = _finite((state.get("engine_freshness") or {}).get("age_seconds"))
-    validated = bool(forecast.get("validated") or evaluation.get("validated"))
+    forecast_validated = forecast.get("validated")
+    evaluation_validated = evaluation.get("validated")
+    validated = (
+        forecast_validated is True
+        and evaluation_validated is True
+    )
     brier_skill = _finite(evaluation.get("brier_skill"))
 
     closes = [_finite(v) for _, v in (price_series or [])]
