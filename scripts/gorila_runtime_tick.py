@@ -21,6 +21,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
     created = 0
     settled = 0
     pending = 0
+    errors = []
     forecast_rows = []
 
     # PMSF-X is already the live/validated market-data engine in the shared
@@ -155,14 +156,22 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                 },
             )
             settled += 1
-        except (ValueError, KeyError):
+        except Exception as exc:
             pending += 1
+            errors.append(
+                {
+                    "prediction_id": shadow.get("id"),
+                    "forecast_id": forecast_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
     return {
-        "status": "COMPLETED",
+        "status": "COMPLETED" if not errors else "PARTIAL",
         "created": created,
         "settled": settled,
         "pending": pending,
+        "errors": errors[:20],
         "source_forecasts_seen": len(forecast_rows),
     }
 
