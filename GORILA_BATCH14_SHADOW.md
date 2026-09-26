@@ -9,6 +9,10 @@ Rama: `gorila-argentum-v0-hardening`
 
 Batch 14 añade un ledger de investigación Shadow. No coloca órdenes, no conecta un broker y no modifica la compuerta de promoción.
 
+### Continuidad con el trabajo previo
+
+La rama ya contenía un especialista GGAL + riesgo soberano aislado (`ggal_shadow.py` / `ggal_shadow_app.py`, incorporado el 21-09-2026). El nuevo ledger es una capa genérica y persistente; no reemplaza ni borra ese especialista.
+
 ## Flujo ejecutado
 
 `prediction → shadow_predictions → observed price → shadow_outcomes → summary`
