@@ -106,10 +106,10 @@ CURRENT_BATCH10_EVIDENCE = {
     "cpcv_pbo": 0.0,
     "cpcv_dsr_mean": 0.0,
     "cpcv_mean_return_pct": -16.62,
-    "execution_delta_mean": -0.054897,
+    "execution_delta_mean": -0.054897,    "cpcv_snapshot_sha256": "4f5274af78f6de30d8854ae80d6a9e62b2e6cfcd9eeea31c76ab2e8d31949946",
     "stress_pass": False,
     "data_health": True,
     "point_in_time": True,
     "source": "Batch 10 V2 archived research evidence",
-    "source_digest": "sha256:6d6ca9e3560250cf8569597533db2c8e4b9b45fef80eda4f6f1db5df37f3cf14",
+    "source_digest": "sha256:afebda5082e1ab512480183b9db7927e733f12b6c8f2ade1bd89e3fbe8794545",
 }
