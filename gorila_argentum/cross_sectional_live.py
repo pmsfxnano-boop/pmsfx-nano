@@ -61,16 +61,33 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
     store = store or Store()
     store.init()
     series = _series_from_store(store, limit=limit)
+    missing_symbols = [symbol for symbol in SYMBOLS if not series.get(symbol)]
+    latest_dates = {
+        symbol: (max(series[symbol]) if series.get(symbol) else None)
+        for symbol in SYMBOLS
+    }
+    if missing_symbols:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "reason": "LIVE_SYMBOL_HISTORY_MISSING",
+            "missing_symbols": missing_symbols,
+            "latest_dates": latest_dates,
+            "required_symbols": list(SYMBOLS),
+            "research_only": True,
+            "no_execution_authority": True,
+        }
     common_dates = sorted(
-        set.intersection(*(set(series[s]) for s in SYMBOLS if series[s]))
+        set.intersection(*(set(series[s]) for s in SYMBOLS))
     )
     if len(common_dates) <= HORIZON_DAYS + 65:
         return {
             "status": "INSUFFICIENT_DATA",
             "reason": "COMMON_DAILY_HISTORY_TOO_SHORT",
             "observations": len(common_dates),
+            "latest_dates": latest_dates,
             "symbols": list(SYMBOLS),
             "research_only": True,
+            "no_execution_authority": True,
         }
 
     rows = []
@@ -171,6 +188,12 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
         "selection_trials": 1,
         "common_dates": len(common_dates),
         "latest_date": common_dates[-1],
+        "latest_dates": latest_dates,
+        "coverage": {
+            "required_symbols": list(SYMBOLS),
+            "missing_symbols": [],
+            "common_dates": len(common_dates),
+        },
         "items": items,
         "evidence": {
             "validation_status": evidence.get("validation_status"),
