@@ -3,6 +3,7 @@ from __future__ import annotations
 from .storage import Store
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 from .drift import rolling_drift
+from .calibration import build_recalibration_candidate
 
 
 def _promotion_status(decision: dict | None = None) -> str:
@@ -124,6 +125,7 @@ def build_control_state(store: Store | None = None) -> dict:
 
     shadow_rows = store.latest_shadow(status="SETTLED", limit=500)
     shadow_diagnostics = _shadow_diagnostics(shadow_rows)
+    recalibration = build_recalibration_candidate(shadow_rows)
 
     diagnostic_statuses = {
         shadow_diagnostics["prediction_drift"].get("status"),
@@ -170,7 +172,7 @@ def build_control_state(store: Store | None = None) -> dict:
             "data_distribution_drift": "IMPLEMENTED",
             "prediction_drift": "IMPLEMENTED",
             "realized_vs_predicted": "IMPLEMENTED",
-            "automatic_recalibration": "NOT_IMPLEMENTED",
+            "automatic_recalibration": "IMPLEMENTED_AS_GATED_CANDIDATE",
             "automatic_kill_switch": "IMPLEMENTED_RESEARCH_CIRCUIT_BREAKER",
             "shadow_ledger": "IMPLEMENTED",
             "continuous_learning": "IMPLEMENTED_AS_CANDIDATE_CYCLE",
@@ -186,4 +188,5 @@ def build_control_state(store: Store | None = None) -> dict:
             "latest_run": latest_learning[0] if latest_learning else None,
         },
         "model_diagnostics": shadow_diagnostics,
+        "recalibration": recalibration,
     }
