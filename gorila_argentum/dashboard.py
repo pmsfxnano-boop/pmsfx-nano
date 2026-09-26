@@ -16,10 +16,97 @@ h2{margin:0 0 14px;font-size:12px;letter-spacing:.12em;color:#a7a7a7}.grid{displ
 .metric{padding:13px;border:1px solid var(--line);border-radius:10px;background:#111}.label{color:var(--muted);font-size:11px}.value{font-size:24px;font-weight:700;margin-top:5px}.green{color:var(--green)}.red{color:var(--red)}
 pre{white-space:pre-wrap;color:#bdbdbd;margin:0;font-size:12px}.wide{grid-column:1/-1}
 @media(max-width:900px){main{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}}
+
+/* Research-control visual layer */
+:root{
+ --accent:#55d6f4;--accent2:#4a88ff;--surface:#0d1926;--surface2:#112334;--line2:#20394d;
+}
+body{
+ background:
+ radial-gradient(circle at 78% -12%,rgba(61,153,190,.16),transparent 34%),
+ radial-gradient(circle at 10% 0%,rgba(48,81,145,.10),transparent 28%),
+ #071019;
+ color:#edf5fa;
+ font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+header{
+ border-bottom:1px solid var(--line2);
+ background:rgba(7,16,25,.92);
+ box-shadow:0 8px 30px rgba(0,0,0,.22);
+}
+main{padding:20px;max-width:1680px}
+section{
+ background:linear-gradient(145deg,rgba(16,31,46,.97),rgba(9,20,31,.97));
+ border:1px solid var(--line2);
+ border-radius:14px;
+ box-shadow:0 16px 44px rgba(0,0,0,.22);
+}
+h2{color:#8fa5b7}
+.metric{background:#0a1622;border-color:#20374a}
+.value{letter-spacing:-.02em}
+.heroBand{
+ grid-column:1/-1;padding:18px;border-radius:14px;border:1px solid var(--line2);
+ background:linear-gradient(135deg,rgba(15,35,51,.96),rgba(8,20,30,.94));
+ margin-bottom:0;
+}
+.heroBand .eyebrow{font-size:10px;letter-spacing:.18em;color:var(--accent);font-weight:800;text-transform:uppercase}
+.heroBand h1{margin:6px 0 4px;font-size:28px;letter-spacing:-.025em}
+.heroBand p{margin:0;color:#8094a6;max-width:980px;line-height:1.55;font-size:12px}
+.heroMeta{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.heroChip{padding:7px 10px;border:1px solid #264157;border-radius:999px;background:#0b1723;color:#bdd0dc;font-size:9px;font-weight:800;letter-spacing:.07em}
+.heroChip.live{color:#a9f5d3;border-color:#265b44}
+.heroChip.blocked{color:#ffb5bf;border-color:#65323b}
+.archRibbon{display:grid;grid-template-columns:repeat(13,minmax(82px,1fr));gap:6px;overflow-x:auto;padding:12px 0 2px}
+.archNode{position:relative;min-height:48px;padding:8px 9px;border:1px solid #203a4f;border-radius:9px;background:#0a1622}
+.archNode b{display:block;font-size:9px;margin-top:4px}
+.archNode small{color:#657c8f;font-size:7px;letter-spacing:.1em}
+.archNode:after{content:"→";position:absolute;right:-7px;top:50%;transform:translateY(-50%);color:#4d6679}
+.archNode:last-child:after{display:none}
+.archNode.guard{border-color:#604a26;background:#1b160d}
+.riskStrip{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:12px 0}
+.riskBox{padding:11px;border:1px solid #20374a;border-radius:10px;background:#0a1622}
+.riskBox .label{font-size:9px;color:#70869a;text-transform:uppercase;letter-spacing:.09em}
+.riskBox b{display:block;margin-top:5px;font-size:14px}
+.greenText{color:#50dfa0!important}.redText{color:#ff6f80!important}.amberText{color:#e5bc60!important}.cyanText{color:#5ad8f7!important}
+@media(max-width:900px){.riskStrip{grid-template-columns:1fr 1fr}.archRibbon{grid-template-columns:repeat(13,90px)}}
+@media(max-width:600px){main{padding:12px}.heroBand h1{font-size:23px}.riskStrip{grid-template-columns:1fr}}
 </style></head>
 <body>
 <header><div class="brand">GORILA ARGENTUM</div><div class="state"><span class="dot"></span><span id="status">ENGINE ONLINE</span></div></header>
 <main>
+
+<section class="heroBand">
+  <div class="eyebrow">Research Control Surface · Gorila Argentum</div>
+  <h1>Observabilidad de extremo a extremo</h1>
+  <p>La interfaz representa la arquitectura operativa sin añadir autoridad al sistema: observa datos, estado de mercado, acoplamiento, features, régimen, predicción/timing, Shadow, Outcome, Drift, Control Room, Promotion Gate, Continuous Learning, recalibración y audit.</p>
+  <div class="heroMeta">
+    <span class="heroChip live">● LIVE RUNTIME</span>
+    <span class="heroChip">MODE · RESEARCH</span>
+    <span class="heroChip">TRADING · DISABLED</span>
+    <span class="heroChip blocked">PROMOTION · GATED</span>
+  </div>
+  <div class="riskStrip">
+    <div class="riskBox"><div class="label">Persistence</div><b class="greenText">Postgres required</b></div>
+    <div class="riskBox"><div class="label">Shadow</div><b class="cyanText">Point-in-time</b></div>
+    <div class="riskBox"><div class="label">Learning</div><b class="amberText">Candidate cycle</b></div>
+    <div class="riskBox"><div class="label">Promotion</div><b class="redText">Evidence gate</b></div>
+  </div>
+  <div class="archRibbon" aria-label="Architecture pipeline">
+    <div class="archNode"><small>01</small><b>Data Fabric</b></div>
+    <div class="archNode"><small>02</small><b>Market State</b></div>
+    <div class="archNode"><small>03</small><b>Coupling</b></div>
+    <div class="archNode"><small>04</small><b>Features</b></div>
+    <div class="archNode"><small>05</small><b>Regime</b></div>
+    <div class="archNode"><small>06</small><b>Prediction</b></div>
+    <div class="archNode"><small>07</small><b>Timing</b></div>
+    <div class="archNode"><small>08</small><b>Shadow</b></div>
+    <div class="archNode"><small>09</small><b>Outcome</b></div>
+    <div class="archNode"><small>10</small><b>Drift</b></div>
+    <div class="archNode guard"><small>11</small><b>Promotion Gate</b></div>
+    <div class="archNode"><small>12</small><b>Learning</b></div>
+    <div class="archNode"><small>13</small><b>Audit</b></div>
+  </div>
+</section>
 <section><h2>ARGENTINA MARKET STATE</h2><div class="grid" id="fx"></div></section>
 <section><h2>DATA FLOW</h2><pre id="sources">cargando…</pre></section>
 <section><h2>TEMPORAL ENGINE</h2><div class="grid">
