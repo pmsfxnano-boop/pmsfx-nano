@@ -437,6 +437,23 @@ def gorila_market():
     return build_market_state()
 
 
+@app.get("/api/gorila/control")
+def gorila_control_snapshot():
+    store = Store()
+    store.init()
+    return {
+        "health": gorila_health(),
+        "promotion": {
+            "current_evaluation": evaluate_promotion(CURRENT_BATCH10_EVIDENCE),
+            "latest_decision": store.latest_promotion_decision(),
+        },
+        "shadow": store.shadow_summary(),
+        "runtime": {
+            "items": store.latest_runtime_run(kind=None, limit=1),
+        },
+    }
+
+
 @app.get("/api/gorila/sources")
 def gorila_sources():
     return {
