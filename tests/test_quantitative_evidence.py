@@ -13,6 +13,8 @@ def test_quantitative_validator_gate_is_conservative():
         "brier_skill": 0.04,
         "brier_skill_ci95": [0.01, 0.07],
         "rank_ic": 0.03,
+        "logloss_delta": 0.02,
+        "ece": 0.03,
         "strategy_costs": {"50": {"net_return": 0.20}},
         "accuracy": 0.54,
         "placebo_accuracy_p95": 0.52,
