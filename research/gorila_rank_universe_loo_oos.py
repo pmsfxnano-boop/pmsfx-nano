@@ -4,6 +4,8 @@ import json, math, os, statistics, time
 from itertools import combinations
 import httpx
 
+from research.gorila_data_snapshot import load_or_fetch_series
+
 ALL_SYMBOLS=["GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"]
 HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 UNIVERSES={"full":ALL_SYMBOLS,**{f"minus_{s}":[x for x in ALL_SYMBOLS if x!=s] for s in ALL_SYMBOLS}}
