@@ -169,7 +169,11 @@ CREATE TABLE IF NOT EXISTS research_evidence (
  data_health INTEGER NOT NULL DEFAULT 0,
  point_in_time INTEGER NOT NULL DEFAULT 0,
  validation_status TEXT NOT NULL,
+ prediction_status TEXT NOT NULL DEFAULT 'BLOCKED',
+ strategy_status TEXT NOT NULL DEFAULT 'BLOCKED',
  validation_reasons TEXT NOT NULL DEFAULT '[]',
+ prediction_reasons TEXT NOT NULL DEFAULT '[]',
+ strategy_reasons TEXT NOT NULL DEFAULT '[]',
  manifest_sha256 TEXT NOT NULL,
  metrics TEXT NOT NULL DEFAULT '{}',
  UNIQUE(run_id,symbol,horizon_days)
@@ -217,6 +221,18 @@ class Store:
                 )
                 cur.execute(
                     "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_status TEXT DEFAULT 'BLOCKED'"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_status TEXT DEFAULT 'BLOCKED'"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_reasons TEXT DEFAULT '[]'"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_reasons TEXT DEFAULT '[]'"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_research_evidence_validation ON research_evidence(validation_status,created_at)"
