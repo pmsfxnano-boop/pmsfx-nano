@@ -27,22 +27,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt pytest
       - name: Core tests
-        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py
+        run: pytest -q tests/test_gorila_math.py tests/test_prediction.py tests/test_regime_validation.py tests/test_signal_timing.py tests/test_research_validation.py tests/test_data_snapshot.py
+      - name: Snapshot market inputs
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
       - name: Nested purged ranking
+        env:
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
         run: set -o pipefail; python research/gorila_nested_pairwise_rank_oos.py | tee ranking-nested.json
       - name: Corrected temporal placebo
         env:
           GORILA_HORIZONS: "5,10"
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
         run: set -o pipefail; python research/gorila_nested_rank_placebo_oos.py | tee ranking-placebo.json
       - name: Corrected universe LOO
         env:
           GORILA_HORIZONS: "5,10"
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
         run: set -o pipefail; python research/gorila_rank_universe_loo_oos.py | tee ranking-universe-loo.json
       - name: Upload ranking evidence
         uses: actions/upload-artifact@v4
         with:
           name: gorila-formal-ranking
           path: |
+            gorila-market-snapshot.json
             ranking-nested.json
             ranking-placebo.json
             ranking-universe-loo.json
@@ -64,15 +71,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt
+      - name: Snapshot market inputs
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
       - name: Stress
         env:
           GORILA_HORIZONS: "${{ matrix.horizon }}"
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
         run: set -o pipefail; python research/gorila_nested_rank_stress_oos.py | tee robustness-stress-${{ matrix.horizon }}d.json
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: gorila-formal-stress-${{ matrix.horizon }}d
-          path: robustness-stress-${{ matrix.horizon }}d.json
+          path: |
+            gorila-market-snapshot.json
+            robustness-stress-${{ matrix.horizon }}d.json
 
   jacobian:
     name: Jacobian WFO stress
@@ -87,13 +99,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt
+      - name: Snapshot market inputs
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
       - name: Jacobian stress
+        env:
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
         run: set -o pipefail; python research/gorila_jacobian_stress_oos.py | tee jacobian-stress.json
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: gorila-formal-jacobian
-          path: jacobian-stress.json
+          path: |
+            gorila-market-snapshot.json
+            jacobian-stress.json
 
   search_audit:
     name: Search-aware PBO/DSR audit
@@ -108,13 +126,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt
+      - name: Snapshot market inputs
+        run: python research/gorila_snapshot_oos.py --output gorila-market-snapshot.json
       - name: Search-aware PBO/DSR
+        env:
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
         run: set -o pipefail; python research/gorila_search_audit_oos.py | tee gorila-search-audit.json
       - name: Upload search audit
         uses: actions/upload-artifact@v4
         with:
           name: gorila-formal-search-audit
-          path: gorila-search-audit.json
+          path: |
+            gorila-market-snapshot.json
+            gorila-search-audit.json
 
   audit:
     name: Evidence manifest
