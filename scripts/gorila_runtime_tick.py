@@ -18,7 +18,7 @@ from gorila_argentum.ingest import run_batch
 from gorila_argentum.promotion import evaluate_live_promotion
 from gorila_argentum.storage import Store
 from gorila_argentum.shadow import compute_shadow_outcome
-from gorila_argentum.evidence import persist_manifest
+from gorila_argentum.evidence import persist_manifest, persist_v2_evidence
 from quant.db import connection as quant_connection
 
 
@@ -300,6 +300,19 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     except Exception as exc:
         evidence_sync = {"status": "ERROR", "error": f"{type(exc).__name__}: {exc}", "path": manifest_path}
 
+    v2_evidence_sync = {"status": "NOT_FOUND", "path": "research/gorila_v2_evidence.json"}
+    try:
+        with open("research/gorila_v2_evidence.json", "r", encoding="utf-8") as fh:
+            v2_manifest = json.load(fh)
+        if v2_manifest.get("status") == "COMPLETE":
+            v2_evidence_sync = {"status": "PERSISTED", **persist_v2_evidence(store, v2_manifest)}
+        else:
+            v2_evidence_sync = {"status": "SKIPPED", "reason": "V2_MANIFEST_NOT_COMPLETE"}
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        v2_evidence_sync = {"status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}
+
     decision = evaluate_live_promotion(store)
     persisted_promotion = store.save_promotion_decision(
         "gorila-quantitative-v1", "V1", decision
@@ -320,6 +333,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "pmsfx_shadow": pmsfx_shadow,
         "settlement": settlement,
         "evidence_sync": evidence_sync,
+        "v2_evidence_sync": v2_evidence_sync,
         "promotion": {
             "decision": decision,
             "persisted": persisted_promotion,
