@@ -5,12 +5,9 @@ from .config import settings
 from .storage import Store
 
 
-_ALLOWED_PROMOTION = {"BLOCKED", "ELIGIBLE", "PROMOTED"}
-
-
 def _promotion_status() -> str:
-    value = os.getenv("GORILA_PREDICTOR_PROMOTION", "BLOCKED").strip().upper()
-    return value if value in _ALLOWED_PROMOTION else "BLOCKED"
+    # Promotion is derived from the validated research gate, not from runtime configuration.
+    return "BLOCKED"
 
 
 def build_control_state(store: Store | None = None) -> dict:
