@@ -1,4 +1,4 @@
-from gorila_argentum import runtime_tick
+from scripts import gorila_runtime_tick as runtime_tick
 
 
 def test_runtime_tick_refuses_non_durable_storage(tmp_path, monkeypatch):
