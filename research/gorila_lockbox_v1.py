@@ -316,7 +316,7 @@ def _fetch(symbol):
 def main():
     snapshot = os.getenv("GORILA_DATA_SNAPSHOT")
     series, snapshot_hash = load_or_fetch_series(SYMBOLS, _fetch, snapshot)
-    symbol_rows = {symbol: dataset(series, symbol, h) for h in HORIZONS for symbol in SYMBOLS}
+    symbol_rows = {(symbol, h): dataset(series, symbol, h) for h in HORIZONS for symbol in SYMBOLS}
     evidence = []
     for horizon in HORIZONS:
         rows = {symbol: symbol_rows[(symbol, horizon)] for symbol in SYMBOLS}
