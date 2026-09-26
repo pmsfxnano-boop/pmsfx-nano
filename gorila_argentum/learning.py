@@ -64,9 +64,11 @@ def run_learning_cycle(
     train_size: int = 80,
     test_size: int = 20,
     store: Store | None = None,
+    initialize_store: bool = True,
 ) -> dict[str, Any]:
     store = store or Store()
-    store.init()
+    if initialize_store:
+        store.init()
 
     dataset = build_training_dataset(store, symbol, horizon_days=horizon_days)
     if dataset["status"] != "READY":
