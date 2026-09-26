@@ -25,7 +25,7 @@ def fit_logit_intercept(
     probabilities: list[float],
     labels: list[float],
     *,
-    max_iter: int = 50,
+    max_iter: int = 80,
     tolerance: float = 1e-9,
 ) -> float:
     if len(probabilities) != len(labels) or not probabilities:
@@ -33,19 +33,24 @@ def fit_logit_intercept(
     if any(label not in (0.0, 1.0) for label in labels):
         raise ValueError("calibration_labels_must_be_binary")
 
-    intercept = 0.0
+    # The log-likelihood derivative is monotone decreasing in the intercept.
+    # Bisection therefore gives a bounded, stable solution even for strongly
+    # miscalibrated probabilities where an unconstrained Newton step can overshoot.
     base_logits = [_logit(p) for p in probabilities]
+    low, high = -20.0, 20.0
+
     for _ in range(max_iter):
+        intercept = (low + high) / 2.0
         fitted = [_sigmoid(z + intercept) for z in base_logits]
         gradient = sum(y - q for y, q in zip(labels, fitted))
-        curvature = sum(q * (1.0 - q) for q in fitted)
-        if curvature <= 1e-12:
-            break
-        step = gradient / curvature
-        intercept += step
-        if abs(step) <= tolerance:
-            break
-    return float(intercept)
+        if abs(gradient) <= tolerance or (high - low) <= tolerance:
+            return float(intercept)
+        if gradient > 0.0:
+            low = intercept
+        else:
+            high = intercept
+
+    return float((low + high) / 2.0)
 
 
 def apply_logit_intercept(probability: float, intercept: float) -> float:
