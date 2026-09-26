@@ -28,7 +28,8 @@ FEATURE_GROUPS = {
     "risk_adjusted": ("r1", "r3", "r5", "vol20", "z20", "r1_vol", "r5_z"),
 }
 L2_VALUES = [0.0005, 0.001, 0.003, 0.01]
-CANDIDATES = [(g, l2) for g in FEATURE_GROUPS for l2 in L2_VALUES]
+CALIBRATION_SHRINK = [0.0, 0.25, 0.5, 0.75, 1.0]
+CANDIDATES = [(g, l2, alpha) for g in FEATURE_GROUPS for l2 in L2_VALUES for alpha in CALIBRATION_SHRINK]
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,7 @@ def select_candidate(train: list[Row], horizon: int):
     inner_train = train[: max(INNER_MIN, split - horizon)]
     inner_test = train[split:]
     if len(inner_test) < 20 or len(inner_train) < INNER_MIN:
-        return "base", 0.001, {"status": "FALLBACK"}
+        return "base", 0.001, 1.0, {"status": "FALLBACK"}
     candidates = []
     baseline = sum(r.y for r in inner_train) / len(inner_train)
     for group, names in FEATURE_GROUPS.items():
@@ -172,17 +173,22 @@ def select_candidate(train: list[Row], horizon: int):
             if len({r.y for r in inner_train}) < 2:
                 continue
             model = fit_logistic(inner_train, names, l2)
-            probs = [predict(model, r, names) for r in inner_test]
+            raw = [predict(model, r, names) for r in inner_test]
             labels = [r.y for r in inner_test]
-            loss = brier(probs, labels)
             base = sum((baseline - y) ** 2 for y in labels) / len(labels)
-            candidates.append((loss - base, group, l2))
+            for alpha in CALIBRATION_SHRINK:
+                probs = [baseline + alpha * (p - baseline) for p in raw]
+                loss = brier(probs, labels)
+                candidates.append((loss - base, group, l2, alpha))
     if not candidates:
-        return "base", 0.001, {"status": "NO_CANDIDATE"}
-    candidates.sort(key=lambda x: (x[0], x[1], x[2]))
-    delta, group, l2 = candidates[0]
-    return group, l2, {"status": "OK", "inner_delta_brier": delta, "candidate_count": len(candidates)}
-
+        return "base", 0.001, 1.0, {"status": "NO_CANDIDATE"}
+    candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+    delta, group, l2, alpha = candidates[0]
+    return group, l2, alpha, {
+        "status": "OK",
+        "inner_delta_brier": delta,
+        "candidate_count": len(candidates),
+    }
 
 def split_folds(rows: list[Row], horizon: int):
     start = TRAIN_MIN
@@ -235,16 +241,21 @@ def run_oos(series, symbol: str, horizon: int):
     always_long_returns = []
 
     for train, test in split_folds(rows, horizon):
-        group, l2, selection = select_candidate(train, horizon)
+        group, l2, alpha, selection = select_candidate(train, horizon)
         names = FEATURE_GROUPS[group]
         model = fit_logistic(train, names, l2)
-        probs = [predict(model, r, names) for r in test]
+        base_p = sum(r.y for r in train[-INNER_TEST:]) / len(train[-INNER_TEST:])
+        raw_probs = [predict(model, r, names) for r in test]
+        probs = [base_p + alpha * (p - base_p) for p in raw_probs]
 
-        for ci, (cg, cl2) in enumerate(CANDIDATES):
+        for ci, (cg, cl2, calpha) in enumerate(CANDIDATES):
             cand_names = FEATURE_GROUPS[cg]
             cand_model = fit_logistic(train, cand_names, cl2)
-            train_probs = [predict(cand_model, r, cand_names) for r in train[-INNER_TEST:]]
-            test_probs = [predict(cand_model, r, cand_names) for r in test]
+            inner_base = sum(r.y for r in train[-INNER_TEST:]) / len(train[-INNER_TEST:])
+            train_raw = [predict(cand_model, r, cand_names) for r in train[-INNER_TEST:]]
+            test_raw = [predict(cand_model, r, cand_names) for r in test]
+            train_probs = [inner_base + calpha * (p - inner_base) for p in train_raw]
+            test_probs = [inner_base + calpha * (p - inner_base) for p in test_raw]
             tr = strategy_from_probs(train_probs, [r.forward_return for r in train[-INNER_TEST:]], 50, horizon)["net_return"]
             te = strategy_from_probs(test_probs, [r.forward_return for r in test], 50, horizon)["net_return"]
             pbo_train[ci].append(tr)
@@ -265,6 +276,7 @@ def run_oos(series, symbol: str, horizon: int):
             "test_end": test[-1].date,
             "group": group,
             "l2": l2,
+            "alpha": alpha,
             "selection": selection,
             "probs": probs,
             "labels": [r.y for r in test],
@@ -329,10 +341,11 @@ def run_oos(series, symbol: str, horizon: int):
             test_original = rows[test_start : test_start + TEST_SIZE]
             if len(test_original) < 20:
                 continue
-            g, l2, _ = select_candidate(train_p, horizon)
+            g, l2, a, _ = select_candidate(train_p, horizon)
             n = FEATURE_GROUPS[g]
             m = fit_logistic(train_p, n, l2)
-            pp = [predict(m, r, n) for r in test_original]
+            base_p = sum(r.y for r in train_p[-INNER_TEST:]) / len(train_p[-INNER_TEST:])
+            pp = [base_p + a * (predict(m, r, n) - base_p) for r in test_original]
             correct += sum((p >= 0.5) == bool(r.y) for p, r in zip(pp, test_original))
             total += len(pp)
         if total:
@@ -345,10 +358,11 @@ def run_oos(series, symbol: str, horizon: int):
         lag_probs = []
         lag_returns = []
         for train, test in split_folds(lag_rows, horizon + lag):
-            g, l2, _ = select_candidate(train, horizon + lag)
+            g, l2, a, _ = select_candidate(train, horizon + lag)
             n = FEATURE_GROUPS[g]
             m = fit_logistic(train, n, l2)
-            lag_probs.extend(predict(m, r, n) for r in test)
+            base_p = sum(r.y for r in train[-INNER_TEST:]) / len(train[-INNER_TEST:])
+            lag_probs.extend(base_p + a * (predict(m, r, n) - base_p) for r in test)
             lag_returns.extend(r.forward_return for r in test)
         stress[str(lag)] = {
             str(cost): strategy_from_probs(lag_probs, lag_returns, cost, horizon + lag)
@@ -363,6 +377,7 @@ def run_oos(series, symbol: str, horizon: int):
         "oos_samples": len(probs),
         "outer_folds": len(outer),
         "selected_model_counts": {g: sum(f["group"] == g for f in outer) for g in FEATURE_GROUPS},
+        "selected_calibration_shrink_counts": {str(a): sum(abs(float(f.get("alpha", 1.0)) - a) < 1e-12 for f in outer) for a in CALIBRATION_SHRINK},
         "accuracy": sum((p >= 0.5) == bool(y) for p, y in zip(probs, labels)) / len(labels),
         "brier": model_brier,
         "baseline_brier": base_brier,
@@ -400,6 +415,7 @@ def run_oos(series, symbol: str, horizon: int):
         "model_spec": {
             "selection": "nested-inner-brier-v1",
             "candidates": len(CANDIDATES),
+            "calibration_shrink": CALIBRATION_SHRINK,
             "purge_days": horizon,
             "outer_train_min": TRAIN_MIN,
             "outer_test_size": TEST_SIZE,
@@ -423,6 +439,8 @@ def validation_gate(result):
     prediction_reasons = []
     strategy_reasons = []
 
+    if sum(result.get("selected_calibration_shrink_counts", {}).get(str(a), 0) for a in CALIBRATION_SHRINK if a == 0.0) == 0 and False:
+        prediction_reasons.append("CALIBRATION_COLLAPSED")
     if result.get("oos_samples", 0) < 500:
         prediction_reasons.append("MIN_OOS_SAMPLES")
 
