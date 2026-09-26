@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .storage import Store
-from .promotion import evaluate_promotion, evaluate_live_promotion, CURRENT_BATCH10_EVIDENCE
+from .promotion import evaluate_promotion, evaluate_live_promotion, evaluate_predictive_promotion, CURRENT_BATCH10_EVIDENCE
 from .drift import rolling_drift
 from .calibration import build_recalibration_candidate
 
@@ -101,6 +101,7 @@ def build_control_state(store: Store | None = None) -> dict:
     alerts.sort(key=lambda row: (rank.get(row.get("status"), 9), row.get("created_at", "")), reverse=False)
 
     promotion_decision = store.latest_promotion_decision()
+    predictive_evidence = evaluate_predictive_promotion(store)
     live_evidence = evaluate_live_promotion(store)
     historical_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     promotion = _promotion_status(promotion_decision or live_evidence)
@@ -174,6 +175,7 @@ def build_control_state(store: Store | None = None) -> dict:
             "status": promotion,
             "automatic_promotion": False,
             "reason": promotion_reasons,
+            "predictive_evidence": predictive_evidence,
             "live_evidence": live_evidence,
             "historical_reference": historical_evaluation,
         },
