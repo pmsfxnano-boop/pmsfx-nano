@@ -248,16 +248,33 @@ def run_oos(series, symbol: str, horizon: int):
         raw_probs = [predict(model, r, names) for r in test]
         probs = [base_p + alpha * (p - base_p) for p in raw_probs]
 
+        inner_base = base_p
+        candidate_cache = {}
+        for cg in FEATURE_GROUPS:
+            for cl2 in L2_VALUES:
+                cand_names = FEATURE_GROUPS[cg]
+                cand_model = fit_logistic(train, cand_names, cl2)
+                candidate_cache[(cg, cl2)] = (
+                    [predict(cand_model, r, cand_names) for r in train[-INNER_TEST:]],
+                    [predict(cand_model, r, cand_names) for r in test],
+                )
+
         for ci, (cg, cl2, calpha) in enumerate(CANDIDATES):
-            cand_names = FEATURE_GROUPS[cg]
-            cand_model = fit_logistic(train, cand_names, cl2)
-            inner_base = sum(r.y for r in train[-INNER_TEST:]) / len(train[-INNER_TEST:])
-            train_raw = [predict(cand_model, r, cand_names) for r in train[-INNER_TEST:]]
-            test_raw = [predict(cand_model, r, cand_names) for r in test]
+            train_raw, test_raw = candidate_cache[(cg, cl2)]
             train_probs = [inner_base + calpha * (p - inner_base) for p in train_raw]
             test_probs = [inner_base + calpha * (p - inner_base) for p in test_raw]
-            tr = strategy_from_probs(train_probs, [r.forward_return for r in train[-INNER_TEST:]], 50, horizon)["net_return"]
-            te = strategy_from_probs(test_probs, [r.forward_return for r in test], 50, horizon)["net_return"]
+            tr = strategy_from_probs(
+                train_probs,
+                [r.forward_return for r in train[-INNER_TEST:]],
+                50,
+                horizon,
+            )["net_return"]
+            te = strategy_from_probs(
+                test_probs,
+                [r.forward_return for r in test],
+                50,
+                horizon,
+            )["net_return"]
             pbo_train[ci].append(tr)
             pbo_test[ci].append(te)
 
