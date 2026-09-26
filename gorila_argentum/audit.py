@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .control import build_control_state
-from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
+from .promotion import evaluate_promotion, evaluate_live_promotion, CURRENT_BATCH10_EVIDENCE
 from .storage import Store
 
 
@@ -9,7 +9,7 @@ def build_audit_state(store: Store | None = None) -> dict:
     store = store or Store()
     store.init()
     control = build_control_state(store)
-    promotion = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
+    promotion = evaluate_live_promotion(store)
     shadow = store.shadow_summary()
     learning = store.latest_learning(limit=5)
 
