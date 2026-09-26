@@ -113,8 +113,14 @@ def build_control_state(store: Store | None = None) -> dict:
         halt_reasons.append("NON_DURABLE_STORAGE")
     if any(row.get("status") == "ALERT" for row in alerts):
         halt_reasons.append("DRIFT_ALERT")
-    if any(row.get("status") in {"ERROR", "FAILED", "STALE"} for row in store.health()):
-        halt_reasons.append("SOURCE_HEALTH_FAILURE")
+    required_sources = {"BCRA/FX", "ArgentinaDatos/FX", "ArgentinaDatos/EMBI+"}
+    required_failures = [
+        row for row in store.health()
+        if row.get("source") in required_sources
+        and row.get("status") in {"ERROR", "FAILED", "STALE", "DEGRADED"}
+    ]
+    if required_failures:
+        halt_reasons.append("REQUIRED_SOURCE_HEALTH_FAILURE")
 
     if halt_reasons:
         circuit_status = "HALTED"
