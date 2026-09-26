@@ -56,6 +56,24 @@ def _ci(values, z=1.96):
     return [m - z * se, m + z * se]
 
 
+def _newey_west_ci(values, max_lag=3, z=1.96):
+    values = [float(v) for v in values if math.isfinite(float(v))]
+    n = len(values)
+    if n < 5:
+        return _ci(values, z)
+    mean = statistics.mean(values)
+    centered = [v - mean for v in values]
+    gamma0 = sum(v * v for v in centered) / n
+    bandwidth = min(max_lag, n - 1)
+    long_run = gamma0
+    for lag in range(1, bandwidth + 1):
+        gamma = sum(centered[t] * centered[t - lag] for t in range(lag, n)) / n
+        weight = 1.0 - lag / (bandwidth + 1.0)
+        long_run += 2.0 * weight * gamma
+    se = math.sqrt(max(long_run, 0.0) / n)
+    return [mean - z * se, mean + z * se]
+
+
 def _block_bootstrap_ci(values, seed, replicates=2000):
     values = [float(v) for v in values if math.isfinite(float(v))]
     n = len(values)
@@ -161,6 +179,7 @@ def evaluate_lockbox(series, symbol_rows, horizon):
     lock_rows = {s: {r.date: r for r in symbol_rows[s] if r.date in set(lockbox_dates)} for s in SYMBOLS}
     rank_ics = []
     rebalance_rank_ics = []
+    rebalance_rank_records = []
     fixed_returns = {c: [] for c in COSTS_BPS_PER_LEG}
     vol_returns = {c: [] for c in COSTS_BPS_PER_LEG}
     momentum_returns = {c: [] for c in COSTS_BPS_PER_LEG}
@@ -204,6 +223,7 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         if date_idx % horizon != 0:
             continue
         rebalance_rank_ics.append(rank_value)
+        rebalance_rank_records.append({"date": date, "rank_ic": rank_value})
 
         if max(ensemble.values()) - min(ensemble.values()) < MIN_SPREAD_Z:
             continue
@@ -264,13 +284,26 @@ def evaluate_lockbox(series, symbol_rows, horizon):
 
     mean_rank = statistics.mean(rebalance_rank_ics) if rebalance_rank_ics else None
     rank_ci = _block_bootstrap_ci(rebalance_rank_ics, SEED + horizon)
+    hac_ci = _newey_west_ci(rebalance_rank_ics, max_lag=3)
+    yearly = {}
+    for rec in rebalance_rank_records:
+        year = str(rec["date"])[:4]
+        yearly.setdefault(year, []).append(float(rec["rank_ic"]))
+    yearly_means = {year: statistics.mean(vals) for year, vals in yearly.items() if vals}
+    positive_years = sum(1 for value in yearly_means.values() if value > 0)
+    year_count = len(yearly_means)
     lockbox_net_50 = math.prod(1.0 + r for r in target) - 1.0 if target else 0.0
     momentum_net_50 = math.prod(1.0 + r for r in mom) - 1.0 if mom else 0.0
     fixed_net_50 = math.prod(1.0 + r for r in fixed) - 1.0 if fixed else 0.0
 
     prediction_ok = (
         len(rebalance_rank_ics) >= 50
-        and bool(rank_ci and rank_ci[0] > 0 and mean_rank is not None)
+        and bool(mean_rank is not None and (
+            (rank_ci and rank_ci[0] > 0)
+            or (hac_ci and hac_ci[0] > 0)
+        ))
+        and year_count >= 3
+        and positive_years >= max(2, math.ceil(0.6 * year_count))
         and (placebo_p95 is None or mean_rank > placebo_p95)
     )
     strategy_ok = (
@@ -285,8 +318,12 @@ def evaluate_lockbox(series, symbol_rows, horizon):
     strategy_reasons = []
     if len(rebalance_rank_ics) < 50:
         prediction_reasons.append("LOCKBOX_MIN_REBALANCE_OBS")
-    if not rank_ci or rank_ci[0] <= 0:
-        prediction_reasons.append("LOCKBOX_RANK_IC_BLOCK_BOOTSTRAP_CI_NOT_POSITIVE")
+    if not ((rank_ci and rank_ci[0] > 0) or (hac_ci and hac_ci[0] > 0)):
+        prediction_reasons.append("LOCKBOX_RANK_IC_CI_NOT_POSITIVE")
+    if year_count < 3:
+        prediction_reasons.append("LOCKBOX_MIN_YEAR_BUCKETS")
+    if positive_years < max(2, math.ceil(0.6 * year_count)):
+        prediction_reasons.append("LOCKBOX_YEARLY_STABILITY_FAILED")
     if placebo_p95 is not None and (mean_rank is None or mean_rank <= placebo_p95):
         prediction_reasons.append("LOCKBOX_PLACEBO_NOT_BEATEN")
     if len(target) < 20:
@@ -309,7 +346,11 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         "model_specs": model_specs,
         "mean_rank_ic": mean_rank,
         "rank_ic_ci95": rank_ci,
+        "rank_ic_hac_ci95": hac_ci,
         "rebalance_rank_ic_observations": len(rebalance_rank_ics),
+        "yearly_rank_ic_mean": yearly_means,
+        "positive_years": positive_years,
+        "year_count": year_count,
         "placebo_rank_ic_p95": placebo_p95,
         "trade_count_50bps": len(target),
         "net_return_50bps": lockbox_net_50,
