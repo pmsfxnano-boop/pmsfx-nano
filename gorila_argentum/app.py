@@ -23,7 +23,16 @@ app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
 @app.on_event("startup")
 def startup():
-    Store().init()
+    store = Store()
+    store.init()
+    proof = store.verify_persistence()
+    print(
+        "GORILA_PERSISTENCE_ROUNDTRIP",
+        proof["backend"],
+        proof["verified"],
+        proof["heartbeat_id"],
+        flush=True,
+    )
 
 @app.get("/health")
 def health():
