@@ -124,9 +124,10 @@ def evaluate_live_promotion(
     horizons=(5,10),
 ) -> dict[str, Any]:
     """Evaluate fresh evidence with separate predictor and strategy gates."""
-    from .evidence import latest_evidence
+    from .evidence import latest_evidence, latest_manifest
 
     rows = latest_evidence(store, limit=500)
+    manifest = latest_manifest(store)
     required = {(s, int(h)) for s in symbols for h in horizons}
     latest = {}
     for row in rows:
