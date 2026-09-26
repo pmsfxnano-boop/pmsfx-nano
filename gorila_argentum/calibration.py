@@ -125,4 +125,3 @@ def build_recalibration_candidate(
         "automatic_apply": False,
         "apply_gate": "PROMOTION_AND_DURABILITY_REQUIRED",
     }
-}
