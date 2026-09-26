@@ -15,9 +15,10 @@ from gorila_argentum.calibration import build_recalibration_candidate
 from gorila_argentum.config import settings
 from gorila_argentum.learning import run_learning_cycle
 from gorila_argentum.ingest import run_batch
-from gorila_argentum.promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
+from gorila_argentum.promotion import evaluate_live_promotion
 from gorila_argentum.storage import Store
 from gorila_argentum.shadow import compute_shadow_outcome
+from gorila_argentum.evidence import persist_manifest
 from quant.db import connection as quant_connection
 
 
@@ -285,9 +286,23 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         limit=100,
     )
 
-    decision = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
+    manifest_path = os.getenv("GORILA_EVIDENCE_MANIFEST_PATH", "research/evidence_manifest.json")
+    evidence_sync = {"status": "NOT_FOUND", "path": manifest_path}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        if manifest.get("status") == "COMPLETE":
+            evidence_sync = {"status": "PERSISTED", **persist_manifest(store, manifest, source="runtime_tick")}
+        else:
+            evidence_sync = {"status": "SKIPPED", "reason": "MANIFEST_NOT_COMPLETE", "path": manifest_path}
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        evidence_sync = {"status": "ERROR", "error": f"{type(exc).__name__}: {exc}", "path": manifest_path}
+
+    decision = evaluate_live_promotion(store)
     persisted_promotion = store.save_promotion_decision(
-        "multihorizon-meta-research-v1", "V2", decision
+        "gorila-quantitative-v1", "V1", decision
     )
 
     shadow_rows = store.latest_shadow(status="SETTLED", limit=500)
@@ -304,6 +319,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "shadow_capture": shadow_capture,
         "pmsfx_shadow": pmsfx_shadow,
         "settlement": settlement,
+        "evidence_sync": evidence_sync,
         "promotion": {
             "decision": decision,
             "persisted": persisted_promotion,
