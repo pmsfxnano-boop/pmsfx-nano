@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from .storage import Store
 from .ingest import run_batch
@@ -16,6 +16,7 @@ from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 from .learning import run_learning_cycle
 from .calibration import build_recalibration_candidate
 from .audit import build_audit_state
+from .security import require_internal_key
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -40,7 +41,8 @@ def live_state():
     return build_market_state()
 
 @app.post("/api/ingest")
-def ingest():
+def ingest(x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key")):
+    require_internal_key(x_gorila_internal_key)
     return run_batch()
 
 @app.get("/api/features/{symbol}")
@@ -71,8 +73,15 @@ def shadow_summary():
     return store.shadow_summary()
 
 @app.post("/api/shadow/settle-due")
-def shadow_settle_due(max_lateness_seconds: int = 3600, limit: int = 50):
+def shadow_settle_due(
+    max_lateness_seconds: int = 3600,
+    limit: int = 50,
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    require_internal_key(x_gorila_internal_key)
     store = Store(); store.init()
+    if not store.pg:
+        raise HTTPException(status_code=409, detail="durable_storage_required")
     return store.settle_due_shadow_from_observations(
         max_lateness_seconds=max(60, min(172800, int(max_lateness_seconds))),
         limit=max(1, min(100, int(limit))),
@@ -87,15 +96,30 @@ def promotion():
     }
 
 @app.post("/api/promotion/evaluate")
-def promotion_evaluate():
+def promotion_evaluate(
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    require_internal_key(x_gorila_internal_key)
     store = Store(); store.init()
     decision = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     persisted = store.save_promotion_decision("multihorizon-meta-research-v1", "V2", decision)
     return {"decision": decision, "persisted": persisted}
 
 @app.post("/api/learning/run")
-def learning_run(symbol: str, horizon_days: int = 5):
-    return run_learning_cycle(symbol, horizon_days=max(1, min(20, int(horizon_days))))
+def learning_run(
+    symbol: str,
+    horizon_days: int = 5,
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    require_internal_key(x_gorila_internal_key)
+    store = Store(); store.init()
+    if not store.pg:
+        raise HTTPException(status_code=409, detail="durable_storage_required")
+    return run_learning_cycle(
+        symbol,
+        horizon_days=max(1, min(20, int(horizon_days))),
+        store=store,
+    )
 
 @app.get("/api/recalibration")
 def recalibration(limit: int = 10):
@@ -103,7 +127,10 @@ def recalibration(limit: int = 10):
     return {"items": store.latest_calibration(limit=limit)}
 
 @app.post("/api/recalibration/evaluate")
-def recalibration_evaluate():
+def recalibration_evaluate(
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    require_internal_key(x_gorila_internal_key)
     store = Store(); store.init()
     rows = store.latest_shadow(status="SETTLED", limit=500)
     result = build_recalibration_candidate(rows)
@@ -122,6 +149,7 @@ def learning(symbol: str | None = None, limit: int = 20):
 
 @app.post("/api/shadow/prediction")
 def create_shadow_prediction(
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
     symbol: str,
     probability_up: float,
     horizon_seconds: int = 900,
@@ -130,6 +158,7 @@ def create_shadow_prediction(
     entry_price: float = 0.0,
     feature_hash: str = "",
 ):
+    require_internal_key(x_gorila_internal_key)
     try:
         values = validate_shadow_prediction(
             symbol=symbol,
@@ -155,7 +184,13 @@ def create_shadow_prediction(
     )
 
 @app.post("/api/shadow/{prediction_id}/settle")
-def settle_shadow_prediction(prediction_id: str, observed_price: float, observed_at: str):
+def settle_shadow_prediction(
+    prediction_id: str,
+    observed_price: float,
+    observed_at: str,
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    require_internal_key(x_gorila_internal_key)
     store = Store(); store.init()
     prediction = store.get_shadow_prediction(prediction_id)
     if not prediction:
@@ -192,7 +227,10 @@ def coupling_current():
     return current_coupling_state(pairs)
 
 @app.post("/api/coupling")
-def coupling():
+def coupling(
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    require_internal_key(x_gorila_internal_key)
     pairs=[("USD_MEP","sell","USD_CCL","sell"),("USD_BLUE","sell","USD_MEP","sell"),("USD_MEP","sell","EMBI_ARG","embi_bps"),("USD_CCL","sell","EMBI_ARG","embi_bps"),("USD_MEP","sell","USD_BCRA","reference")]
     return build_matrix(pairs)
 

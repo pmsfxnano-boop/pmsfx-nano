@@ -1,0 +1,66 @@
+name: Gorila Argentum Runtime Scheduler
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+env:
+  GORILA_RUNTIME_URL: \${{ secrets.GORILA_RUNTIME_URL }}
+  GORILA_INTERNAL_API_KEY: \${{ secrets.GORILA_INTERNAL_API_KEY }}
+
+jobs:
+  runtime-tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check scheduler configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GORILA_RUNTIME_URL:-}" || -z "${GORILA_INTERNAL_API_KEY:-}" ]]; then
+            echo "Scheduler not configured: set GORILA_RUNTIME_URL and GORILA_INTERNAL_API_KEY."
+            echo "GORILA_SCHEDULER_SKIP=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+      - name: Check runtime durability
+        if: env.GORILA_SCHEDULER_SKIP != '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/gorila-tick
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 20 "$GORILA_RUNTIME_URL/health" -o /tmp/gorila-tick/health.json
+          python - <<'PY'
+import json, os, pathlib
+payload=json.loads(pathlib.Path('/tmp/gorila-tick/health.json').read_text())
+if payload.get('storage') != 'postgres':
+    print('Runtime is not on durable Postgres storage; scheduler tick skipped.')
+    with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as fh:
+        fh.write('GORILA_SCHEDULER_SKIP=1\n')
+PY
+
+      - name: Learning and settlement tick
+        if: env.GORILA_SCHEDULER_SKIP != '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for symbol in GGAL BMA YPFD PAMP TGSU2 CEPU; do
+            curl --fail --silent --show-error --connect-timeout 10 --max-time 30 -X POST -H "X-Gorila-Internal-Key: $GORILA_INTERNAL_API_KEY" "$GORILA_RUNTIME_URL/api/learning/run?symbol=$symbol&horizon_days=5" -o "/tmp/gorila-tick/learning-$symbol.json"
+          done
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 30 -X POST -H "X-Gorila-Internal-Key: $GORILA_INTERNAL_API_KEY" "$GORILA_RUNTIME_URL/api/shadow/settle-due" -o /tmp/gorila-tick/settle.json
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 30 -X POST -H "X-Gorila-Internal-Key: $GORILA_INTERNAL_API_KEY" "$GORILA_RUNTIME_URL/api/promotion/evaluate" -o /tmp/gorila-tick/promotion.json
+
+      - name: Audit snapshot
+        if: always() && env.GORILA_SCHEDULER_SKIP != '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 30 "$GORILA_RUNTIME_URL/api/audit" -o /tmp/gorila-tick/audit.json
+
+      - name: Upload runtime tick evidence
+        if: always() && env.GORILA_SCHEDULER_SKIP != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gorila-runtime-tick-\${{ github.run_id }}
+          path: /tmp/gorila-tick
