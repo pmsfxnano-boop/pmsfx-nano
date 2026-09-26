@@ -25,7 +25,7 @@ from research.gorila_quantitative_v1_oos import (
 
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 HORIZONS = [int(x) for x in os.getenv("GORILA_LOCKBOX_HORIZONS", "5,10").split(",") if x.strip()]
-LOCKBOX_DAYS = int(os.getenv("GORILA_LOCKBOX_DAYS", "252"))
+LOCKBOX_DAYS = int(os.getenv("GORILA_LOCKBOX_DAYS", "756"))
 COSTS_BPS_PER_LEG = [25, 50, 100]
 MIN_SPREAD_Z = float(os.getenv("GORILA_LOCKBOX_MIN_SPREAD_Z", "1.0"))
 TARGET_ANNUAL_VOL = float(os.getenv("GORILA_LOCKBOX_TARGET_VOL", "0.10"))
