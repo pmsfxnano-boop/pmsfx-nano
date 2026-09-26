@@ -28,6 +28,9 @@ def build_audit_state(store: Store | None = None) -> dict:
             "runs": len(learning),
             "latest": learning[0] if learning else None,
         },
+        "recalibration": {
+            "latest": control["recalibration"],
+        },
         "drift": control["drift"],
         "source_health": control["source_health"],
         "readiness": {
