@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone, timedelta
 
 
 def validate_shadow_prediction(
@@ -75,3 +76,17 @@ def compute_shadow_outcome(
         "brier": brier,
         "logloss": logloss,
     }
+
+
+def validate_observed_at(created_at: str, horizon_seconds: int, observed_at: str) -> str:
+    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    created = created.astimezone(timezone.utc)
+    observed = observed.astimezone(timezone.utc)
+    if observed < created + timedelta(seconds=int(horizon_seconds)):
+        raise ValueError("observed_before_horizon")
+    return observed.isoformat()
