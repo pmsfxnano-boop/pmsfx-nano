@@ -450,6 +450,11 @@ def gorila_health():
         "mode": "RESEARCH",
         "trading_execution": False,
         "automatic_promotion": False,
+        "autonomous_cycle": {
+            "enabled": True,
+            "interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS,
+            "start_delay_seconds": _AUTONOMOUS_START_DELAY_SECONDS,
+        },
         "primary_market_data": {
             "provider": "TIINGO",
             "configured": tiingo_configured,
