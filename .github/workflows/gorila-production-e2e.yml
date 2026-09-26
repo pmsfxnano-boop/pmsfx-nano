@@ -1,0 +1,89 @@
+name: Gorila Argentum production E2E
+
+on:
+  push:
+    branches: [gorila-argentum-v0-hardening]
+    paths:
+      - "gorila_argentum/**"
+      - "main.py"
+      - "quant/**"
+      - "requirements-gorila.txt"
+      - ".github/workflows/gorila-production-e2e.yml"
+
+jobs:
+  production-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for Render rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com"
+          for attempt in $(seq 1 24); do
+            echo "health probe $attempt/24"
+            if curl --fail --silent --show-error --connect-timeout 15 --max-time 30 \
+              "$URL/api/gorila/health" -o /tmp/health.json; then
+              cat /tmp/health.json
+              break
+            fi
+            sleep 10
+          done
+          test -s /tmp/health.json
+
+      - name: Verify Gorila health contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("/tmp/health.json").read_text())
+          assert d["service"] == "gorila-argentum", d
+          assert d["mode"] == "RESEARCH", d
+          assert d["trading_execution"] is False, d
+          assert d["automatic_promotion"] is False, d
+          assert "sources" in d, d
+          print("GORILA_HEALTH_PASS", json.dumps(d, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify Argentina data surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com/api/gorila/market"
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 45 "$URL" -o /tmp/market.json
+          cat /tmp/market.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("/tmp/market.json").read_text())
+          assert "fx" in d and "risk" in d, d
+          assert "official" in d["fx"], d
+          assert "embi_bps" in d["risk"], d
+          print("GORILA_MARKET_PASS")
+          PY
+
+      - name: Verify production terminal
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com/api/gorila/terminal/AAPL"
+          curl --fail --silent --show-error --connect-timeout 20 --max-time 180 "$URL" -o /tmp/terminal.json
+          cat /tmp/terminal.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("/tmp/terminal.json").read_text())
+          assert d["service"] == "gorila-argentum", d
+          assert d["symbol"] == "AAPL", d
+          assert "quote" in d, d
+          assert "forecast" in d, d
+          assert "macro" in d, d
+          assert "chart" in d, d
+          print("GORILA_TERMINAL_PASS", {
+              "quote_source": (d.get("quote") or {}).get("source"),
+              "forecast_status": (d.get("forecast") or {}).get("forecast_status"),
+              "chart_points": len(d.get("chart") or []),
+          })
+          PY
