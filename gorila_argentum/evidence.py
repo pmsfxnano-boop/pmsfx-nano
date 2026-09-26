@@ -54,7 +54,11 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
                       model_id=EXCLUDED.model_id,
                       dataset_sha256=EXCLUDED.dataset_sha256,
                       validation_status=EXCLUDED.validation_status,
+                      prediction_status=EXCLUDED.prediction_status,
+                      strategy_status=EXCLUDED.strategy_status,
                       validation_reasons=EXCLUDED.validation_reasons,
+                      prediction_reasons=EXCLUDED.prediction_reasons,
+                      strategy_reasons=EXCLUDED.strategy_reasons,
                       manifest_sha256=EXCLUDED.manifest_sha256,
                       metrics=EXCLUDED.metrics
                     """,
@@ -121,8 +125,8 @@ def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int |
                        sample_count,oos_samples,outer_folds,accuracy,brier,baseline_brier,
                        brier_skill,brier_skill_ci_low,brier_skill_ci_high,logloss,rank_ic,
                        net_return_50bps,placebo_accuracy_p95,pbo,dsr,execution_delta_50bps,
-                       stress_pass,data_health,point_in_time,validation_status,
-                       validation_reasons,manifest_sha256,metrics
+                       stress_pass,data_health,point_in_time,validation_status,prediction_status,strategy_status,
+                       validation_reasons,prediction_reasons,strategy_reasons,manifest_sha256,metrics
                 FROM research_evidence
                 {where}
                 ORDER BY created_at DESC,symbol,horizon_days
@@ -135,6 +139,8 @@ def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int |
     for row in rows:
         try:
             row["validation_reasons"] = json.loads(row["validation_reasons"] or "[]")
+            row["prediction_reasons"] = json.loads(row.get("prediction_reasons") or "[]")
+            row["strategy_reasons"] = json.loads(row.get("strategy_reasons") or "[]")
         except Exception:
             pass
         try:
