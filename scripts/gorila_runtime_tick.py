@@ -6,6 +6,7 @@ from gorila_argentum.audit import build_audit_state
 from gorila_argentum.calibration import build_recalibration_candidate
 from gorila_argentum.config import settings
 from gorila_argentum.learning import run_learning_cycle
+from gorila_argentum.ingest import run_batch
 from gorila_argentum.promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
 from gorila_argentum.storage import Store
 
@@ -16,6 +17,7 @@ def main() -> int:
     if not store.pg:
         raise SystemExit("durable_storage_required")
 
+    ingestion = run_batch()
     learning = [
         run_learning_cycle(symbol, horizon_days=5, store=store)
         for symbol in settings.core_symbols
@@ -40,6 +42,7 @@ def main() -> int:
     audit = build_audit_state(store)
     payload = {
         "status": "COMPLETED",
+        "ingestion": ingestion,
         "learning": learning,
         "settlement": settlement,
         "promotion": {
