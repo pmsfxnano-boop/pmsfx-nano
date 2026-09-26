@@ -2,8 +2,8 @@ from gorila_argentum.drift import evaluate_drift, rolling_drift
 
 
 def test_no_drift_is_ok():
-    reference = [float(i) for i in range(1, 101)]
-    current = [float(i) for i in range(71, 101)]
+    reference = [float(i % 20) for i in range(100)]
+    current = [float(i % 20) for i in range(30)]
     result = evaluate_drift(reference, current)
     assert result["status"] in {"OK", "WARN"}
     assert result["psi"] < 0.25
