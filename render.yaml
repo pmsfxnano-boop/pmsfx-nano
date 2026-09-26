@@ -17,3 +17,18 @@ services:
         fromDatabase:
           name: pmsfx-nano-db
           property: connectionString
+
+  - type: web
+    name: gorila-argentum-research
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements-gorila.txt
+    startCommand: uvicorn gorila_argentum.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pmsfx-nano-db
+          property: connectionString
