@@ -8,6 +8,8 @@ import time
 
 import httpx
 
+from research.gorila_data_snapshot import load_or_fetch_series
+
 SYMBOLS = ["GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU"]
 HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 WINDOWS = [int(x) for x in os.getenv("GORILA_JAC_WINDOWS", "60,90,120,180").split(",") if x.strip()]
@@ -296,7 +298,7 @@ def build_rows(series, window, ridge, horizon, lag):
     return out
 
 
-series = {s: yahoo(s) for s in SYMBOLS}
+series, SNAPSHOT_SHA256 = load_or_fetch_series(SYMBOLS, yahoo, os.getenv("GORILA_DATA_SNAPSHOT"))
 results = []
 # Central ablation across all groups.
 for horizon in HORIZONS:
@@ -350,6 +352,7 @@ print(json.dumps({
     "status": "COMPLETE",
     "method": "jacobian-nonequilibrium-wfo-stress-v1",
     "symbols": SYMBOLS,
+    "data_snapshot_sha256": SNAPSHOT_SHA256,
     "horizons": HORIZONS,
     "windows": WINDOWS,
     "ridges": RIDGES,
