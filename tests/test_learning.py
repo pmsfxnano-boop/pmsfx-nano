@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timedelta, timezone
 
 from gorila_argentum.learning import build_training_dataset, run_learning_cycle
 from gorila_argentum.storage import Store
@@ -12,7 +13,7 @@ def _seed_prices(store):
             "symbol": "GGAL",
             "field": "close",
             "value": value,
-            "event_time": f"2026-01-{(i % 28) + 1:02d}T00:00:00+00:00",
+            "event_time": (datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)).isoformat(),
             "received_time": "2026-09-26T00:00:00+00:00",
             "source": "TEST",
         })
