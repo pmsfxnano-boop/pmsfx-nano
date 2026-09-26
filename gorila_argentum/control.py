@@ -52,6 +52,7 @@ def build_control_state(store: Store | None = None) -> dict:
             "automatic_kill_switch": "NOT_IMPLEMENTED",
             "shadow_ledger": "IMPLEMENTED",
             "continuous_learning": "IMPLEMENTED_AS_CANDIDATE_CYCLE",
+            "continuous_learning_promotion": "BLOCKED_UNTIL_PROMOTION_GATE",
         },
         "source_health": store.health(),
         "drift": {
