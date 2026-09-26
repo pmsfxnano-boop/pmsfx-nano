@@ -179,15 +179,38 @@ class Store:
         conn.commit(); conn.close(); self.conn=None
 
     def recent_series(self, symbol, field, limit=250):
-        conn=self.connect()
+        conn = self.connect()
+        fetch_limit = max(int(limit) * 3, int(limit))
         if self.pg:
             with conn.cursor() as cur:
-                cur.execute("SELECT event_time,value FROM observations WHERE symbol=%s AND field=%s AND value IS NOT NULL ORDER BY event_time DESC LIMIT %s",(symbol,field,limit))
-                out=cur.fetchall()
+                cur.execute(
+                    """SELECT event_time,value,source,received_time
+                       FROM observations
+                       WHERE symbol=%s AND field=%s AND value IS NOT NULL
+                       ORDER BY event_time DESC, received_time DESC, source ASC
+                       LIMIT %s""",
+                    (symbol, field, fetch_limit),
+                )
+                out = cur.fetchall()
         else:
-            out=conn.execute("SELECT event_time,value FROM observations WHERE symbol=? AND field=? AND value IS NOT NULL ORDER BY event_time DESC LIMIT ?",(symbol,field,limit)).fetchall()
-        conn.close(); self.conn=None
-        return list(reversed([(r[0],float(r[1])) for r in out]))
+            out = conn.execute(
+                """SELECT event_time,value,source,received_time
+                   FROM observations
+                   WHERE symbol=? AND field=? AND value IS NOT NULL
+                   ORDER BY event_time DESC, received_time DESC, source ASC
+                   LIMIT ?""",
+                (symbol, field, fetch_limit),
+            ).fetchall()
+        conn.close(); self.conn = None
+
+        dedup = {}
+        for row in out:
+            event_time = row[0]
+            if event_time not in dedup:
+                dedup[event_time] = (event_time, float(row[1]))
+            if len(dedup) >= int(limit):
+                break
+        return list(reversed(list(dedup.values())))
 
     def save_coupling(self, horizon, matrix, metadata):
         conn=self.connect(); now=utc_now(); payload=json.dumps(matrix)
