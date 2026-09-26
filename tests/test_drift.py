@@ -62,3 +62,10 @@ def test_drift_snapshot_roundtrip(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["status"] == "WARN"
     assert rows[0]["metadata"]["trigger"] == "test"
+
+
+def test_return_series_drift_is_stationary_fixture():
+    reference = [0.001 * ((i % 5) - 2) for i in range(90)]
+    current = [0.001 * ((i % 5) - 2) for i in range(30)]
+    result = evaluate_drift(reference, current)
+    assert result["status"] in {"OK", "WARN"}
