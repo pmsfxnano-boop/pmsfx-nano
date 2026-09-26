@@ -384,7 +384,8 @@ async def _autonomous_loop() -> None:
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )
-        await asyncio.sleep(_AUTONOMOUS_INTERVAL_SECONDS)
+        retry_seconds = 15 if _AUTONOMOUS_STATE.get("status") in {"SKIPPED_ALREADY_RUNNING", "SKIPPED_ALREADY_CLAIMED"} else _AUTONOMOUS_INTERVAL_SECONDS
+        await asyncio.sleep(retry_seconds)
 
 
 async def _macro_loop() -> None:
