@@ -64,7 +64,9 @@ def evaluate_promotion(
             checks[key] = False
             reasons.append(f"{reason}_MISSING")
         else:
-            ok = float(value) >= float(threshold)
+            # DSR is an evidence-strength statistic: exactly zero means no
+            # positive deflated-Sharpe evidence and therefore must not pass.
+            ok = float(value) > float(threshold) if key == "cpcv_dsr_mean" else float(value) >= float(threshold)
             checks[key] = {"value": float(value), "threshold": float(threshold), "pass": ok}
             if not ok:
                 reasons.append(reason)
