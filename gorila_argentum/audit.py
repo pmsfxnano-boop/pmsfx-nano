@@ -30,9 +30,15 @@ def build_audit_state(store: Store | None = None) -> dict:
         },
         "drift": control["drift"],
         "source_health": control["source_health"],
+        "readiness": {
+            "storage_durable": control["runtime"]["storage_durable"],
+            "circuit_breaker": control["runtime"]["circuit_breaker"],
+            "promotion_operational_gate": control["runtime"]["promotion_operational_gate"],
+        },
         "invariants": {
             "trading_execution": False,
             "automatic_promotion": False,
             "point_in_time_shadow_settlement": True,
+            "durable_storage_required_for_promotion": True,
         },
     }
