@@ -358,6 +358,18 @@ async def _autonomous_loop() -> None:
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )
+            print(
+                "GORILA_AUTONOMOUS_CYCLE",
+                {
+                    "run_id": result.get("run_id"),
+                    "status": result.get("status"),
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "shadow_predictions": (result.get("audit") or {}).get("shadow", {}).get("predictions"),
+                    "shadow_settled": (result.get("audit") or {}).get("shadow", {}).get("settled"),
+                    "pmsfx_shadow": result.get("pmsfx_shadow"),
+                },
+                flush=True,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
