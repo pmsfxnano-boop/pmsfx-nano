@@ -2,6 +2,15 @@ from __future__ import annotations
 import json, sqlite3, os, uuid
 from datetime import datetime, timezone, timedelta
 
+def _as_iso(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (
  id BIGSERIAL PRIMARY KEY,
@@ -240,6 +249,8 @@ class Store:
             item = dict(zip(
                 ["id","kind","started_at","completed_at","status","result"], row
             ))
+            item["started_at"] = _as_iso(item.get("started_at"))
+            item["completed_at"] = _as_iso(item.get("completed_at"))
             try:
                 item["result"] = json.loads(item["result"] or "{}")
             except Exception:
@@ -482,7 +493,7 @@ class Store:
                 ).fetchone()
             conn.close(); self.conn = None
             if row:
-                return {"id": row[0], "created_at": row[1], "status": row[2], "existing": True}
+                return {"id": row[0], "created_at": _as_iso(row[1]), "status": row[2], "existing": True}
 
         prediction_id = uuid.uuid4().hex
         conn = self.connect(); now = created_at or utc_now()
@@ -504,7 +515,7 @@ class Store:
                 regime,entry_price,feature_hash,status,settled_at,metadata)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
         conn.commit(); conn.close(); self.conn=None
-        return {"id": prediction_id, "created_at": now, "status": "OPEN", "existing": False}
+        return {"id": prediction_id, "created_at": _as_iso(now), "status": "OPEN", "existing": False}
 
     def get_shadow_prediction(self, prediction_id):
         conn = self.connect()
@@ -524,6 +535,8 @@ class Store:
             out = dict(row) if row else None
         conn.close(); self.conn=None
         if out:
+            out["created_at"] = _as_iso(out.get("created_at"))
+            out["settled_at"] = _as_iso(out.get("settled_at"))
             try: out["metadata"] = json.loads(out["metadata"] or "{}")
             except Exception: pass
         return out
@@ -535,8 +548,16 @@ class Store:
         if prediction["status"] != "OPEN":
             raise ValueError("shadow_prediction_not_open")
 
-        created_dt = datetime.fromisoformat(prediction["created_at"].replace("Z", "+00:00"))
-        observed_dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        created_value = prediction["created_at"]
+        observed_value = observed_at
+        created_dt = (
+            created_value if isinstance(created_value, datetime)
+            else datetime.fromisoformat(str(created_value).replace("Z", "+00:00"))
+        )
+        observed_dt = (
+            observed_value if isinstance(observed_value, datetime)
+            else datetime.fromisoformat(str(observed_value).replace("Z", "+00:00"))
+        )
         if created_dt.tzinfo is None:
             created_dt = created_dt.replace(tzinfo=timezone.utc)
         if observed_dt.tzinfo is None:
@@ -604,7 +625,11 @@ class Store:
 
             chosen = None
             for event_time, value in rows:
-                observed = _dt.datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+                observed = (
+                    event_time
+                    if isinstance(event_time, _dt.datetime)
+                    else _dt.datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+                )
                 if observed.tzinfo is None:
                     observed = observed.replace(tzinfo=_dt.timezone.utc)
                 observed = observed.astimezone(_dt.timezone.utc)
