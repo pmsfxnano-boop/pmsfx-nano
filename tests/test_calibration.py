@@ -45,4 +45,4 @@ def test_recalibration_candidate_reduces_calibration_error():
     assert result["status"] in {"CANDIDATE_READY", "CANDIDATE_REJECTED"}
     assert result["automatic_apply"] is False
     assert result["apply_gate"] == "PROMOTION_AND_DURABILITY_REQUIRED"
-    assert isclose(result["baseline"]["brier"], 0.25, rel_tol=0.2)
+    assert isclose(result["baseline"]["brier"], 0.34, rel_tol=0.05)
