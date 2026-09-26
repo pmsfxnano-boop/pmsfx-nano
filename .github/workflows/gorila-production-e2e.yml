@@ -50,6 +50,28 @@ jobs:
           print("GORILA_HEALTH_PASS", json.dumps(d, indent=2, sort_keys=True))
           PY
 
+      - name: Verify validated cross-sectional predictor
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com/api/gorila/cross-sectional"
+          curl --fail --silent --show-error --connect-timeout 20 --max-time 180 "$URL" -o /tmp/cross_sectional.json
+          cat /tmp/cross_sectional.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("/tmp/cross_sectional.json").read_text())
+          assert d["status"] in {"READY","INSUFFICIENT_DATA"}, d
+          if d["status"] == "READY":
+              assert d["research_only"] is True, d
+              assert d["no_execution_authority"] is True, d
+              assert d["model"] == "fixed-pooled-logit-v1", d
+              assert d["horizon_days"] == 5, d
+              assert len(d["items"]) == 6, d
+          print("GORILA_CROSS_SECTIONAL_PASS")
+          PY
+
+
       - name: Verify autonomous runtime completed
         shell: bash
         run: |
