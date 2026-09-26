@@ -42,7 +42,7 @@ from .shadow import compute_shadow_outcome, validate_shadow_prediction
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
-from scripts.gorila_runtime_tick import run_tick as run_runtime_tick
+from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
 # The public service uses a single process. The cache keeps the latency-critical
@@ -59,6 +59,22 @@ _MACRO_INTERVAL_SECONDS = max(
     60,
     int(__import__("os").getenv("GORILA_MACRO_INTERVAL_SECONDS", "300")),
 )
+
+_AUTONOMOUS_INTERVAL_SECONDS = max(
+    300,
+    int(os.getenv("GORILA_AUTONOMOUS_INTERVAL_SECONDS", "300")),
+)
+_AUTONOMOUS_START_DELAY_SECONDS = max(
+    10,
+    int(os.getenv("GORILA_AUTONOMOUS_START_DELAY_SECONDS", "20")),
+)
+_AUTONOMOUS_TASK: asyncio.Task | None = None
+_AUTONOMOUS_STATE: dict[str, Any] = {
+    "status": "STARTING",
+    "updated_at": None,
+    "last_result": None,
+    "interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS,
+}
 
 # The mature PMSF-X Render service already owns the verified Tiingo connection.
 # Gorila can read that research engine when its own Tiingo secret is not present.
@@ -323,6 +339,40 @@ def _run_macro_ingest() -> dict[str, Any]:
     return payload
 
 
+async def _autonomous_loop() -> None:
+    await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
+    while True:
+        started = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(
+                run_autonomous_tick,
+                kind="autonomous",
+            )
+            _AUTONOMOUS_STATE.update(
+                {
+                    "status": result.get("status", "UNKNOWN"),
+                    "updated_at": time.time(),
+                    "last_result": result,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _AUTONOMOUS_STATE.update(
+                {
+                    "status": "ERROR",
+                    "updated_at": time.time(),
+                    "last_result": {
+                        "status": "ERROR",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            )
+        await asyncio.sleep(_AUTONOMOUS_INTERVAL_SECONDS)
+
+
 async def _macro_loop() -> None:
     while True:
         started = time.perf_counter()
@@ -355,25 +405,34 @@ async def _macro_loop() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK
     Store().init()
     if _MACRO_TASK is None or _MACRO_TASK.done():
         _MACRO_TASK = asyncio.create_task(
             _macro_loop(),
             name="gorila-argentina-macro-loop",
         )
+    if _AUTONOMOUS_TASK is None or _AUTONOMOUS_TASK.done():
+        _AUTONOMOUS_TASK = asyncio.create_task(
+            _autonomous_loop(),
+            name="gorila-autonomous-runtime-loop",
+        )
 
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK
-    if _MACRO_TASK is not None:
-        _MACRO_TASK.cancel()
-        try:
-            await _MACRO_TASK
-        except asyncio.CancelledError:
-            pass
+    global _MACRO_TASK, _AUTONOMOUS_TASK
+    for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
+        if task is not None:
+            task.cancel()
+    for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     _MACRO_TASK = None
+    _AUTONOMOUS_TASK = None
 
 
 @app.get("/", include_in_schema=False)
@@ -417,6 +476,17 @@ def gorila_health():
         "database": persistence_summary(),
         "market_stream": stream_status(),
         "market_session": market_session_state(),
+        "autonomous_runtime": {
+            **_AUTONOMOUS_STATE,
+            "updated_at": (
+                __import__("datetime").datetime.fromtimestamp(
+                    _AUTONOMOUS_STATE["updated_at"],
+                    tz=__import__("datetime").timezone.utc,
+                ).isoformat()
+                if _AUTONOMOUS_STATE.get("updated_at")
+                else None
+            ),
+        },
         "macro_ingest": {
             **_MACRO_STATE,
             "updated_at": (
