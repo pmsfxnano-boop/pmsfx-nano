@@ -278,9 +278,13 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         if one:
             placebo_means.append(statistics.mean(one))
     placebo_p95 = None
+    placebo_p_value = None
     if placebo_means:
         ordered = sorted(placebo_means)
         placebo_p95 = ordered[min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)]
+        if rebalance_rank_ics:
+            observed = statistics.mean(rebalance_rank_ics)
+            placebo_p_value = sum(v >= observed for v in placebo_means) / len(placebo_means)
 
     mean_rank = statistics.mean(rebalance_rank_ics) if rebalance_rank_ics else None
     rank_ci = _block_bootstrap_ci(rebalance_rank_ics, SEED + horizon)
@@ -304,7 +308,7 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         ))
         and year_count >= 3
         and positive_years >= max(2, math.ceil(0.6 * year_count))
-        and (placebo_p95 is None or mean_rank > placebo_p95)
+        and (placebo_p_value is None or placebo_p_value < 0.05)
     )
     strategy_ok = (
         len(target) >= 20
@@ -326,6 +330,8 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         prediction_reasons.append("LOCKBOX_YEARLY_STABILITY_FAILED")
     if placebo_p95 is not None and (mean_rank is None or mean_rank <= placebo_p95):
         prediction_reasons.append("LOCKBOX_PLACEBO_NOT_BEATEN")
+    if placebo_p_value is not None and placebo_p_value >= 0.05:
+        prediction_reasons.append("LOCKBOX_PLACEBO_P_VALUE_GE_0_05")
     if len(target) < 20:
         strategy_reasons.append("LOCKBOX_MIN_TRADES")
     if lockbox_net_50 <= 0:
@@ -352,6 +358,7 @@ def evaluate_lockbox(series, symbol_rows, horizon):
         "positive_years": positive_years,
         "year_count": year_count,
         "placebo_rank_ic_p95": placebo_p95,
+        "placebo_rank_ic_p_value": placebo_p_value,
         "trade_count_50bps": len(target),
         "net_return_50bps": lockbox_net_50,
         "fixed_ensemble_net_return_50bps": fixed_net_50,
