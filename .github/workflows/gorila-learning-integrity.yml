@@ -22,6 +22,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-gorila.txt pytest
       - name: Learning tests
-        run: pytest -q tests/test_learning.py tests/test_promotion.py tests/test_shadow.py tests/test_control.py
+        run: pytest -q tests/test_learning.py tests/test_promotion.py tests/test_shadow.py tests/test_control.py tests/test_security.py
       - name: Compile learning runner
-        run: python -m py_compile scripts/gorila_continuous_learning.py gorila_argentum/learning.py gorila_argentum/promotion.py
+        run: python -m py_compile scripts/gorila_continuous_learning.py gorila_argentum/learning.py gorila_argentum/promotion.py gorila_argentum/security.py

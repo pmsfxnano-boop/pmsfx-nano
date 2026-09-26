@@ -149,7 +149,6 @@ def learning(symbol: str | None = None, limit: int = 20):
 
 @app.post("/api/shadow/prediction")
 def create_shadow_prediction(
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
     symbol: str,
     probability_up: float,
     horizon_seconds: int = 900,
@@ -157,6 +156,7 @@ def create_shadow_prediction(
     regime: str = "UNKNOWN",
     entry_price: float = 0.0,
     feature_hash: str = "",
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
 ):
     require_internal_key(x_gorila_internal_key)
     try:

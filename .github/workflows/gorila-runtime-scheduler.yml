@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  GORILA_RUNTIME_URL: \${{ secrets.GORILA_RUNTIME_URL }}
-  GORILA_INTERNAL_API_KEY: \${{ secrets.GORILA_INTERNAL_API_KEY }}
+  GORILA_RUNTIME_URL: ${{ secrets.GORILA_RUNTIME_URL }}
+  GORILA_INTERNAL_API_KEY: ${{ secrets.GORILA_INTERNAL_API_KEY }}
 
 jobs:
   runtime-tick:
@@ -62,5 +62,5 @@ PY
         if: always() && env.GORILA_SCHEDULER_SKIP != '1'
         uses: actions/upload-artifact@v4
         with:
-          name: gorila-runtime-tick-\${{ github.run_id }}
+          name: gorila-runtime-tick-${{ github.run_id }}
           path: /tmp/gorila-tick
