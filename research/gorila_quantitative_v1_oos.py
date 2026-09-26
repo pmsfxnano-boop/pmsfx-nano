@@ -190,14 +190,16 @@ def score_candidate_on(rows: list[Row], train: list[Row], test: list[Row], group
 
 
 def strategy_from_probs(probs, returns, cost_bps, horizon):
+    """Build non-overlapping net simple returns from log forward returns."""
     selected = []
     last = -10**9
-    for i, (p, ret) in enumerate(zip(probs, returns)):
+    for i, (p, log_ret) in enumerate(zip(probs, returns)):
         if i - last < horizon:
             continue
         side = 1 if p >= 0.55 else (-1 if p <= 0.45 else 0)
         if side:
-            selected.append(side * ret - cost_bps / 10000.0)
+            simple_ret = math.expm1(float(log_ret))
+            selected.append(side * simple_ret - cost_bps / 10000.0)
             last = i
     eq, peak, max_dd = 1.0, 1.0, 0.0
     for r in selected:
