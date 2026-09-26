@@ -165,11 +165,17 @@ def gorila_root():
 
 @app.get("/api/gorila/health")
 def gorila_health():
+    tiingo_configured = bool(__import__("os").getenv("TIINGO_API_KEY", "").strip())
     return {
         "service": "gorila-argentum",
         "mode": "RESEARCH",
         "trading_execution": False,
         "automatic_promotion": False,
+        "primary_market_data": {
+            "provider": "TIINGO",
+            "configured": tiingo_configured,
+            "status": "CONFIGURED" if tiingo_configured else "MISSING_KEY",
+        },
         "database": persistence_summary(),
         "market_stream": stream_status(),
         "market_session": market_session_state(),
