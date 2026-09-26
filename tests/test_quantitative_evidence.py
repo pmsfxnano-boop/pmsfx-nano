@@ -1,3 +1,4 @@
+import math
 def test_live_evidence_contract_module_imports():
     from gorila_argentum.evidence import manifest_digest
     digest = manifest_digest({"schema": "x", "evidence": []})
@@ -26,3 +27,9 @@ def test_quantitative_validator_gate_is_conservative():
     })
     assert status == "VALIDATED"
     assert reasons == []
+
+
+def test_execution_uses_simple_return_not_log_return():
+    from research.gorila_quantitative_v1_oos import strategy_from_probs
+    result = strategy_from_probs([1.0], [math.log(1.10)], 0, 1)
+    assert abs(result["net_return"] - 0.10) < 1e-9
