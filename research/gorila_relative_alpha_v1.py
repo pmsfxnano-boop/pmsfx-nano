@@ -224,7 +224,7 @@ def evaluate_symbol_horizon(series, horizon):
             candidate_train[i].append(train_perf[v])
             candidate_test[i].append(test_perf[v])
         fold_rank=[]
-        for date in dates:
+        for date_index, date in enumerate(dates):
             s=fold["predictions"].get(date,{})
             r=fold["returns"].get(date,{})
             st=fold["structure"].get(date,{})
@@ -233,15 +233,18 @@ def evaluate_symbol_horizon(series, horizon):
                 vals={sym:score_variant(selected,s[sym],st[sym]) for sym in common}
                 ic=rank_ic([vals[z] for z in common],[r[z] for z in common])
                 fold_rank.append(ic)
-                for cost in COSTS_BPS_PER_LEG:
-                    tr=pair_trade(vals,{z:r[z] for z in common},common,cost)
-                    if tr is not None:
-                        all_returns[selected][cost].append(tr)
-                # Momentum benchmark
-                mvals={sym:st[sym]["r5"] for sym in common}
-                for cost in COSTS_BPS_PER_LEG:
-                    tr=pair_trade(mvals,{z:r[z] for z in common},common,cost)
-                    if tr is not None: baseline_returns[cost].append(tr)
+                # Trade only on non-overlapping rebalance dates. Using every
+                # day with an h-day forward return would double-count overlapping
+                # positions and artificially compound exposure.
+                if date_index % horizon == 0:
+                    for cost in COSTS_BPS_PER_LEG:
+                        tr=pair_trade(vals,{z:r[z] for z in common},common,cost)
+                        if tr is not None:
+                            all_returns[selected][cost].append(tr)
+                    mvals={sym:st[sym]["r5"] for sym in common}
+                    for cost in COSTS_BPS_PER_LEG:
+                        tr=pair_trade(mvals,{z:r[z] for z in common},common,cost)
+                        if tr is not None: baseline_returns[cost].append(tr)
         all_rank_ics[selected].extend(fold_rank)
         fold_metrics.append({
             "selected_variant":selected,
