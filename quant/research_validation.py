@@ -136,7 +136,7 @@ def deflated_sharpe_ratio(
     """Approximate DSR as a normal-tail probability after a multiple-trial penalty."""
     if observations < 2 or trials < 1:
         return None
-    penalty = sqrt(max(0.0, 2.0 * log(max(2, trials))))
+    penalty = sqrt(max(0.0, 2.0 * log(trials))) if trials > 1 else 0.0
     se = sqrt(
         max(
             1e-12,
