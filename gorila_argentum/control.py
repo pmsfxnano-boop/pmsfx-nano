@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 from .config import settings
 from .storage import Store
+from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 
 
-def _promotion_status() -> str:
-    # Promotion is derived from the validated research gate, not from runtime configuration.
-    return "BLOCKED"
+def _promotion_status(decision: dict | None = None) -> str:
+    # Promotion is derived from the validated research gate, not runtime configuration.
+    decision = decision or evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
+    return str(decision.get("status", "BLOCKED"))
 
 
 def build_control_state(store: Store | None = None) -> dict:
@@ -28,7 +30,10 @@ def build_control_state(store: Store | None = None) -> dict:
     rank = {"ALERT": 0, "WARN": 1}
     alerts.sort(key=lambda row: (rank.get(row.get("status"), 9), row.get("created_at", "")), reverse=False)
 
-    promotion = _promotion_status()
+    promotion_decision = store.latest_promotion_decision()
+    promotion_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
+    promotion = _promotion_status(promotion_decision or promotion_evaluation)
+    latest_learning = store.latest_learning(limit=1)
     return {
         "batch": 13,
         "runtime": {
@@ -39,9 +44,10 @@ def build_control_state(store: Store | None = None) -> dict:
         "promotion_gate": {
             "status": promotion,
             "automatic_promotion": False,
-            "reason": os.getenv(
-                "GORILA_PREDICTOR_PROMOTION_REASON",
-                "Statistical promotion gate not cleared.",
+            "reason": (
+                (promotion_decision or {}).get("reasons")
+                if promotion_decision
+                else promotion_evaluation.get("reasons")
             ),
         },
         "monitoring": {
@@ -59,5 +65,8 @@ def build_control_state(store: Store | None = None) -> dict:
             "snapshots_seen": len(drift_rows),
             "latest_series": len(latest),
             "warnings_or_alerts": alerts,
+        },
+        "learning": {
+            "latest_run": latest_learning[0] if latest_learning else None,
         },
     }
