@@ -121,6 +121,15 @@ def create_shadow_prediction(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = Store(); store.init()
+    control_state = build_control_state(store)
+    if control_state["runtime"]["circuit_breaker"] == "HALTED":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RESEARCH_CIRCUIT_BREAKER_HALTED",
+                "reasons": control_state["runtime"]["circuit_breaker_reasons"],
+            },
+        )
     return store.save_shadow_prediction(
         values["symbol"], model_version, values["probability_up"], values["horizon_seconds"],
         regime, values["entry_price"], feature_hash=feature_hash,
