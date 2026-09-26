@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json, sqlite3, os, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (
@@ -296,6 +296,17 @@ class Store:
             raise KeyError("shadow_prediction_not_found")
         if prediction["status"] != "OPEN":
             raise ValueError("shadow_prediction_not_open")
+
+        created_dt = datetime.fromisoformat(prediction["created_at"].replace("Z", "+00:00"))
+        observed_dt = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        if observed_dt.tzinfo is None:
+            observed_dt = observed_dt.replace(tzinfo=timezone.utc)
+        observed_dt = observed_dt.astimezone(timezone.utc)
+        if observed_dt < created_dt.astimezone(timezone.utc) + timedelta(seconds=int(prediction["horizon_seconds"])):
+            raise ValueError("observed_before_horizon")
+        observed_at = observed_dt.isoformat()
 
         outcome_id = uuid.uuid4().hex
         values = (
