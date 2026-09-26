@@ -11,7 +11,7 @@ from .state import build_market_state
 from .features import build_features
 from .drift import rolling_drift
 from .control import build_control_state
-from .shadow import validate_shadow_prediction, compute_shadow_outcome
+from .shadow import validate_shadow_prediction, compute_shadow_outcome, validate_observed_at
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -88,16 +88,21 @@ def create_shadow_prediction(
     )
 
 @app.post("/api/shadow/{prediction_id}/settle")
-def settle_shadow_prediction(prediction_id: str, observed_price: float):
+def settle_shadow_prediction(prediction_id: str, observed_price: float, observed_at: str):
     store = Store(); store.init()
     prediction = store.get_shadow_prediction(prediction_id)
     if not prediction:
         raise HTTPException(status_code=404, detail="shadow_prediction_not_found")
     try:
+        normalized_observed_at = validate_observed_at(
+            prediction["created_at"], prediction["horizon_seconds"], observed_at
+        )
         outcome = compute_shadow_outcome(
             prediction["probability_up"], prediction["entry_price"], observed_price
         )
-        return store.settle_shadow_prediction(prediction_id, outcome)
+        return store.settle_shadow_prediction(
+            prediction_id, outcome, normalized_observed_at
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
