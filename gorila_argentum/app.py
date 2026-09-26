@@ -34,8 +34,8 @@ from .drift import rolling_drift
 from .features import build_features
 from .promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
 from .regime import classify_regime
-from .security import require_runtime_tick_key
-from .shadow import compute_shadow_outcome
+from .security import require_runtime_tick_key, require_internal_key
+from .shadow import compute_shadow_outcome, validate_shadow_prediction
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
@@ -369,6 +369,49 @@ def runtime_tick(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise
 
+
+@app.post("/api/shadow/prediction")
+def create_shadow_prediction(
+    symbol: str,
+    probability_up: float,
+    horizon_seconds: int,
+    entry_price: float,
+    regime: str = "UNKNOWN",
+    feature_hash: str = "",
+    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
+):
+    # Shadow creation is a write operation. It remains strictly research-gated:
+    # durable Postgres is mandatory and the circuit breaker must be NORMAL.
+    require_internal_key(x_gorila_internal_key)
+    store = Store()
+    store.init()
+    control_state = build_control_state(store)
+    runtime = control_state.get("runtime") or {}
+    if not store.pg or runtime.get("circuit_breaker") != "NORMAL":
+        reasons = runtime.get("circuit_breaker_reasons") or ["RESEARCH_CIRCUIT_BREAKER_HALTED"]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RESEARCH_CIRCUIT_BREAKER_HALTED",
+                "reasons": reasons,
+            },
+        )
+    validated = validate_shadow_prediction(
+        symbol=symbol,
+        probability_up=probability_up,
+        horizon_seconds=horizon_seconds,
+        entry_price=entry_price,
+    )
+    return store.save_shadow_prediction(
+        validated["symbol"],
+        "Gorila-Advanced",
+        validated["probability_up"],
+        validated["horizon_seconds"],
+        regime,
+        validated["entry_price"],
+        feature_hash=feature_hash,
+        metadata={"source": "gorila_production_shadow"},
+    )
 
 @app.get("/api/shadow")
 def shadow(limit: int = 50, symbol: str | None = None, status: str | None = None):
