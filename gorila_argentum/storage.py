@@ -122,6 +122,15 @@ CREATE TABLE IF NOT EXISTS runtime_heartbeats (
  backend TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_heartbeats_time ON runtime_heartbeats(created_at);
+CREATE TABLE IF NOT EXISTS runtime_runs (
+ id TEXT PRIMARY KEY,
+ kind TEXT NOT NULL,
+ started_at TEXT NOT NULL,
+ completed_at TEXT,
+ status TEXT NOT NULL,
+ result TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_runs_time ON runtime_runs(started_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -156,6 +165,83 @@ class Store:
             with conn.cursor() as cur: cur.execute(SCHEMA)
             conn.commit()
         conn.close(); self.conn=None
+
+    def claim_runtime_run(self, run_id: str, kind: str) -> bool:
+        now = utc_now()
+        conn = self.connect()
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO runtime_runs(id,kind,started_at,status,result) "
+                    "VALUES(%s,%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING",
+                    (run_id, kind, now, "RUNNING", "{}"),
+                )
+                inserted = cur.rowcount == 1
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO runtime_runs(id,kind,started_at,status,result) "
+                "VALUES(?,?,?,?,?)",
+                (run_id, kind, now, "RUNNING", "{}"),
+            )
+            inserted = cur.rowcount == 1
+        conn.commit()
+        conn.close()
+        self.conn = None
+        return bool(inserted)
+
+    def finish_runtime_run(self, run_id: str, status: str, result: dict) -> None:
+        conn = self.connect()
+        now = utc_now()
+        payload = json.dumps(result, sort_keys=True, default=str)
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE runtime_runs SET completed_at=%s,status=%s,result=%s WHERE id=%s",
+                    (now, status, payload, run_id),
+                )
+        else:
+            conn.execute(
+                "UPDATE runtime_runs SET completed_at=?,status=?,result=? WHERE id=?",
+                (now, status, payload, run_id),
+            )
+        conn.commit()
+        conn.close()
+        self.conn = None
+
+    def latest_runtime_run(self, kind: str | None = None, limit: int = 20):
+        conn = self.connect()
+        params = []
+        if self.pg:
+            sql = "SELECT id,kind,started_at,completed_at,status,result FROM runtime_runs"
+            if kind is not None:
+                sql += " WHERE kind=%s"
+                params.append(kind)
+            sql += " ORDER BY started_at DESC LIMIT %s"
+            params.append(max(1, min(100, int(limit))))
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall()
+        else:
+            sql = "SELECT id,kind,started_at,completed_at,status,result FROM runtime_runs"
+            if kind is not None:
+                sql += " WHERE kind=?"
+                params.append(kind)
+            sql += " ORDER BY started_at DESC LIMIT ?"
+            params.append(max(1, min(100, int(limit))))
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        conn.close()
+        self.conn = None
+        out = []
+        for row in rows:
+            item = dict(zip(
+                ["id","kind","started_at","completed_at","status","result"], row
+            ))
+            try:
+                item["result"] = json.loads(item["result"] or "{}")
+            except Exception:
+                pass
+            out.append(item)
+        return out
 
     def verify_persistence(self) -> dict:
         heartbeat_id = uuid.uuid4().hex
