@@ -197,3 +197,52 @@ def evaluate_live_promotion(
             "execution_authority": False,
         },
     }
+
+
+def evaluate_predictive_promotion(
+    store,
+    *,
+    horizons=(5,10),
+) -> dict[str, Any]:
+    """Gate the predictive research layer separately from trade execution."""
+    from .evidence import latest_manifest
+
+    manifest = latest_manifest(store)
+    if not manifest or manifest.get("status") != "COMPLETE":
+        return {
+            "status": "BLOCKED",
+            "validated": False,
+            "reason": "CANONICAL_MANIFEST_MISSING",
+            "source": "research_manifests",
+        }
+    aux = ((manifest.get("payload") or {}).get("auxiliary") or {})
+    rows = {
+        int(x.get("horizon_days")): x
+        for x in (aux.get("lockbox", {}).get("evidence") or [])
+        if x.get("horizon_days") is not None
+    }
+    missing = [int(h) for h in horizons if int(h) not in rows]
+    failed = []
+    for h in horizons:
+        row = rows.get(int(h))
+        if not row:
+            continue
+        if row.get("prediction_status") != "VALIDATED":
+            failed.append({
+                "horizon_days": int(h),
+                "status": row.get("prediction_status"),
+                "reasons": row.get("prediction_reasons") or [],
+            })
+    validated = not missing and not failed
+    return {
+        "status": "PREDICTOR_VALIDATED" if validated else "BLOCKED",
+        "validated": validated,
+        "horizons": [int(h) for h in horizons],
+        "missing_horizons": missing,
+        "failed_horizons": failed,
+        "source": "frozen_cross_sectional_lockbox",
+        "execution_authority": False,
+        "execution_status": "BLOCKED",
+        "manifest_sha256": manifest.get("manifest_sha256"),
+        "snapshot_sha256": manifest.get("snapshot_sha256"),
+    }
