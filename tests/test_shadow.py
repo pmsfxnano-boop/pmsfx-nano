@@ -1,6 +1,6 @@
 import math
 
-from gorila_argentum.shadow import compute_shadow_outcome, validate_shadow_prediction
+from gorila_argentum.shadow import compute_shadow_outcome, validate_shadow_prediction, validate_observed_at
 from gorila_argentum.storage import Store
 
 
@@ -22,6 +22,18 @@ def test_shadow_outcome_metrics():
     assert math.isclose(outcome["brier"], (0.72 - 1.0) ** 2)
     assert math.isclose(outcome["logloss"], -math.log(0.72))
 
+def test_shadow_observation_must_reach_horizon():
+    created = "2026-09-26T12:00:00+00:00"
+    assert validate_observed_at(
+        created, 900, "2026-09-26T12:15:00+00:00"
+    ) == "2026-09-26T12:15:00+00:00"
+    try:
+        validate_observed_at(created, 900, "2026-09-26T12:14:59+00:00")
+        assert False, "expected horizon rejection"
+    except ValueError as exc:
+        assert str(exc) == "observed_before_horizon"
+
+
 def test_shadow_storage_roundtrip(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "shadow.sqlite3"))
@@ -36,7 +48,7 @@ def test_shadow_storage_roundtrip(tmp_path, monkeypatch):
     assert prediction["feature_hash"] == "abc"
 
     outcome = compute_shadow_outcome(0.72, 100.0, 105.0)
-    settled = store.settle_shadow_prediction(created["id"], outcome)
+    settled = store.settle_shadow_prediction(created["id"], outcome, "2026-09-26T12:15:00+00:00")
     assert settled["prediction_id"] == created["id"]
 
     summary = store.shadow_summary()
