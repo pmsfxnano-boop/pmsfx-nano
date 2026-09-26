@@ -17,6 +17,7 @@ import statistics
 import time
 from itertools import combinations
 
+from research.gorila_data_snapshot import load_or_fetch_series
 from research.gorila_nested_pairwise_rank_oos import (
     COSTS_BPS,
     FEATURE_GROUPS,
@@ -226,6 +227,7 @@ def run_horizon(series, horizon):
         "validation_type": "purged-expanding-wfo",
         "horizon": horizon,
         "symbols": SYMBOLS,
+        "data_snapshot_sha256": SNAPSHOT_SHA256,
         "outer_folds": len(fold_records),
         "candidate_count_total": SEARCH_TRIALS,
         "candidate_count_complete": len(complete_specs),
