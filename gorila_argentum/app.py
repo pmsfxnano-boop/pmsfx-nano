@@ -1,135 +1,292 @@
-from fastapi import FastAPI, HTTPException, Header
-import os
-import threading
-from fastapi.responses import HTMLResponse
-from .storage import Store
-from .ingest import run_batch
-from .coupling import build_matrix
-from .config import settings
-from .signal import compose_signal
-from .regime import classify_regime
-from .dashboard import HTML as DASHBOARD_HTML
-from .state import build_market_state
-from .features import build_features
-from .drift import rolling_drift
-from .control import build_control_state
-from .shadow import validate_shadow_prediction, compute_shadow_outcome, validate_observed_at
-from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
-from .learning import run_learning_cycle
-from .calibration import build_recalibration_candidate
+"""Production entrypoint for Gorila Argentum.
+
+The production service uses the mature PMSF-X application as its quantitative
+engine and adds the Argentina data fabric, durable research controls and the
+Gorila control surface on the same FastAPI instance.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+from fastapi import Header, HTTPException
+
+from main import (
+    app,
+    market_session_state,
+    normalize_ticker,
+    outcome_summary,
+    persistence_summary,
+    quote as advanced_quote,
+    state as advanced_state,
+    stream_status,
+)
 from .audit import build_audit_state
-from .security import require_internal_key, require_runtime_tick_key
+from .config import settings
+from .control import build_control_state
+from .coupling import current_coupling_state
+from .dashboard import HTML as DASHBOARD_HTML
+from .drift import rolling_drift
+from .features import build_features
+from .promotion import CURRENT_BATCH10_EVIDENCE, evaluate_promotion
+from .regime import classify_regime
+from .security import require_runtime_tick_key
+from .shadow import compute_shadow_outcome
+from .state import build_market_state
+from .storage import Store
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick
 
-app=FastAPI(title="Gorila Argentum",version="0.1.0")
+# The public service uses a single process. The cache keeps the latency-critical
+# UI path independent of the expensive historical/multi-horizon research call.
+_FORECAST_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_FORECAST_LOCK = asyncio.Lock()
+_MACRO_TASK: asyncio.Task | None = None
+_MACRO_STATE: dict[str, Any] = {
+    "status": "STARTING",
+    "updated_at": None,
+    "last_result": None,
+}
+_MACRO_INTERVAL_SECONDS = max(
+    60,
+    int(__import__("os").getenv("GORILA_MACRO_INTERVAL_SECONDS", "300")),
+)
+
+
+def _run_macro_ingest() -> dict[str, Any]:
+    store = Store()
+    store.init()
+    funcs = [argentina_datos_fx, argentina_datos_risk, bcra_fx]
+    results = []
+    with ThreadPoolExecutor(max_workers=len(funcs)) as executor:
+        futures = [executor.submit(fn) for fn in funcs]
+        for future in futures:
+            results.append(future.result())
+
+    rows_inserted = 0
+    for result in results:
+        if result.rows:
+            inserted = store.insert_observations(result.rows)
+            rows_inserted += inserted
+            store.upsert_health(
+                result.source,
+                "HEALTHY",
+                rows=len(result.rows),
+                latency_ms=result.latency_ms,
+                success=True,
+            )
+        else:
+            store.upsert_health(
+                result.source,
+                "DEGRADED",
+                last_error=result.error,
+                rows=0,
+                latency_ms=result.latency_ms,
+                success=False,
+            )
+
+    payload = {
+        "status": "COMPLETED" if all(r.rows for r in results) else "DEGRADED",
+        "rows_inserted": rows_inserted,
+        "results": [
+            {
+                "source": r.source,
+                "rows": len(r.rows),
+                "error": r.error,
+                "latency_ms": round(float(r.latency_ms or 0), 2),
+            }
+            for r in results
+        ],
+    }
+    return payload
+
+
+async def _macro_loop() -> None:
+    while True:
+        started = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(_run_macro_ingest)
+            _MACRO_STATE.update(
+                {
+                    "status": result.get("status", "UNKNOWN"),
+                    "updated_at": time.time(),
+                    "last_result": result,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _MACRO_STATE.update(
+                {
+                    "status": "ERROR",
+                    "updated_at": time.time(),
+                    "last_result": {
+                        "status": "ERROR",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            )
+        await asyncio.sleep(_MACRO_INTERVAL_SECONDS)
+
 
 @app.on_event("startup")
-def startup():
+async def gorila_runtime_startup() -> None:
+    global _MACRO_TASK
     Store().init()
+    if _MACRO_TASK is None or _MACRO_TASK.done():
+        _MACRO_TASK = asyncio.create_task(
+            _macro_loop(),
+            name="gorila-argentina-macro-loop",
+        )
 
-    def persistence_probe():
+
+@app.on_event("shutdown")
+async def gorila_runtime_shutdown() -> None:
+    global _MACRO_TASK
+    if _MACRO_TASK is not None:
+        _MACRO_TASK.cancel()
         try:
-            probe = Store()
-            probe.init()
-            proof = probe.verify_persistence()
-            print(
-                "GORILA_PERSISTENCE_ROUNDTRIP",
-                proof["backend"],
-                proof["verified"],
-                proof["heartbeat_id"],
-                flush=True,
-            )
-        except Exception as exc:
-            print(
-                "GORILA_PERSISTENCE_ROUNDTRIP_FAILED",
-                type(exc).__name__,
-                str(exc),
-                flush=True,
-            )
+            await _MACRO_TASK
+        except asyncio.CancelledError:
+            pass
+    _MACRO_TASK = None
 
-    def bootstrap_cycle():
-        run_id = os.getenv("GORILA_BOOTSTRAP_TICK_RUN_ID", "").strip()
-        if not run_id:
-            return
-        store = Store()
-        store.init()
-        if not store.pg:
-            print(
-                "GORILA_BOOTSTRAP_TICK_SKIPPED",
-                "durable_storage_required",
-                flush=True,
-            )
-            return
-        if not store.claim_runtime_run(run_id, "bootstrap_operational"):
-            print(
-                "GORILA_BOOTSTRAP_TICK_SKIPPED",
-                "already_claimed",
-                run_id,
-                flush=True,
-            )
-            return
-        try:
-            payload = run_runtime_tick()
-            store.finish_runtime_run(run_id, "COMPLETED", payload)
-            print(
-                "GORILA_BOOTSTRAP_TICK_COMPLETED",
-                run_id,
-                payload.get("status"),
-                flush=True,
-            )
-        except Exception as exc:
-            error = {"error": type(exc).__name__, "message": str(exc)}
-            store.finish_runtime_run(run_id, "FAILED", error)
-            print(
-                "GORILA_BOOTSTRAP_TICK_FAILED",
-                run_id,
-                type(exc).__name__,
-                str(exc),
-                flush=True,
-            )
 
-    threading.Thread(
-        target=persistence_probe,
-        name="gorila-persistence-probe",
-        daemon=True,
-    ).start()
-    threading.Thread(
-        target=bootstrap_cycle,
-        name="gorila-bootstrap-cycle",
-        daemon=True,
-    ).start()
-
-@app.get("/health")
-def health():
-    return {"ok":True,"service":"gorila-argentum","version":"0.1.0","mode":"RESEARCH","storage":"postgres" if settings.database_url else "sqlite-fallback","sources":Store().health()}
-
-@app.get("/dashboard",response_class=HTMLResponse)
-def dashboard():
+@app.get("/", include_in_schema=False)
+def gorila_root():
     return DASHBOARD_HTML
 
-@app.get("/api/state")
-def state():
-    return {"sources":Store().health(),"symbols":list(settings.symbols)}
 
-@app.get("/api/state/live")
-def live_state():
+@app.get("/api/gorila/health")
+def gorila_health():
+    return {
+        "service": "gorila-argentum",
+        "mode": "RESEARCH",
+        "trading_execution": False,
+        "automatic_promotion": False,
+        "database": persistence_summary(),
+        "market_stream": stream_status(),
+        "market_session": market_session_state(),
+        "macro_ingest": {
+            **_MACRO_STATE,
+            "updated_at": (
+                __import__("datetime").datetime.fromtimestamp(
+                    _MACRO_STATE["updated_at"],
+                    tz=__import__("datetime").timezone.utc,
+                ).isoformat()
+                if _MACRO_STATE.get("updated_at")
+                else None
+            ),
+        },
+        "sources": Store().health(),
+    }
+
+
+@app.get("/api/gorila/market")
+def gorila_market():
     return build_market_state()
 
-@app.post("/api/ingest")
-def ingest(x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key")):
-    require_internal_key(x_gorila_internal_key)
-    return run_batch()
+
+@app.get("/api/gorila/sources")
+def gorila_sources():
+    return {
+        "macro_runtime": _MACRO_STATE,
+        "sources": Store().health(),
+    }
+
+
+@app.get("/api/gorila/forecast/{ticker}")
+async def gorila_forecast(ticker: str, force: bool = False):
+    symbol = normalize_ticker(ticker)
+    now = time.monotonic()
+    cached = _FORECAST_CACHE.get(symbol)
+    if cached and not force and now - cached[0] < 30.0:
+        result = dict(cached[1])
+        result["cache"] = {"hit": True, "age_seconds": round(now - cached[0], 3)}
+        return result
+
+    async with _FORECAST_LOCK:
+        now = time.monotonic()
+        cached = _FORECAST_CACHE.get(symbol)
+        if cached and not force and now - cached[0] < 30.0:
+            result = dict(cached[1])
+            result["cache"] = {"hit": True, "age_seconds": round(now - cached[0], 3)}
+            return result
+
+        result = await advanced_state(symbol)
+        _FORECAST_CACHE[symbol] = (time.monotonic(), dict(result))
+        result["cache"] = {"hit": False, "age_seconds": 0.0}
+        return result
+
+
+@app.get("/api/gorila/terminal/{ticker}")
+async def gorila_terminal(ticker: str):
+    symbol = normalize_ticker(ticker)
+    quote_task = asyncio.create_task(advanced_quote(symbol))
+    forecast_task = asyncio.create_task(gorila_forecast(symbol))
+    macro_task = asyncio.to_thread(build_market_state)
+
+    quote_result = None
+    quote_error = None
+    try:
+        quote_result = await quote_task
+    except Exception as exc:
+        quote_error = f"{type(exc).__name__}: {exc}"
+
+    try:
+        forecast = await forecast_task
+    except Exception as exc:
+        forecast = {
+            "symbol": symbol,
+            "forecast_status": "ERROR",
+            "forecast": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    macro = await macro_task
+    return {
+        "service": "gorila-argentum",
+        "symbol": symbol,
+        "quote": quote_result,
+        "quote_error": quote_error,
+        "forecast": forecast,
+        "macro": macro,
+        "stream": stream_status(),
+        "session": market_session_state(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Compatibility/observability surface used by the research control panel.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/state/live")
+def legacy_live_state():
+    return build_market_state()
+
 
 @app.get("/api/features/{symbol}")
-def features(symbol: str):
+def legacy_features(symbol: str):
     return build_features(symbol)
 
+
 @app.get("/api/regime/{symbol}")
-def regime(symbol: str):
+def legacy_regime(symbol: str):
     from math import log
-    store = Store(); store.init()
+
+    store = Store()
+    store.init()
     series = store.recent_series(symbol, "close", limit=40)
-    returns_bps = [10000.0 * log(b/a) for (_,a),(_,b) in zip(series, series[1:]) if a > 0 and b > 0]
+    returns_bps = [
+        10000.0 * log(b / a)
+        for (_, a), (_, b) in zip(series, series[1:])
+        if a > 0 and b > 0
+    ]
     fx_series = store.recent_series("USD_MEP", "sell", limit=2)
     risk_series = store.recent_series("EMBI_ARG", "embi_bps", limit=2)
     fx_stress = None
@@ -138,30 +295,60 @@ def regime(symbol: str):
         fx_stress = (fx_series[-1][1] / fx_series[-2][1]) - 1.0
     if len(risk_series) == 2:
         risk_delta = risk_series[-1][1] - risk_series[-2][1]
-    return classify_regime(returns_bps, fx_stress=fx_stress, risk_delta_bps=risk_delta)
+    return classify_regime(
+        returns_bps,
+        fx_stress=fx_stress,
+        risk_delta_bps=risk_delta,
+    )
+
 
 @app.get("/api/drift")
 def drift_summary(symbol: str | None = None, field: str | None = None, limit: int = 100):
-    store=Store(); store.init()
-    return {"items":store.latest_drift(symbol=symbol,field=field,limit=limit)}
+    store = Store()
+    store.init()
+    return {"items": store.latest_drift(symbol=symbol, field=field, limit=limit)}
+
+
+@app.get("/api/coupling")
+def coupling():
+    pairs = [
+        ("USD_MEP", "sell", "USD_CCL", "sell"),
+        ("USD_BLUE", "sell", "USD_MEP", "sell"),
+        ("USD_MEP", "sell", "EMBI_ARG", "embi_bps"),
+        ("USD_CCL", "sell", "EMBI_ARG", "embi_bps"),
+        ("USD_MEP", "sell", "USD_BCRA", "reference"),
+    ]
+    return current_coupling_state(pairs)
+
 
 @app.get("/api/control")
 def control():
     return build_control_state()
 
+
 @app.get("/api/audit")
 def audit():
     return build_audit_state()
+
 
 @app.get("/api/runtime/runs")
 def runtime_runs(kind: str | None = None, limit: int = 20):
     store = Store()
     store.init()
-    return {"items": store.latest_runtime_run(kind=kind, limit=max(1, min(100, int(limit))))}
+    return {
+        "items": store.latest_runtime_run(
+            kind=kind,
+            limit=max(1, min(100, int(limit))),
+        )
+    }
+
 
 @app.post("/api/runtime/tick")
 def runtime_tick(
-    x_gorila_runtime_key: str | None = Header(default=None, alias="X-Gorila-Runtime-Key"),
+    x_gorila_runtime_key: str | None = Header(
+        default=None,
+        alias="X-Gorila-Runtime-Key",
+    ),
 ):
     require_runtime_tick_key(x_gorila_runtime_key)
     try:
@@ -171,178 +358,46 @@ def runtime_tick(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise
 
+
 @app.get("/api/shadow")
 def shadow(limit: int = 50, symbol: str | None = None, status: str | None = None):
-    store = Store(); store.init()
-    return {"items": store.latest_shadow(symbol=symbol, status=status, limit=limit)}
+    store = Store()
+    store.init()
+    return {
+        "items": store.latest_shadow(
+            symbol=symbol,
+            status=status,
+            limit=limit,
+        )
+    }
+
 
 @app.get("/api/shadow/summary")
 def shadow_summary():
-    store = Store(); store.init()
+    store = Store()
+    store.init()
     return store.shadow_summary()
 
-@app.post("/api/shadow/settle-due")
-def shadow_settle_due(
-    max_lateness_seconds: int = 3600,
-    limit: int = 50,
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    store = Store(); store.init()
-    if not store.pg:
-        raise HTTPException(status_code=409, detail="durable_storage_required")
-    return store.settle_due_shadow_from_observations(
-        max_lateness_seconds=max(60, min(172800, int(max_lateness_seconds))),
-        limit=max(1, min(100, int(limit))),
-    )
 
 @app.get("/api/promotion")
 def promotion():
-    store = Store(); store.init()
+    store = Store()
+    store.init()
     return {
         "current_evaluation": evaluate_promotion(CURRENT_BATCH10_EVIDENCE),
         "latest_decision": store.latest_promotion_decision(),
     }
 
-@app.post("/api/promotion/evaluate")
-def promotion_evaluate(
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    store = Store(); store.init()
-    decision = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
-    persisted = store.save_promotion_decision("multihorizon-meta-research-v1", "V2", decision)
-    return {"decision": decision, "persisted": persisted}
-
-@app.post("/api/learning/run")
-def learning_run(
-    symbol: str,
-    horizon_days: int = 5,
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    store = Store(); store.init()
-    if not store.pg:
-        raise HTTPException(status_code=409, detail="durable_storage_required")
-    return run_learning_cycle(
-        symbol,
-        horizon_days=max(1, min(20, int(horizon_days))),
-        store=store,
-    )
-
-@app.get("/api/recalibration")
-def recalibration(limit: int = 10):
-    store = Store(); store.init()
-    return {"items": store.latest_calibration(limit=limit)}
-
-@app.post("/api/recalibration/evaluate")
-def recalibration_evaluate(
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    store = Store(); store.init()
-    rows = store.latest_shadow(status="SETTLED", limit=500)
-    result = build_recalibration_candidate(rows)
-    persisted = store.save_calibration_run("shadow-probability-v0", result)
-    return {
-        "candidate": result,
-        "persisted": persisted,
-        "automatic_apply": False,
-        "apply_gate": "PROMOTION_AND_DURABILITY_REQUIRED",
-    }
 
 @app.get("/api/learning")
 def learning(symbol: str | None = None, limit: int = 20):
-    store = Store(); store.init()
+    store = Store()
+    store.init()
     return {"items": store.latest_learning(symbol=symbol, limit=limit)}
 
-@app.post("/api/shadow/prediction")
-def create_shadow_prediction(
-    symbol: str,
-    probability_up: float,
-    horizon_seconds: int = 900,
-    model_version: str = "V0",
-    regime: str = "UNKNOWN",
-    entry_price: float = 0.0,
-    feature_hash: str = "",
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    try:
-        values = validate_shadow_prediction(
-            symbol=symbol,
-            probability_up=probability_up,
-            horizon_seconds=horizon_seconds,
-            entry_price=entry_price,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    store = Store(); store.init()
-    control_state = build_control_state(store)
-    if control_state["runtime"]["circuit_breaker"] == "HALTED":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "RESEARCH_CIRCUIT_BREAKER_HALTED",
-                "reasons": control_state["runtime"]["circuit_breaker_reasons"],
-            },
-        )
-    return store.save_shadow_prediction(
-        values["symbol"], model_version, values["probability_up"], values["horizon_seconds"],
-        regime, values["entry_price"], feature_hash=feature_hash,
-    )
 
-@app.post("/api/shadow/{prediction_id}/settle")
-def settle_shadow_prediction(
-    prediction_id: str,
-    observed_price: float,
-    observed_at: str,
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    store = Store(); store.init()
-    prediction = store.get_shadow_prediction(prediction_id)
-    if not prediction:
-        raise HTTPException(status_code=404, detail="shadow_prediction_not_found")
-    try:
-        normalized_observed_at = validate_observed_at(
-            prediction["created_at"], prediction["horizon_seconds"], observed_at
-        )
-        outcome = compute_shadow_outcome(
-            prediction["probability_up"], prediction["entry_price"], observed_price
-        )
-        return store.settle_shadow_prediction(
-            prediction_id, outcome, normalized_observed_at
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-@app.get("/api/drift/{symbol}/{field}")
-def drift(symbol: str, field: str, current_size: int = 30, reference_size: int = 90):
-    current_size = max(10, min(120, int(current_size)))
-    reference_size = max(20, min(180, int(reference_size)))
-    store = Store(); store.init()
-    series = store.recent_series(symbol, field, limit=current_size + reference_size)
-    return rolling_drift([value for _, value in series], current_size=current_size, reference_size=reference_size)
-
-@app.get("/api/signal/{symbol}")
-def signal(symbol: str, probability_up: float, horizon_seconds: int = 900, regime: str = "UNKNOWN"):
-    return compose_signal(symbol, probability_up, horizon_seconds, regime=regime)
-
-@app.get("/api/coupling/current")
-def coupling_current():
-    from .coupling import current_coupling_state
-    pairs=[("USD_MEP","sell","USD_CCL","sell"),("USD_BLUE","sell","USD_MEP","sell"),("USD_MEP","sell","EMBI_ARG","embi_bps"),("USD_CCL","sell","EMBI_ARG","embi_bps"),("USD_MEP","sell","USD_BCRA","reference")]
-    return current_coupling_state(pairs)
-
-@app.post("/api/coupling")
-def coupling(
-    x_gorila_internal_key: str | None = Header(default=None, alias="X-Gorila-Internal-Key"),
-):
-    require_internal_key(x_gorila_internal_key)
-    pairs=[("USD_MEP","sell","USD_CCL","sell"),("USD_BLUE","sell","USD_MEP","sell"),("USD_MEP","sell","EMBI_ARG","embi_bps"),("USD_CCL","sell","EMBI_ARG","embi_bps"),("USD_MEP","sell","USD_BCRA","reference")]
-    return build_matrix(pairs)
-
-@app.get("/", response_class=HTMLResponse)
-def root():
-    return DASHBOARD_HTML
+@app.get("/api/recalibration")
+def recalibration(limit: int = 10):
+    store = Store()
+    store.init()
+    return {"items": store.latest_calibration(limit=limit)}
