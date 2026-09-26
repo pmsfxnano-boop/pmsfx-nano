@@ -151,18 +151,19 @@ def _paired_block_ci(a: list[float], b: list[float]):
     return _block_ci(diff, BLOCK_LENGTH, BOOTSTRAPS, SEED + 19)
 
 
-def _run_once(panel, *, placebo=False):
+def _run_once(panel, *, placebo=False, seed_offset=0):
     all_rank_ic = []
-    strategy_returns = []
-    momentum_returns = []
+    daily_strategy = []
+    daily_momentum = []
     mean_prob = []
     oos_up = []
+    symbol_stats = {symbol: {"scores": [], "hits": 0, "n": 0, "residuals": []} for symbol in SYMBOLS}
     fold_count = 0
 
     for train_dates, test_dates in _folds(panel):
         train_rows = [row for i in train_dates for row in panel[i]]
         if placebo:
-            rng = random.Random(SEED + fold_count + HORIZON_DAYS)
+            rng = random.Random(SEED + seed_offset + fold_count + HORIZON_DAYS)
             targets = [row.target_up for row in train_rows]
             rng.shuffle(targets)
             train_rows = [
@@ -190,13 +191,36 @@ def _run_once(panel, *, placebo=False):
             mean_prob.append(float(scores.mean()))
             oos_up.extend(row.target_up for row in test)
 
-            strategy_returns.append(
-                _portfolio_row(scores, future_returns, ONE_WAY_COST_BPS)
+            for row, score in zip(test, scores):
+                stat = symbol_stats[row.symbol]
+                stat["scores"].append(float(score))
+                stat["residuals"].append(float(row.target_residual_log_return))
+                stat["hits"] += int((score >= 0.5) == bool(row.target_up))
+                stat["n"] += 1
+
+            daily_strategy.append(
+                (date_index, _portfolio_row(scores, future_returns, ONE_WAY_COST_BPS))
             )
             r5 = np.asarray([row.features[2] for row in test])
-            momentum_returns.append(
-                _portfolio_row(r5, future_returns, ONE_WAY_COST_BPS)
+            daily_momentum.append(
+                (date_index, _portfolio_row(r5, future_returns, ONE_WAY_COST_BPS))
             )
+
+    strategy_dates = sorted(d for d, _ in daily_strategy)
+    selected_dates = set(strategy_dates[::HORIZON_DAYS])
+    strategy_returns = [value for d, value in daily_strategy if d in selected_dates]
+    momentum_returns = [value for d, value in daily_momentum if d in selected_dates]
+
+    per_symbol = {}
+    for symbol, stat in symbol_stats.items():
+        if not stat["n"]:
+            continue
+        per_symbol[symbol] = {
+            "observations": stat["n"],
+            "mean_probability": float(np.mean(stat["scores"])),
+            "hit_rate": float(stat["hits"] / stat["n"]),
+            "mean_residual_log_return": float(np.mean(stat["residuals"])),
+        }
 
     return {
         "rank_ic": all_rank_ic,
@@ -205,6 +229,7 @@ def _run_once(panel, *, placebo=False):
         "mean_probability": float(np.mean(mean_prob)),
         "oos_up_rate": float(np.mean(oos_up)),
         "folds": fold_count,
+        "per_symbol": per_symbol,
     }
 
 
@@ -227,7 +252,7 @@ def evaluate(series: dict[str, dict[str, float]]):
 
     placebo_ics = []
     for k in range(PLACEBOS):
-        placebo = _run_once(panel, placebo=True)
+        placebo = _run_once(panel, placebo=True, seed_offset=(k + 1) * 10000)
         placebo_ics.append(float(np.mean(placebo["rank_ic"])))
 
     model_mean_ic = float(np.mean(result["rank_ic"]))
@@ -243,7 +268,7 @@ def evaluate(series: dict[str, dict[str, float]]):
 
     stress = {}
     for lag in (0, 1, 2):
-        lag_panel = _shift_targets(panel, lag)
+        lag_panel = _shift_features(panel, lag)
         lag_result = _run_once(lag_panel)
         stress[str(lag)] = {
             "rank_ic_mean": float(np.mean(lag_result["rank_ic"])),
@@ -256,28 +281,37 @@ def evaluate(series: dict[str, dict[str, float]]):
             ),
         }
 
-    reasons = []
-    if len(result["rank_ic"]) < 500:
-        reasons.append("MIN_OOS_CROSS_SECTIONAL_OBSERVATIONS")
-    if not rank_ci or rank_ci[0] <= 0:
-        reasons.append("RANK_IC_CI_NOT_ABOVE_ZERO")
-    if placebo_p95 is None or model_mean_ic <= placebo_p95:
-        reasons.append("PLACEBO_NOT_BEATEN")
-    if not delta_ci or delta_ci[0] <= 0:
-        reasons.append("DELTA_VS_MOMENTUM_CI_NOT_ABOVE_ZERO")
-    if not strategy_ci or strategy_ci[0] <= 0:
-        reasons.append("NET_RETURN_CI_NOT_ABOVE_ZERO")
-    for lag, item in stress.items():
-        if not item["rank_ic_ci95"] or item["rank_ic_ci95"][0] <= 0:
-            reasons.append(f"STRESS_LAG_{lag}_RANK_IC_FAILED")
+    predictive_reasons = []
+    trading_reasons = []
 
-    status = "VALIDATED_RESEARCH" if not reasons else "BLOCKED"
+    if len(result["rank_ic"]) < 500:
+        predictive_reasons.append("MIN_OOS_CROSS_SECTIONAL_OBSERVATIONS")
+    if not rank_ci or rank_ci[0] <= 0:
+        predictive_reasons.append("RANK_IC_CI_NOT_ABOVE_ZERO")
+    if placebo_p95 is None or model_mean_ic <= placebo_p95:
+        predictive_reasons.append("PLACEBO_NOT_BEATEN")
+    for lag, item in stress.items():
+        if lag == "0":
+            continue
+        if not item["rank_ic_ci95"] or item["rank_ic_ci95"][0] <= 0:
+            predictive_reasons.append(f"STRESS_LAG_{lag}_RANK_IC_FAILED")
+
+    if not delta_ci or delta_ci[0] <= 0:
+        trading_reasons.append("DELTA_VS_MOMENTUM_CI_NOT_ABOVE_ZERO")
+    if not strategy_ci or strategy_ci[0] <= 0:
+        trading_reasons.append("NET_RETURN_CI_NOT_ABOVE_ZERO")
+
+    predictive_status = "VALIDATED_RESEARCH" if not predictive_reasons else "BLOCKED"
+    trading_status = "VALIDATED_TRADING_RESEARCH" if not trading_reasons else "BLOCKED"
+    overall_status = predictive_status
 
     return {
         "schema": "gorila-cross-sectional-evidence-v2",
         "status": "COMPLETE",
-        "validation_status": status,
-        "validation_reasons": reasons,
+        "validation_status": overall_status,
+        "validation_reasons": predictive_reasons,
+        "trading_validation_status": trading_status,
+        "trading_validation_reasons": trading_reasons,
         "predictor": {
             "model": "fixed-pooled-logit-v1",
             "target": "cross-sectional residual future return sign",
@@ -301,6 +335,7 @@ def evaluate(series: dict[str, dict[str, float]]):
             "rank_ic_ci95": rank_ci,
             "mean_probability": result["mean_probability"],
             "oos_residual_up_rate": result["oos_up_rate"],
+            "per_symbol": result["per_symbol"],
         },
         "economics": {
             "one_way_cost_bps": ONE_WAY_COST_BPS,
@@ -325,22 +360,24 @@ def evaluate(series: dict[str, dict[str, float]]):
     }
 
 
-def _shift_targets(panel, lag):
+def _shift_features(panel, lag):
     if lag == 0:
         return panel
     keys = sorted(panel)
     shifted = {}
     for pos, key in enumerate(keys):
-        source = keys[max(0, pos - lag)]
+        source_key = keys[max(0, pos - lag)]
         shifted[key] = []
-        for row, source_row in zip(panel[key], panel[source]):
+        source_by_symbol = {row.symbol: row for row in panel[source_key]}
+        for row in panel[key]:
+            source = source_by_symbol[row.symbol]
             shifted[key].append(
                 PanelRow(
                     date_index=row.date_index,
                     symbol=row.symbol,
-                    features=row.features,
-                    target_residual_log_return=source_row.target_residual_log_return,
-                    target_up=int(source_row.target_residual_log_return > 0),
+                    features=source.features,
+                    target_residual_log_return=row.target_residual_log_return,
+                    target_up=row.target_up,
                 )
             )
     return shifted
