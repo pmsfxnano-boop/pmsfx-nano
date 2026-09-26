@@ -63,6 +63,7 @@ async function refresh(){
     metric('PROMOTION',p.status||'UNKNOWN',(p.status==='BLOCKED'?'red':(p.status==='PROMOTED'?'green':''))),
     metric('DRIFT ALERTS',(ctl.drift||{}).warnings_or_alerts?.length ?? 0,((ctl.drift||{}).warnings_or_alerts?.length||0)>0?'red':'green'),
     metric('PREDICTION DRIFT',mon.prediction_drift||'UNKNOWN'),
+    metric('RECALIBRATION',mon.automatic_recalibration||'UNKNOWN'),
     metric('KILL SWITCH',mon.automatic_kill_switch||'UNKNOWN') ,metric('SHADOW LEDGER',mon.shadow_ledger||'UNKNOWN'),metric('PROMOTION GATE',promo.current_evaluation?.status||'UNKNOWN',promo.current_evaluation?.status==='BLOCKED'?'red':'green')
   ].join('');
   $('control_detail').textContent=JSON.stringify({
@@ -71,7 +72,9 @@ async function refresh(){
     drift:{snapshots_seen:ctl.drift?.snapshots_seen,latest_series:ctl.drift?.latest_series},
     runtime:rt,
     promotion:promo.current_evaluation,
-    learning:learn.items?.[0] || null
+    learning:learn.items?.[0] || null,
+    model_diagnostics:ctl.model_diagnostics,
+    recalibration:ctl.recalibration
   },null,2);
   $('shadow').innerHTML=[
     metric('PREDICTIONS',ss.predictions),
