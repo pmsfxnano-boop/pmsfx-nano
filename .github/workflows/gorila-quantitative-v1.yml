@@ -72,6 +72,39 @@ jobs:
           name: gorila-v1-evidence-${{ matrix.horizon }}d
           path: evidence-${{ matrix.horizon }}d.json
 
+  lockbox:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+      - uses: actions/download-artifact@v4
+        with:
+          name: gorila-v1-market-snapshot
+      - name: Final untouched lockbox
+        env:
+          PYTHONPATH: .
+          GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
+          GORILA_LOCKBOX_HORIZONS: "5,10"
+          GORILA_LOCKBOX_DAYS: "252"
+          GORILA_LOCKBOX_MIN_SPREAD_Z: "1.0"
+          GORILA_LOCKBOX_TARGET_VOL: "0.10"
+          GORILA_LOCKBOX_MAX_GROSS: "1.0"
+          GORILA_LOCKBOX_PLACEBO_PERM: "64"
+        run: |
+          python research/gorila_lockbox_v1.py | tee lockbox-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gorila-v1-lockbox
+          path: lockbox-evidence.json
+
   relative-alpha:
     needs: snapshot
     runs-on: ubuntu-latest
