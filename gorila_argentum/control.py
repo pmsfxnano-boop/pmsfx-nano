@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from .config import settings
 from .storage import Store
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
@@ -34,28 +33,62 @@ def build_control_state(store: Store | None = None) -> dict:
     promotion_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     promotion = _promotion_status(promotion_decision or promotion_evaluation)
     latest_learning = store.latest_learning(limit=1)
+
+    storage_backend = "postgres" if store.pg else "sqlite-fallback"
+    durability_ok = bool(store.pg)
+
+    halt_reasons = []
+    if not durability_ok:
+        halt_reasons.append("NON_DURABLE_STORAGE")
+    if any(row.get("status") == "ALERT" for row in alerts):
+        halt_reasons.append("DRIFT_ALERT")
+    if any(row.get("status") in {"ERROR", "FAILED", "STALE"} for row in store.health()):
+        halt_reasons.append("SOURCE_HEALTH_FAILURE")
+
+    if halt_reasons:
+        circuit_status = "HALTED"
+    elif alerts:
+        circuit_status = "DEGRADED"
+    else:
+        circuit_status = "NORMAL"
+
+    promotion_reasons = list(
+        (
+            (promotion_decision or {}).get("reasons")
+            if promotion_decision
+            else promotion_evaluation.get("reasons")
+            or []
+        )
+    )
+    if not durability_ok and "STORAGE_DURABILITY_FAILED" not in promotion_reasons:
+        promotion_reasons.append("STORAGE_DURABILITY_FAILED")
+    if circuit_status != "NORMAL" and "CIRCUIT_BREAKER_NOT_NORMAL" not in promotion_reasons:
+        promotion_reasons.append("CIRCUIT_BREAKER_NOT_NORMAL")
+    if promotion != "BLOCKED" and promotion_reasons:
+        promotion = "BLOCKED"
+
     return {
         "batch": 13,
         "runtime": {
             "mode": "RESEARCH",
-            "storage": "postgres" if settings.database_url else "sqlite-fallback",
+            "storage": storage_backend,
             "predictor_promotion": promotion,
+            "storage_durable": durability_ok,
+            "circuit_breaker": circuit_status,
+            "circuit_breaker_reasons": halt_reasons,
+            "promotion_operational_gate": "PASS" if durability_ok and circuit_status == "NORMAL" else "BLOCKED",
         },
         "promotion_gate": {
             "status": promotion,
             "automatic_promotion": False,
-            "reason": (
-                (promotion_decision or {}).get("reasons")
-                if promotion_decision
-                else promotion_evaluation.get("reasons")
-            ),
+            "reason": promotion_reasons,
         },
         "monitoring": {
             "data_distribution_drift": "IMPLEMENTED",
             "prediction_drift": "NOT_IMPLEMENTED",
             "realized_vs_predicted": "NOT_IMPLEMENTED",
             "automatic_recalibration": "NOT_IMPLEMENTED",
-            "automatic_kill_switch": "NOT_IMPLEMENTED",
+            "automatic_kill_switch": "IMPLEMENTED_RESEARCH_CIRCUIT_BREAKER",
             "shadow_ledger": "IMPLEMENTED",
             "continuous_learning": "IMPLEMENTED_AS_CANDIDATE_CYCLE",
             "continuous_learning_promotion": "BLOCKED_UNTIL_PROMOTION_GATE",
