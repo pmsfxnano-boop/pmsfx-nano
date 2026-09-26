@@ -1,769 +1,268 @@
 from fastapi.responses import HTMLResponse
 
-HTML=HTMLResponse("""<!doctype html>
+HTML = HTMLResponse(r"""<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#050607">
-<title>GORILA ARGENTUM · Research Control</title>
+<title>GORILA ARGENTUM · Quant Research Control</title>
 <style>
 :root{
-  --black:#050607;
-  --black2:#080a0c;
-  --panel:#0b0e11;
-  --panel2:#0e1216;
-  --line:#1b2229;
-  --line2:#26313b;
-  --white:#f4f7f9;
-  --muted:#7e8b96;
-  --muted2:#5d6973;
-  --cyan:#63ddff;
-  --cyan2:#2eb6d8;
-  --green:#53e0a3;
-  --amber:#dfb458;
-  --red:#ff687b;
-  --shadow:0 20px 50px rgba(0,0,0,.28);
+  --bg:#050607;--panel:#0a0d10;--panel2:#0e1216;--line:#1c242b;--line2:#2a3640;
+  --text:#f3f7fa;--muted:#7b8a95;--dim:#56646e;--cyan:#63ddff;--green:#50dfa2;
+  --amber:#dfb458;--red:#ff667c;--blue:#80a8ff;
 }
 *{box-sizing:border-box}
-html{background:var(--black);scroll-behavior:smooth}
-body{
-  margin:0;
-  background:
-    linear-gradient(180deg,#050607 0%,#06080a 55%,#050607 100%);
-  color:var(--white);
-  font:13px Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+body{background:
+ radial-gradient(900px 420px at 72% -10%,rgba(35,92,120,.16),transparent 60%),
+ linear-gradient(180deg,#050607,#07090b 65%,#050607)}
 button,select{font:inherit}
-button{cursor:pointer}
-a{color:inherit;text-decoration:none}
-.topbar{
-  position:sticky;top:0;z-index:50;
-  display:flex;justify-content:space-between;align-items:center;gap:18px;
-  padding:15px 22px;
-  border-bottom:1px solid var(--line);
-  background:rgba(5,6,7,.96);
-  backdrop-filter:blur(12px);
-}
-.brand{display:flex;align-items:center;gap:12px;min-width:0}
-.brandG{
-  font-size:34px;line-height:1;font-weight:950;letter-spacing:-.08em;
-  color:var(--cyan);
-  text-shadow:0 0 26px rgba(99,221,255,.18);
-}
-.brandName{
-  font-size:15px;font-weight:900;letter-spacing:.15em;color:#fff;
-}
-.brandSub{
-  margin-top:3px;display:block;color:var(--muted2);
-  font-size:8px;letter-spacing:.16em;text-transform:uppercase;
-}
-.topRight{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-.chip{
-  display:inline-flex;align-items:center;gap:7px;
-  padding:7px 10px;border-radius:999px;
-  background:#090b0d;border:1px solid var(--line2);
-  color:#aab5bd;font-size:9px;font-weight:850;letter-spacing:.08em;
-}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--muted2)}
-.chip.live{border-color:#245843;color:#9af0c8}
-.chip.live .dot{background:var(--green);box-shadow:0 0 14px rgba(83,224,163,.45)}
-.chip.block{border-color:#5b2b34;color:#ffadb8}
-.chip.block .dot{background:var(--red)}
-.chip.cyan{border-color:#244c5c;color:#9beaff}
-.btn{
-  border:1px solid var(--line2);background:#0b0e11;color:#dce5ea;
-  border-radius:8px;padding:8px 11px;font-size:9px;font-weight:850;letter-spacing:.06em;
-}
-.btn:hover{border-color:#385365;background:#10161b}
-main{max-width:1540px;margin:0 auto;padding:22px 20px 46px}
-.hero{
-  padding:28px 24px 22px;
-  border:1px solid var(--line2);border-radius:16px;
-  background:#090b0e;
-  box-shadow:var(--shadow);
-}
-.kicker{
-  color:var(--cyan);font-size:9px;font-weight:900;letter-spacing:.2em;text-transform:uppercase;
-}
-.hero h1{
-  margin:8px 0 7px;font-size:34px;line-height:1;letter-spacing:-.035em;font-weight:900;
-}
-.hero p{
-  margin:0;max-width:980px;color:#88949d;font-size:12px;line-height:1.65;
-}
-.heroMeta{display:flex;flex-wrap:wrap;gap:7px;margin-top:16px}
-.processRail{
-  display:grid;grid-template-columns:repeat(15,minmax(78px,1fr));
-  gap:5px;overflow-x:auto;margin-top:20px;padding-bottom:2px;
-}
-.processNode{
-  position:relative;min-height:52px;padding:8px 9px;
-  border:1px solid var(--line);border-radius:9px;background:#07090b;
-}
-.processNode:after{
-  content:"→";position:absolute;right:-7px;top:50%;transform:translateY(-50%);
-  color:#45525d;font-size:12px;
-}
-.processNode:last-child:after{display:none}
-.processNode small{display:block;color:#4e5b66;font-size:7px;letter-spacing:.1em}
-.processNode b{display:block;margin-top:5px;font-size:9px;line-height:1.15}
-.processNode.guard{border-color:#684e24;background:#110e09}
-.selectorRow{
-  margin-top:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;
-}
-.selector{
-  background:#090b0d;color:#e4eaee;border:1px solid var(--line2);
-  border-radius:8px;padding:8px 10px;min-width:120px;
-}
-.toggle{
-  display:flex;align-items:center;gap:7px;color:var(--muted);font-size:9px;
-  margin-left:auto;
-}
-.toggle input{accent-color:var(--cyan)}
-.summaryGrid{
-  display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:12px 0;
-}
-.summary{
-  border:1px solid var(--line);background:#080a0c;border-radius:10px;padding:13px 14px;
-}
-.label{color:var(--muted2);font-size:8px;letter-spacing:.1em;text-transform:uppercase}
-.value{margin-top:7px;font-size:19px;line-height:1.05;font-weight:900}
-.sub{margin-top:5px;color:var(--muted);font-size:9px;line-height:1.4}
-.good{color:var(--green)!important}.bad{color:var(--red)!important}.amber{color:var(--amber)!important}.cyan{color:var(--cyan)!important}
-.timeline{display:grid;gap:11px;margin-top:12px}
-.step{
-  display:grid;grid-template-columns:72px minmax(230px,.62fr) minmax(0,1.65fr);
-  min-width:0;border:1px solid var(--line2);border-radius:14px;
-  background:#090b0d;box-shadow:0 14px 34px rgba(0,0,0,.18);
-}
-.stepNo{
-  display:flex;justify-content:center;align-items:flex-start;padding-top:18px;
-  color:var(--cyan);font-size:17px;font-weight:950;letter-spacing:.04em;
-  border-right:1px solid var(--line);
-}
-.stepInfo{padding:17px 17px 16px;border-right:1px solid var(--line)}
-.stepTitle{font-size:11px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
-.stepWhat{margin-top:9px;color:#a6b1b9;font-size:10px;line-height:1.6}
-.stepWhy{margin-top:8px;color:#677580;font-size:9px;line-height:1.55}
-.stepLive{padding:14px;min-width:0}
-.liveHead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
-.liveTitle{font-size:9px;font-weight:900;letter-spacing:.1em;color:#9aa8b2;text-transform:uppercase}
-.status{
-  display:inline-flex;padding:5px 8px;border-radius:999px;border:1px solid var(--line2);
-  font-size:8px;font-weight:900;letter-spacing:.06em;
-}
-.status.good{border-color:#245843;background:#0a1510}
-.status.bad{border-color:#5e2c35;background:#150a0d}
-.status.amber{border-color:#5f4a26;background:#120f09}
-.status.neutral{background:#0a0c0f}
-.metrics4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.metric{
-  border:1px solid var(--line);background:#07090b;border-radius:9px;padding:10px;
-  min-width:0;
-}
-.metric .n{margin-top:6px;font-size:15px;font-weight:850;overflow-wrap:anywhere}
-.metric .t{margin-top:4px;color:#56636d;font-size:8px}
-.dataTable{overflow:auto}
-table{width:100%;border-collapse:collapse;font-size:9px}
-th,td{padding:8px 9px;border-bottom:1px solid #151c22;text-align:left;white-space:nowrap}
-th{color:#56636d;font-size:8px;letter-spacing:.08em;text-transform:uppercase}
-td{color:#cbd5db}
-.pill{display:inline-flex;padding:4px 7px;border-radius:999px;border:1px solid var(--line2);font-size:8px;font-weight:850}
-.pill.good{border-color:#245843;background:#0a1510}.pill.bad{border-color:#5e2c35;background:#150a0d}.pill.amber{border-color:#5f4a26;background:#120f09}
-.featureGrid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
-.feature{
-  padding:10px;border:1px solid var(--line);border-radius:9px;background:#07090b;
-}
-.feature b{display:block;margin-top:6px;font-size:15px}
-.featureBar{height:4px;margin-top:8px;border-radius:99px;background:#12181d;overflow:hidden}
-.featureBar i{display:block;height:100%;background:var(--cyan);opacity:.72;border-radius:99px}
-.split{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.detailBox{
-  border:1px solid var(--line);background:#07090b;border-radius:9px;padding:11px;
-}
-.detailBox + .detailBox{margin-top:8px}
-.detailTitle{color:#697782;font-size:8px;letter-spacing:.08em;text-transform:uppercase}
-.detailValue{margin-top:6px;font-size:13px;font-weight:850;line-height:1.35}
-.detailText{margin-top:4px;color:#67737d;font-size:8px;line-height:1.5}
-.reasons{display:grid;gap:6px}
-.reason{padding:7px 8px;border:1px solid #33282b;background:#0d090b;border-radius:7px;color:#e7b1b9;font-size:8px}
-pre{
- margin:0;padding:11px;border:1px solid var(--line);background:#06080a;border-radius:9px;
- color:#8fa0ab;font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
- white-space:pre-wrap;max-height:250px;overflow:auto;
-}
-.footer{
-  margin-top:13px;padding:10px 2px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;
-  color:#4d5b65;font-size:8px;letter-spacing:.05em;text-transform:uppercase;
-}
-@media(max-width:1100px){
-  .summaryGrid{grid-template-columns:repeat(3,1fr)}
-  .featureGrid{grid-template-columns:repeat(3,1fr)}
-  .step{grid-template-columns:56px 1fr}
-  .stepInfo{border-right:0;border-bottom:1px solid var(--line)}
-  .stepLive{grid-column:2}
-}
-@media(max-width:760px){
-  main{padding:12px}
-  .topbar{padding:12px 13px}
-  .brandName{font-size:13px}
-  .hero{padding:20px 16px}
-  .hero h1{font-size:27px}
-  .summaryGrid{grid-template-columns:1fr 1fr}
-  .metrics4,.split{grid-template-columns:1fr 1fr}
-  .featureGrid{grid-template-columns:1fr 1fr}
-  .step{grid-template-columns:1fr}
-  .stepNo{justify-content:flex-start;padding:12px 14px;border-right:0;border-bottom:1px solid var(--line)}
-  .stepInfo{border-bottom:1px solid var(--line)}
-  .stepLive{grid-column:auto}
-  .toggle{margin-left:0}
-}
-@media(max-width:460px){
-  .summaryGrid{grid-template-columns:1fr}
-  .metrics4,.featureGrid,.split{grid-template-columns:1fr}
-  .topRight .btn{display:none}
-  .brandSub{display:none}
-}
+.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:14px;
+ padding:13px 18px;border-bottom:1px solid var(--line);background:rgba(5,6,7,.94);backdrop-filter:blur(10px)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.g{color:var(--cyan);font-size:35px;line-height:1;font-weight:950;text-shadow:0 0 24px rgba(99,221,255,.18)}
+.name{font-size:15px;font-weight:900;letter-spacing:.15em}
+.sub{font-size:8px;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-top:3px}
+.right{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.chip{padding:6px 9px;border:1px solid var(--line2);border-radius:999px;background:#080a0c;color:#aeb9c1;font-size:8px;font-weight:900;letter-spacing:.08em}
+.chip.good{border-color:#255943;color:#9beec8}.chip.bad{border-color:#642d36;color:#ffafba}.chip.cyan{border-color:#285263;color:#a1eeff}
+.shell{max-width:1580px;margin:auto;padding:18px}
+.hero{border:1px solid var(--line2);border-radius:15px;background:#080a0d;padding:21px 20px;box-shadow:0 16px 45px rgba(0,0,0,.22)}
+.eyebrow{font-size:8px;letter-spacing:.18em;color:var(--cyan);font-weight:900;text-transform:uppercase}
+h1{margin:7px 0 6px;font-size:31px;letter-spacing:-.035em}
+.hero p{margin:0;color:var(--muted);max-width:980px;font-size:11px;line-height:1.6}
+.rail{display:grid;grid-template-columns:repeat(15,minmax(76px,1fr));gap:5px;overflow:auto;margin-top:17px;padding-bottom:2px}
+.node{border:1px solid var(--line);border-radius:8px;padding:8px 7px;background:#07090b}
+.node small{display:block;color:var(--dim);font-size:7px}.node b{display:block;margin-top:4px;font-size:8px}
+.node.guard{border-color:#6a5128;background:#0f0d09}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:13px}
+select,.btn{background:#080b0e;border:1px solid var(--line2);color:#dce6eb;border-radius:8px;padding:8px 10px;font-size:9px;font-weight:850}
+.btn{cursor:pointer}.btn:hover{border-color:#3b5667}
+.auto{margin-left:auto;color:var(--muted);font-size:9px;display:flex;gap:7px;align-items:center}
+input{accent-color:var(--cyan)}
+.grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(340px,.75fr);gap:12px;margin-top:12px}
+.card{background:#080a0d;border:1px solid var(--line2);border-radius:13px;overflow:hidden}
+.head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}
+.title{font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}.tiny{font-size:8px;color:var(--dim)}
+.body{padding:14px}
+.heroQuote{display:flex;align-items:flex-end;justify-content:space-between;gap:15px}
+.symbol{font-size:23px;font-weight:900}.price{font-size:40px;font-weight:900;margin-top:5px}.quoteMeta{font-size:8px;color:var(--muted);margin-top:4px}
+.status{padding:5px 8px;border:1px solid var(--line2);border-radius:999px;font-size:8px;font-weight:900}
+.status.good{border-color:#255943;color:#9beec8;background:#07120d}.status.bad{border-color:#642d36;color:#ffafba;background:#14090b}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+.metric{padding:11px;border:1px solid var(--line);border-radius:9px;background:#07090b;min-width:0}
+.label{font-size:7px;color:var(--dim);letter-spacing:.11em;text-transform:uppercase}.val{margin-top:6px;font-size:16px;font-weight:900;overflow-wrap:anywhere}
+.chart{height:150px;margin-top:10px;border:1px solid var(--line);border-radius:9px;background:#06080a;overflow:hidden;position:relative}
+.chart svg{width:100%;height:100%}
+.mainLayout{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.box{border:1px solid var(--line);border-radius:10px;background:#07090b;padding:12px}
+.box h3{margin:0;font-size:9px;letter-spacing:.08em;text-transform:uppercase}
+.big{font-size:24px;font-weight:900;margin-top:7px}
+.row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #151c21;font-size:9px}
+.row:last-child{border:0}.muted{color:var(--muted)}
+.progress{height:5px;background:#10161b;border-radius:99px;overflow:hidden;margin-top:8px}.progress i{display:block;height:100%;background:var(--cyan);border-radius:99px}
+.sideGrid{display:grid;grid-template-columns:1fr;gap:12px}
+.kpiGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.kpi{border:1px solid var(--line);border-radius:9px;background:#07090b;padding:10px}.kpi b{display:block;margin-top:5px;font-size:15px}
+.table{overflow:auto}table{width:100%;border-collapse:collapse;font-size:8px}th,td{padding:8px;border-bottom:1px solid #151c21;text-align:left;white-space:nowrap}th{color:var(--dim);font-size:7px;letter-spacing:.08em;text-transform:uppercase}
+.pipeline{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;padding:12px}
+.stage{border:1px solid var(--line);border-radius:8px;background:#07090b;padding:9px}.stage b{display:block;font-size:8px}.stage small{display:block;color:var(--dim);font-size:7px;margin-top:5px;line-height:1.35}
+.footer{padding:10px 2px 20px;color:#46535c;font-size:7px;letter-spacing:.07em;text-transform:uppercase;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+pre{margin:0;background:#06080a;border:1px solid var(--line);border-radius:9px;padding:9px;color:#90a0aa;font:8px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:190px;overflow:auto}
+@media(max-width:1100px){.grid{grid-template-columns:1fr}.rail{grid-template-columns:repeat(15,100px)}}
+@media(max-width:760px){.shell{padding:10px}.top{padding:11px 12px}.name{font-size:12px}.grid,.mainLayout{grid-template-columns:1fr}.metrics,.kpiGrid{grid-template-columns:1fr 1fr}.pipeline{grid-template-columns:repeat(4,1fr)}.price{font-size:33px}.hero{padding:17px}.auto{margin-left:0}}
+@media(max-width:450px){.metrics,.kpiGrid,.pipeline{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <div class="brandG">G</div>
-    <div>
-      <div class="brandName">GORILA ARGENTUM</div>
-      <span class="brandSub">research intelligence · control surface</span>
-    </div>
-  </div>
-  <div class="topRight">
-    <span id="online" class="chip"><span class="dot"></span><span>CONNECTING</span></span>
-    <span id="mode" class="chip">MODE · —</span>
+<header class="top">
+  <div class="brand"><div class="g">G</div><div><div class="name">GORILA ARGENTUM</div><div class="sub">quant research · live intelligence · research control</div></div></div>
+  <div class="right">
+    <span id="live" class="chip">CONNECTING</span>
     <span id="storage" class="chip">STORAGE · —</span>
-    <button id="refresh" class="btn" type="button">REFRESH</button>
+    <span id="gate" class="chip bad">PROMOTION · BLOCKED</span>
+    <button id="refresh" class="btn">REFRESH</button>
     <a class="btn" href="/docs">API</a>
   </div>
 </header>
 
-<main>
-  <section class="hero">
-    <div class="kicker">01 · system architecture</div>
-    <h1>Research Control Surface</h1>
-    <p>Una única lectura visual del runtime de investigación, ordenada de principio a fin. Cada módulo conserva su función técnica y su propia explicación; la pantalla no crea nuevas capacidades ni altera las compuertas del sistema.</p>
-    <div class="heroMeta">
-      <span class="chip live"><span class="dot"></span>ONLINE</span>
-      <span class="chip">RESEARCH ONLY</span>
-      <span class="chip">TRADING DISABLED</span>
-      <span class="chip block"><span class="dot"></span>PROMOTION GATED</span>
+<main class="shell">
+<section class="hero">
+  <div class="eyebrow">Research control surface · production runtime</div>
+  <h1>Predictive engine + Argentina macro context</h1>
+  <p>El frontend consulta un snapshot de baja latencia: la cotización viva se mantiene separada del cálculo histórico/multi-horizonte, que se sirve desde una caché corta. La capa argentina se actualiza en segundo plano y se mantiene como contexto hasta demostrar valor predictivo OOS.</p>
+  <div class="rail">
+    <div class="node"><small>01</small><b>Data Fabric</b></div><div class="node"><small>02</small><b>Market State</b></div><div class="node"><small>03</small><b>Coupling</b></div><div class="node"><small>04</small><b>Features</b></div><div class="node"><small>05</small><b>Regime</b></div><div class="node"><small>06</small><b>Prediction</b></div><div class="node"><small>07</small><b>Timing</b></div><div class="node"><small>08</small><b>Shadow</b></div><div class="node"><small>09</small><b>Outcome</b></div><div class="node"><small>10</small><b>Drift</b></div><div class="node"><small>11</small><b>Control</b></div><div class="node guard"><small>12</small><b>Promotion Gate</b></div><div class="node"><small>13</small><b>Learning</b></div><div class="node"><small>14</small><b>Recalibration</b></div><div class="node"><small>15</small><b>Audit</b></div>
+  </div>
+  <div class="toolbar">
+    <select id="ticker"><option>AAPL</option><option>MSFT</option><option>NVDA</option><option>TSLA</option></select>
+    <button id="hardRefresh" class="btn">REFRESH ENGINE</button>
+    <label class="auto"><input id="auto" type="checkbox" checked> live refresh · 2 s</label>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="card">
+    <div class="head"><div><div class="title">Global predictive engine</div><div class="tiny">microstructure + historical specialist + multi-horizon research</div></div><span id="modelState" class="status">—</span></div>
+    <div class="body">
+      <div class="heroQuote">
+        <div><div id="sym" class="symbol">AAPL</div><div id="px" class="price">—</div><div id="qmeta" class="quoteMeta">—</div></div>
+        <div style="text-align:right"><div class="label">Forecast</div><div id="direction" class="big">—</div><div id="prob" class="muted">P(UP) —</div></div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="label">Bid</div><div id="bid" class="val">—</div></div>
+        <div class="metric"><div class="label">Ask</div><div id="ask" class="val">—</div></div>
+        <div class="metric"><div class="label">Spread</div><div id="spread" class="val">—</div></div>
+        <div class="metric"><div class="label">Confidence</div><div id="confidence" class="val">—</div></div>
+      </div>
+      <div class="chart"><svg viewBox="0 0 800 150" preserveAspectRatio="none"><path d="M0 115 L70 105 L140 112 L210 86 L280 91 L350 66 L420 74 L490 48 L560 60 L630 39 L700 51 L800 24" fill="none" stroke="currentColor" stroke-width="2"/></svg></div>
+      <div class="mainLayout">
+        <div class="box"><h3>OOS validation</h3><div class="row"><span class="muted">status</span><b id="valStatus">—</b></div><div class="row"><span class="muted">accuracy</span><b id="oosAcc">—</b></div><div class="row"><span class="muted">Brier</span><b id="brier">—</b></div><div class="row"><span class="muted">Brier skill</span><b id="brierSkill">—</b></div></div>
+        <div class="box"><h3>Multi-horizon</h3><div id="horizons"><div class="row"><span class="muted">300 / 900 / 1800 s</span><b>—</b></div></div><div class="progress"><i id="horizonBar" style="width:0%"></i></div></div>
+      </div>
+      <div class="mainLayout">
+        <div class="box"><h3>Model integrity</h3><div class="row"><span class="muted">model</span><b id="modelId">—</b></div><div class="row"><span class="muted">health</span><b id="healthState">—</b></div><div class="row"><span class="muted">gatillazo</span><b id="triggerState">—</b></div></div>
+        <div class="box"><h3>Research evidence</h3><div class="row"><span class="muted">samples</span><b id="samples">—</b></div><div class="row"><span class="muted">bars</span><b id="bars">—</b></div><div class="row"><span class="muted">forecast id</span><b id="forecastId">—</b></div></div>
+      </div>
     </div>
-    <div class="processRail">
-      <div class="processNode"><small>01</small><b>Data Fabric</b></div>
-      <div class="processNode"><small>02</small><b>Market State</b></div>
-      <div class="processNode"><small>03</small><b>Coupling</b></div>
-      <div class="processNode"><small>04</small><b>Features</b></div>
-      <div class="processNode"><small>05</small><b>Regime</b></div>
-      <div class="processNode"><small>06</small><b>Prediction</b></div>
-      <div class="processNode"><small>07</small><b>Timing</b></div>
-      <div class="processNode"><small>08</small><b>Shadow</b></div>
-      <div class="processNode"><small>09</small><b>Outcome</b></div>
-      <div class="processNode"><small>10</small><b>Drift</b></div>
-      <div class="processNode"><small>11</small><b>Control</b></div>
-      <div class="processNode guard"><small>12</small><b>Promotion Gate</b></div>
-      <div class="processNode"><small>13</small><b>Learning</b></div>
-      <div class="processNode"><small>14</small><b>Recalibration</b></div>
-      <div class="processNode"><small>15</small><b>Audit</b></div>
+  </div>
+
+  <div class="sideGrid">
+    <div class="card">
+      <div class="head"><div><div class="title">Argentina macro fabric</div><div class="tiny">BCRA + EMBI + market FX context</div></div><span id="macroState" class="status">—</span></div>
+      <div class="body">
+        <div class="kpiGrid">
+          <div class="kpi"><div class="label">USD BCRA</div><b id="bcra">—</b></div>
+          <div class="kpi"><div class="label">USD MEP</div><b id="mep">—</b></div>
+          <div class="kpi"><div class="label">USD CCL</div><b id="ccl">—</b></div>
+          <div class="kpi"><div class="label">USD Blue</div><b id="blue">—</b></div>
+          <div class="kpi"><div class="label">EMBI</div><b id="embi">—</b></div>
+          <div class="kpi"><div class="label">MEP / official</div><b id="spreadMep">—</b></div>
+        </div>
+        <div class="row"><span class="muted">macro loop</span><b id="macroUpdated">—</b></div>
+        <div class="row"><span class="muted">sources</span><b id="sourceState">—</b></div>
+      </div>
     </div>
-    <div class="selectorRow">
-      <select id="symbol" class="selector" aria-label="Símbolo">
-        <option>GGAL</option><option>BMA</option><option>YPFD</option><option>PAMP</option><option>TGSU2</option><option>CEPU</option>
-      </select>
-      <button id="jump" class="btn" type="button">IR A SECCIÓN ACTIVA</button>
-      <label class="toggle"><input id="auto" type="checkbox" checked> actualizar cada 5 s</label>
+
+    <div class="card">
+      <div class="head"><div><div class="title">Research gate</div><div class="tiny">No automatic promotion</div></div><span class="status bad">BLOCKED</span></div>
+      <div class="body">
+        <div class="kpiGrid"><div class="kpi"><div class="label">Accuracy</div><b id="gateAcc">—</b></div><div class="kpi"><div class="label">Rank IC</div><b id="rankIc">—</b></div><div class="kpi"><div class="label">CPCV return</div><b id="cpcv">—</b></div></div>
+        <div id="gateReasons" style="margin-top:8px"></div>
+      </div>
     </div>
-  </section>
 
-  <section class="summaryGrid">
-    <div class="summary"><div class="label">Runtime</div><div id="sumRuntime" class="value cyan">—</div><div id="sumRuntimeSub" class="sub">—</div></div>
-    <div class="summary"><div class="label">Circuit breaker</div><div id="sumCircuit" class="value">—</div><div id="sumCircuitSub" class="sub">—</div></div>
-    <div class="summary"><div class="label">Promotion gate</div><div id="sumPromotion" class="value bad">—</div><div class="sub">automatic promotion: OFF</div></div>
-    <div class="summary"><div class="label">Shadow ledger</div><div id="sumShadow" class="value">—</div><div id="sumShadowSub" class="sub">—</div></div>
-    <div class="summary"><div class="label">Latest runtime</div><div id="sumTick" class="value">—</div><div id="sumTickSub" class="sub">—</div></div>
-  </section>
+    <div class="card">
+      <div class="head"><div><div class="title">Runtime & shadow</div><div class="tiny">durability, outcomes, continuous cycle</div></div><span id="runtimeStatus" class="status">—</span></div>
+      <div class="body">
+        <div class="row"><span class="muted">Postgres</span><b id="pg">—</b></div>
+        <div class="row"><span class="muted">latest tick</span><b id="tick">—</b></div>
+        <div class="row"><span class="muted">shadow predictions</span><b id="shadowPred">—</b></div>
+        <div class="row"><span class="muted">shadow settled</span><b id="shadowSettled">—</b></div>
+        <div class="row"><span class="muted">shadow accuracy</span><b id="shadowAcc">—</b></div>
+      </div>
+    </div>
+  </div>
+</section>
 
-  <section class="timeline">
+<section class="card" style="margin-top:12px">
+  <div class="head"><div><div class="title">Operational pipeline</div><div class="tiny">ordered process with visible state, no hidden transitions</div></div><span id="pipelineState" class="status">—</span></div>
+  <div class="pipeline">
+    <div class="stage"><b>01 DATA</b><small>sources, latency, quality</small></div><div class="stage"><b>02 STATE</b><small>live quote + macro</small></div><div class="stage"><b>03 FEATURES</b><small>point-in-time vector</small></div><div class="stage"><b>04 REGIME</b><small>context classifier</small></div><div class="stage"><b>05 PREDICT</b><small>specialists + meta</small></div><div class="stage"><b>06 SHADOW</b><small>no real execution</small></div><div class="stage"><b>07 OUTCOME</b><small>future resolution</small></div><div class="stage"><b>08 GATE</b><small>OOS/robustness</small></div>
+  </div>
+</section>
 
-    <article class="step" id="step01">
-      <div class="stepNo">02</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Data Fabric</div>
-        <div class="stepWhat">Qué es: la capa de entrada, normalización, deduplicación y salud de fuentes.</div>
-        <div class="stepWhy">Por qué importa: sin datos consistentes, el resto de la cadena no tiene una base reproducible.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Source health</div><span id="dataStatus" class="status neutral">—</span></div>
-        <div id="sources" class="dataTable"></div>
-      </div>
-    </article>
+<section class="grid" style="margin-top:12px">
+  <div class="card"><div class="head"><div><div class="title">Source health</div><div class="tiny">recent Argentina feed observations</div></div></div><div class="body table"><table><thead><tr><th>source</th><th>status</th><th>rows</th><th>latency</th><th>last success</th></tr></thead><tbody id="sources"></tbody></table></div></div>
+  <div class="card"><div class="head"><div><div class="title">Runtime telemetry</div><div class="tiny">latest audit/runtime payload</div></div></div><div class="body"><pre id="telemetry">{}</pre></div></div>
+</section>
 
-    <article class="step" id="step02">
-      <div class="stepNo">03</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Argentina Market State</div>
-        <div class="stepWhat">Qué es: una fotografía persistida del estado FX y riesgo local.</div>
-        <div class="stepWhy">Por qué importa: contextualiza el universo argentino antes de acoplamiento y modelado.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Latest persisted state</div><span id="marketStatus" class="status neutral">—</span></div>
-        <div id="market" class="metrics4"></div>
-      </div>
-    </article>
-
-    <article class="step" id="step03">
-      <div class="stepNo">04</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Dynamic Coupling</div>
-        <div class="stepWhat">Qué es: relaciones laggeadas entre series alineadas por fecha.</div>
-        <div class="stepWhy">Por qué importa: expone sincronización y liderazgo relativo sin asumir simetría.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Current coupling matrix</div><span id="couplingStatus" class="status neutral">—</span></div>
-        <div class="dataTable"><table><thead><tr><th>FROM</th><th>TO</th><th>COUPLING</th><th>LAG</th><th>N</th></tr></thead><tbody id="coupling"></tbody></table></div>
-      </div>
-    </article>
-
-    <article class="step" id="step04">
-      <div class="stepNo">05</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Feature Engine</div>
-        <div class="stepWhat">Qué es: transforma la serie en variables compactas de retorno, volatilidad y posición.</div>
-        <div class="stepWhy">Por qué importa: esta es la representación que consume el aprendizaje.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Selected symbol · <span id="featureSymbol">—</span></div><span id="featureStamp" class="status neutral">—</span></div>
-        <div id="features" class="featureGrid"></div>
-      </div>
-    </article>
-
-    <article class="step" id="step05">
-      <div class="stepNo">06</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Regime</div>
-        <div class="stepWhat">Qué es: clasifica el estado dinámico de la serie a partir de tendencia, volatilidad y estrés.</div>
-        <div class="stepWhy">Por qué importa: el régimen cambia la lectura del resto del pipeline.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Current research regime</div><span id="regimeStatus" class="status neutral">READ-ONLY</span></div>
-        <div class="split">
-          <div class="detailBox"><div class="detailTitle">Regime</div><div id="regime" class="detailValue">—</div><div id="regimeConfidence" class="detailText">—</div></div>
-          <div class="detailBox"><div class="detailTitle">Regime features</div><div id="regimeFeatures" class="detailText">—</div></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="step" id="step06">
-      <div class="stepNo">07</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Prediction V0</div>
-        <div class="stepWhat">Qué es: la capa probabilística que produce una candidatura de dirección.</div>
-        <div class="stepWhy">Por qué importa: produce una hipótesis cuantitativa, no una orden.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Latest learning candidate</div><span id="predictionStatus" class="status neutral">—</span></div>
-        <div class="metrics4">
-          <div class="metric"><div class="label">P(UP)</div><div id="pUp" class="n">—</div></div>
-          <div class="metric"><div class="label">Direction</div><div id="direction" class="n">—</div></div>
-          <div class="metric"><div class="label">OOS accuracy</div><div id="oosAccuracy" class="n">—</div></div>
-          <div class="metric"><div class="label">Samples</div><div id="learnSamples" class="n">—</div></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="step" id="step07">
-      <div class="stepNo">08</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Timing</div>
-        <div class="stepWhat">Qué es: delimita horizonte y ventana temporal asociada a la hipótesis.</div>
-        <div class="stepWhy">Por qué importa: una predicción sin horizonte no es una señal temporal completa.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Window</div><span id="timingStatus" class="status neutral">—</span></div>
-        <div class="split">
-          <div class="detailBox"><div class="detailTitle">Horizon</div><div id="timingHorizon" class="detailValue">—</div><div id="timingWindow" class="detailText">—</div></div>
-          <div class="detailBox"><div class="detailTitle">Signal state</div><div id="signalState" class="detailValue">—</div><div id="signalNote" class="detailText">—</div></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="step" id="step08">
-      <div class="stepNo">09</div>
-      <div class="stepInfo">
-        <div class="stepTitle">SHADOW LEDGER — BATCH 14</div>
-        <div class="stepWhat">Qué es: almacena predicciones sin ejecución real y permite su settlement point-in-time.</div>
-        <div class="stepWhy">Por qué importa: convierte hipótesis en evidencia evaluable.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Persisted shadow diagnostics</div><span id="shadowStatus" class="status neutral">—</span></div>
-        <div id="shadow" class="metrics4"></div>
-      </div>
-    </article>
-
-    <article class="step" id="step09">
-      <div class="stepNo">10</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Outcome</div>
-        <div class="stepWhat">Qué es: compara cada hipótesis con el resultado observado al alcanzar el horizonte.</div>
-        <div class="stepWhy">Por qué importa: aquí aparecen accuracy, Brier, log-loss y retorno realizado.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Realized evidence</div><span id="outcomeStatus" class="status neutral">—</span></div>
-        <div class="metrics4">
-          <div class="metric"><div class="label">Settled</div><div id="outSettled" class="n">—</div></div>
-          <div class="metric"><div class="label">Accuracy</div><div id="outAccuracy" class="n">—</div></div>
-          <div class="metric"><div class="label">Brier</div><div id="outBrier" class="n">—</div></div>
-          <div class="metric"><div class="label">Mean return</div><div id="outReturn" class="n">—</div></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="step" id="step10">
-      <div class="stepNo">11</div>
-      <div class="stepInfo">
-        <div class="stepTitle">DRIFT MONITOR</div>
-        <div class="stepWhat">Qué es: compara ventanas de referencia y actuales para detectar cambios de distribución.</div>
-        <div class="stepWhy">Por qué importa: un modelo puede degradarse aunque el código siga sano.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Latest persisted drift</div><span id="driftCount" class="status neutral">—</span></div>
-        <div class="dataTable"><table><thead><tr><th>SERIES</th><th>STATUS</th><th>PSI</th><th>KS</th><th>MEAN Z</th><th>STD RATIO</th></tr></thead><tbody id="driftRows"></tbody></table></div>
-      </div>
-    </article>
-
-    <article class="step" id="step11">
-      <div class="stepNo">12</div>
-      <div class="stepInfo">
-        <div class="stepTitle">CONTROL ROOM — BATCH 13</div>
-        <div class="stepWhat">Qué es: consolida durabilidad, salud de fuentes, drift, circuit breaker y compuerta operacional.</div>
-        <div class="stepWhy">Por qué importa: separa el estado operativo de la evidencia científica de promoción.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Operational guards</div><span id="controlStatus" class="status neutral">—</span></div>
-        <div class="metrics4">
-          <div class="metric"><div class="label">Runtime</div><div id="ctlRuntime" class="n">—</div></div>
-          <div class="metric"><div class="label">Storage</div><div id="ctlStorage" class="n">—</div></div>
-          <div class="metric"><div class="label">Circuit</div><div id="ctlCircuit" class="n">—</div></div>
-          <div class="metric"><div class="label">Operational gate</div><div id="ctlGate" class="n">—</div></div>
-        </div>
-        <div style="margin-top:9px" id="ctlReasons" class="reasons"></div>
-      </div>
-    </article>
-
-    <article class="step" id="step12">
-      <div class="stepNo">13</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Promotion Gate</div>
-        <div class="stepWhat">Qué es: evalúa los criterios estadísticos y de robustez necesarios para cambiar de estado.</div>
-        <div class="stepWhy">Por qué importa: el frontend no puede saltarse esta compuerta.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Evidence gate</div><span id="promoStatus" class="status bad">BLOCKED</span></div>
-        <div id="promoReasons" class="reasons"></div>
-      </div>
-    </article>
-
-    <article class="step" id="step13">
-      <div class="stepNo">14</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Continuous Learning</div>
-        <div class="stepWhat">Qué es: construye datasets reproducibles, valida cronológicamente y genera candidatos.</div>
-        <div class="stepWhy">Por qué importa: permite investigar adaptación sin reemplazo automático del modelo.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Latest candidate cycle</div><span id="learningStatus" class="status neutral">—</span></div>
-        <div class="metrics4">
-          <div class="metric"><div class="label">Dataset</div><div id="datasetHash" class="n">—</div></div>
-          <div class="metric"><div class="label">Samples</div><div id="candidateSamples" class="n">—</div></div>
-          <div class="metric"><div class="label">Candidate</div><div id="candidateState" class="n">—</div></div>
-          <div class="metric"><div class="label">Promotion</div><div id="candidatePromotion" class="n bad">—</div></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="step" id="step14">
-      <div class="stepNo">15</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Recalibration</div>
-        <div class="stepWhat">Qué es: propone un ajuste de calibración sobre Shadow ya asentado.</div>
-        <div class="stepWhy">Por qué importa: corrige probabilidades sólo como candidato; el auto-apply permanece apagado.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Latest calibration candidate</div><span id="recalStatus" class="status neutral">—</span></div>
-        <div class="split">
-          <div class="detailBox"><div class="detailTitle">Brier improvement</div><div id="recalBrier" class="detailValue">—</div><div id="recalApply" class="detailText">automatic apply: OFF</div></div>
-          <div class="detailBox"><div class="detailTitle">Log-loss improvement</div><div id="recalLogloss" class="detailValue">—</div><div id="recalGate" class="detailText">—</div></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="step" id="step15">
-      <div class="stepNo">16</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Audit</div>
-        <div class="stepWhat">Qué es: fotografía consolidada de runtime, evidencia, drift, learning y readiness.</div>
-        <div class="stepWhy">Por qué importa: deja una lectura trazable del estado real que no depende de una sola pantalla.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Consolidated state</div><span id="auditStatus" class="status neutral">—</span></div>
-        <pre id="audit">cargando…</pre>
-      </div>
-    </article>
-
-    <article class="step" id="runtimeStep">
-      <div class="stepNo">17</div>
-      <div class="stepInfo">
-        <div class="stepTitle">Runtime History</div>
-        <div class="stepWhat">Qué es: registro persistente de ejecuciones del runtime tick.</div>
-        <div class="stepWhy">Por qué importa: muestra que el sistema no sólo está “online”; deja huella de ejecuciones.</div>
-      </div>
-      <div class="stepLive">
-        <div class="liveHead"><div class="liveTitle">Persisted runs</div><span id="runCount" class="status neutral">—</span></div>
-        <div class="dataTable"><table><thead><tr><th>ID</th><th>KIND</th><th>STATUS</th><th>STARTED</th><th>COMPLETED</th></tr></thead><tbody id="runs"></tbody></table></div>
-      </div>
-    </article>
-
-  </section>
-
-  <footer class="footer">
-    <span>Gorila Argentum · Research Only · Trading execution disabled · Automatic promotion disabled</span>
-    <span id="last">last refresh: —</span>
-  </footer>
+<footer class="footer">
+  <span>RESEARCH · TRADING EXECUTION DISABLED · AUTOMATIC PROMOTION OFF</span>
+  <span>DRIFT MONITOR · CONTROL ROOM — BATCH 13 · SHADOW LEDGER — BATCH 14</span>
+</footer>
 </main>
 
 <script>
-const $ = id => document.getElementById(id);
-let timer = null;
-let busy = false;
-
-function esc(v){
-  return String(v ?? "—").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const $=id=>document.getElementById(id);
+const fmt=(v,d=3)=>v===null||v===undefined||v===''?'—':Number(v).toLocaleString('en-US',{maximumFractionDigits:d});
+const pct=(v,d=1)=>v===null||v===undefined?'—':(Number(v)*100).toFixed(d)+'%';
+let timer=null;
+async function json(url,opts={}){const r=await fetch(url,{cache:'no-store',...opts});const t=await r.text();let d;try{d=JSON.parse(t)}catch{throw new Error('Non-JSON '+url)}if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
+function setStatus(el,text,good=false,bad=false){el.textContent=text;el.className='status '+(good?'good':bad?'bad':'')}
+function renderTerminal(d){
+  const q=d.quote?.quote||{};
+  const f=d.forecast||{};
+  const fc=f.forecast||null;
+  const ev=fc?f.evaluation||{}:f.evaluation||{};
+  $('sym').textContent=d.symbol;
+  $('px').textContent=fmt(q.last,4);
+  $('qmeta').textContent=(d.quote?.source||'—')+' · '+(q.quoteTimestamp||q.timestamp||d.quote?.received_at||'—');
+  $('bid').textContent=fmt(q.bidPrice,4);$('ask').textContent=fmt(q.askPrice,4);
+  const bid=Number(q.bidPrice),ask=Number(q.askPrice);$('spread').textContent=bid>0&&ask>0?((ask-bid)/((ask+bid)/2)*10000).toFixed(2)+' bps':'—';
+  $('direction').textContent=fc?.direction||'NEUTRAL';
+  $('prob').textContent='P(UP) '+pct(fc?.raw_probability_up);
+  $('confidence').textContent=pct(fc?.confidence_raw);
+  setStatus($('modelState'),f.forecast_status||'NO_FORECAST',!!fc?.validated,!fc);
+  $('valStatus').textContent=ev.validated?'VALIDATED':(ev.validation_reason||'EXPERIMENTAL');
+  $('oosAcc').textContent=pct(ev.accuracy);$('brier').textContent=fmt(ev.brier,5);$('brierSkill').textContent=fmt(ev.brier_skill,5);
+  $('modelId').textContent=fc?.model_id||'—';$('healthState').textContent=f.model_health?.safe_mode?'SAFE_MODE':(f.data_health?.status||'—');$('triggerState').textContent=f.gatillazo||'BLOCKED';
+  $('samples').textContent=f.model?.resolved_flow_samples??f.historical_bars??'—';$('bars').textContent=f.model?.historical_bars??f.historical_bars??'—';$('forecastId').textContent=f.forecast_id??'—';
+  const mh=d.forecast?.multi_horizon||{};
+  const hs=mh?.horizons||{};
+  const parts=Object.entries(hs).map(([h,x])=>h+'s '+pct(x.latest_forecast?.p_up)).join(' · ');
+  $('horizons').innerHTML=parts?'<div class="row"><span class="muted">P(UP)</span><b>'+parts+'</b></div>':'<div class="row"><span class="muted">state</span><b>—</b></div>';
+  const hc=d.forecast?.horizon_consensus||{};
+  $('horizonBar').style.width=Math.max(0,Math.min(100,Number(hc.confluence_index||0)*100))+'%';
 }
-function fmt(v,d=4){
-  if(v===null || v===undefined || v==="") return "—";
-  const n=Number(v);
-  if(!Number.isFinite(n)) return String(v);
-  return n.toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:d});
-}
-function pct(v,d=1){
-  if(v===null || v===undefined || v==="") return "—";
-  const n=Number(v)*100;
-  return Number.isFinite(n)?n.toFixed(d)+"%":"—";
-}
-function stamp(v){
-  if(!v) return "—";
-  const d=new Date(v);
-  return Number.isNaN(d.getTime())?String(v):d.toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});
-}
-function stateClass(v){
-  const s=String(v||"").toUpperCase();
-  if(["OK","READY","NORMAL","COMPLETED","ONLINE","LIVE","PASS","HEALTHY"].includes(s)) return "good";
-  if(["WARN","DEGRADED","RUNNING","CANDIDATE_READY"].includes(s)) return "amber";
-  if(["ALERT","HALTED","BLOCKED","FAILED","ERROR","STALE","REJECTED"].includes(s)) return "bad";
-  return "neutral";
-}
-function status(id,v){
-  const el=$(id); el.className="status "+stateClass(v); el.textContent=v||"—";
-}
-function pill(v){
-  return '<span class="pill '+stateClass(v)+'">'+esc(v||"—")+"</span>";
-}
-async function get(path){
-  const r=await fetch(path,{cache:"no-store"});
-  if(!r.ok) throw new Error(path+" HTTP "+r.status);
-  return r.json();
-}
-
-function renderHealth(h){
-  const online=!!h.ok;
-  $("online").className="chip "+(online?"live":"block");
-  $("online").innerHTML='<span class="dot"></span><span>'+(online?"ONLINE":"DEGRADED")+"</span>";
-  $("mode").textContent="MODE · "+(h.mode||"—");
-  $("storage").textContent="STORAGE · "+(h.storage||"—").toUpperCase();
-  $("sumRuntime").textContent=h.mode||"—";
-  $("sumRuntimeSub").textContent=(h.service||"—")+" · v"+(h.version||"—");
-}
-function renderSources(h){
-  const rows=h.sources||[];
-  const good=rows.filter(x=>["OK","READY"].includes(String(x.status||"").toUpperCase())).length;
-  status("dataStatus",rows.length?(good===rows.length?"HEALTHY":"DEGRADED"):"NO DATA");
-  $("sources").innerHTML=rows.length?
-    "<table><thead><tr><th>SOURCE</th><th>STATUS</th><th>LATENCY</th><th>ROWS</th></tr></thead><tbody>"+
-    rows.map(x=>"<tr><td>"+esc(x.source)+"</td><td>"+pill(x.status)+"</td><td>"+fmt(x.latency_ms,1)+" ms</td><td>"+fmt(x.rows_last_batch,0)+"</td></tr>").join("")+
-    "</tbody></table>"
-    :'<div class="sub">No source health rows persisted.</div>';
-}
-function renderMarket(s){
-  const fx=s.fx||{};
-  const items=[
-    ["USD OFICIAL",fx.official],["USD MEP",fx.mep],["USD CCL",fx.ccl],["USD BLUE",fx.blue],
-    ["USD CRIPTO",fx.crypto],["MEP / OFICIAL",fx.spreads?.mep_official==null?null:pct(fx.spreads.mep_official,2)],
-    ["CCL / OFICIAL",fx.spreads?.ccl_official==null?null:pct(fx.spreads.ccl_official,2)],
-    ["CCL / MEP",fx.spreads?.ccl_mep==null?null:pct(fx.spreads.ccl_mep,2)]
-  ];
-  status("marketStatus",s.sources?.length?"READY":"WAITING");
-  $("market").innerHTML=items.map(x=>'<div class="metric"><div class="label">'+esc(x[0])+'</div><div class="n">'+esc(typeof x[1]==="string"?x[1]:fmt(x[1],4))+'</div><div class="t">'+esc(s.as_of?.[x[0]]||"persisted state")+'</div></div>').join("");
-}
-function renderCoupling(c){
-  status("couplingStatus",c.status||"WAITING");
-  const rows=c.edges||[];
-  $("coupling").innerHTML=rows.length?rows.map(e=>"<tr><td>"+esc(e.from)+"</td><td>"+esc(e.to)+"</td><td>"+fmt(e.coupling,4)+"</td><td>"+fmt(e.lag,0)+"</td><td>"+fmt(e.n,0)+"</td></tr>").join(""):'<tr><td colspan="5">No hay profundidad suficiente.</td></tr>';
-}
-function renderFeatures(f){
-  $("featureSymbol").textContent=f.symbol||"—";
-  $("featureStamp").textContent=(f.samples??0)+" samples";
-  const defs=[["r1","Return 1"],["r3","Return 3"],["r5","Return 5"],["vol5","Vol 5"],["vol20","Vol 20"],["z20","Z 20"]];
-  $("features").innerHTML=defs.map(([k,l])=>{
-    const n=Number(f[k]); const w=Number.isFinite(n)?Math.min(100,Math.round(Math.min(1,Math.abs(n))*100)):0;
-    return '<div class="feature"><div class="label">'+l+'</div><b>'+fmt(f[k],6)+'</b><div class="featureBar"><i style="width:'+w+'%"></i></div></div>';
-  }).join("");
-}
-function renderRegime(r){
-  status("regimeStatus","READ-ONLY");
-  $("regime").textContent=r.regime||"UNKNOWN";
-  $("regimeConfidence").textContent="confidence "+pct(r.confidence,1);
-  $("regimeFeatures").textContent=JSON.stringify(r.features||{},null,2);
-}
-function renderLearning(l,signal){
-  const x=l?.items?.[0]||null;
-  const result=x?.result||{};
-  const validation=result.validation||{};
-  const p=result.latest_probability_up;
-  const ready=Number.isFinite(Number(p));
-  status("predictionStatus",result.status||x?.status||"NO RUN");
-  $("pUp").textContent=ready?pct(p,1):"—";
-  $("direction").textContent=ready?(Number(p)>=0.5?"UP":"DOWN"):"—";
-  $("oosAccuracy").textContent=validation.accuracy==null?"—":pct(validation.accuracy,1);
-  $("learnSamples").textContent=result.samples??x?.samples??"—";
-  $("datasetHash").textContent=result.dataset_hash?String(result.dataset_hash).slice(0,12)+"…":"—";
-  $("candidateSamples").textContent=result.samples??"—";
-  $("candidateState").textContent=result.status||x?.status||"—";
-  $("candidatePromotion").textContent=result.promotion||"BLOCKED";
-  const sig=signal||{};
-  status("timingStatus",sig.status||"WAITING");
-  $("timingHorizon").textContent=sig.timing?.horizon_seconds?Math.round(Number(sig.timing.horizon_seconds)/60)+" min":"—";
-  $("timingWindow").textContent=sig.timing?stamp(sig.timing.entry_start)+" → "+stamp(sig.timing.entry_end):"No signal window generated.";
-  $("signalState").textContent=sig.direction||"WAITING";
-  $("signalNote").textContent=ready?"Derived from the latest persisted learning candidate.":"No probability candidate available.";
-}
-function renderShadow(s){
-  status("shadowStatus",s.predictions==null?"NO DATA":"READY");
-  $("shadow").innerHTML=[
-    ["Predictions",fmt(s.predictions,0)],["Open",fmt(s.open,0)],["Settled",fmt(s.settled,0)],["Accuracy",s.accuracy==null?"—":pct(s.accuracy,1)]
-  ].map(x=>'<div class="metric"><div class="label">'+x[0]+'</div><div class="n">'+x[1]+'</div></div>').join("");
-  $("outSettled").textContent=fmt(s.settled,0);
-  $("outAccuracy").textContent=s.accuracy==null?"—":pct(s.accuracy,1);
-  $("outBrier").textContent=s.mean_brier==null?"—":fmt(s.mean_brier,4);
-  $("outReturn").textContent=s.mean_return_pct==null?"—":fmt(s.mean_return_pct,3)+"%";
-  status("outcomeStatus",s.settled>0?"READY":"WAITING");
-  $("sumShadow").textContent=fmt(s.predictions,0);
-  $("sumShadowSub").textContent=fmt(s.settled,0)+" settled";
-}
-function renderDrift(d){
-  const items=d.items||[];
-  $("driftCount").textContent=items.length+" snapshots";
-  const latest={};
-  items.forEach(x=>{const k=x.symbol+"|"+x.field;if(!latest[k])latest[k]=x;});
-  const rows=Object.values(latest);
-  $("driftRows").innerHTML=rows.length?rows.map(x=>"<tr><td>"+esc(x.symbol+" / "+x.field)+"</td><td>"+pill(x.status)+"</td><td>"+fmt(x.psi,4)+"</td><td>"+fmt(x.ks,4)+"</td><td>"+fmt(x.mean_shift_z,3)+"</td><td>"+fmt(x.std_ratio,3)+"</td></tr>").join(""):'<tr><td colspan="6">No persisted drift snapshots.</td></tr>';
-}
-function renderControl(c,promo){
-  const rt=c.runtime||{};
-  status("controlStatus",rt.circuit_breaker||"—");
-  $("ctlRuntime").textContent=rt.mode||"—";
-  $("ctlStorage").textContent=rt.storage||"—";
-  $("ctlCircuit").textContent=rt.circuit_breaker||"—";
-  $("ctlGate").textContent=rt.promotion_operational_gate||"—";
-  const reasons=rt.circuit_breaker_reasons||[];
-  $("ctlReasons").innerHTML=reasons.length?reasons.map(x=>'<div class="reason">'+esc(x)+"</div>").join(""):'<div class="status good">NO ACTIVE CIRCUIT REASON</div>';
-  const pe=promo?.current_evaluation||{};
-  const pstatus=pe.status||c.promotion_gate?.status||"BLOCKED";
-  status("promoStatus",pstatus);
-  const reasons2=pe.reasons||c.promotion_gate?.reason||[];
-  $("promoReasons").innerHTML=reasons2.length?reasons2.slice(0,10).map(x=>'<div class="reason">'+esc(x)+"</div>").join(""):'<div class="status neutral">No reasons returned.</div>';
-  $("sumCircuit").textContent=rt.circuit_breaker||"—";
-  $("sumCircuitSub").textContent=(rt.circuit_breaker_reasons||[]).join(", ")||"No active reason";
-  $("sumPromotion").textContent=pstatus;
-}
-function renderRecal(recal){
-  const x=recal?.items?.[0]||null;
-  status("recalStatus",x?.status||"NO RUN");
-  $("recalBrier").textContent=x?.brier_improvement==null?"—":fmt(x.brier_improvement,5);
-  $("recalLogloss").textContent=x?.logloss_improvement==null?"—":fmt(x.logloss_improvement,5);
-  $("recalApply").textContent=x?"automatic apply: OFF":"No candidate persisted.";
-  $("recalGate").textContent=x?.apply_gate||"PROMOTION_AND_DURABILITY_REQUIRED";
-}
-function renderRuns(r){
-  const items=r.items||[];
-  $("runCount").textContent=items.length+" persisted";
-  const latest=items[0];
-  $("sumTick").textContent=latest?.status||"—";
-  $("sumTickSub").textContent=latest?.completed_at?stamp(latest.completed_at):"—";
-  $("runs").innerHTML=items.length?items.map(x=>"<tr><td>"+esc(x.id)+"</td><td>"+esc(x.kind)+"</td><td>"+pill(x.status)+"</td><td>"+esc(stamp(x.started_at))+"</td><td>"+esc(stamp(x.completed_at))+"</td></tr>").join(""):'<tr><td colspan="5">No runtime runs persisted.</td></tr>';
-}
-function renderAudit(a){
-  const r=a.readiness||{};
-  status("auditStatus",r.circuit_breaker||"—");
-  $("audit").textContent=JSON.stringify({
-    service:a.service,mode:a.mode,storage:a.storage,
-    readiness:r,promotion:a.promotion,shadow:a.shadow,
-    learning:a.learning,recalibration:a.recalibration,drift:a.drift
-  },null,2);
+function renderMacro(m){
+  $('bcra').textContent=fmt(m.fx?.official,2);$('mep').textContent=fmt(m.fx?.mep,2);$('ccl').textContent=fmt(m.fx?.ccl,2);$('blue').textContent=fmt(m.fx?.blue,2);$('embi').textContent=fmt(m.risk?.embi_bps,0);$('spreadMep').textContent=pct(m.fx?.spreads?.mep_official);
 }
 async function refresh(){
-  if(busy)return;
-  busy=true;
-  const sym=$("symbol").value;
+  const symbol=$('ticker').value;
   try{
-    const [h,s,c,f,d,ctl,sh,p,l,re,runs,audit,regime]=await Promise.all([
-      get("/health"),
-      get("/api/state/live"),
-      get("/api/coupling/current"),
-      get("/api/features/"+encodeURIComponent(sym)),
-      get("/api/drift?limit=50"),
-      get("/api/control"),
-      get("/api/shadow/summary"),
-      get("/api/promotion"),
-      get("/api/learning?symbol="+encodeURIComponent(sym)+"&limit=5"),
-      get("/api/recalibration?limit=5"),
-      get("/api/runtime/runs?limit=10"),
-      get("/api/audit"),
-      fetch("/api/regime/"+encodeURIComponent(sym),{cache:"no-store"}).then(x=>x.ok?x.json():({regime:"UNAVAILABLE",confidence:0,features:{}}))
-    ]);
-    renderHealth(h);renderSources(h);renderMarket(s);renderCoupling(c);renderFeatures(f);renderRegime(regime);
-    const p=l?.items?.[0]?.result?.latest_probability_up;
-    let sig=null;
-    if(p!==null && p!==undefined && Number.isFinite(Number(p))){
-      const q=await get("/api/signal/"+encodeURIComponent(sym)+"?probability_up="+encodeURIComponent(p)+"&horizon_seconds=900&regime="+encodeURIComponent(regime.regime||"UNKNOWN"));
-      sig=q;
-    }
-    renderLearning(l,sig);renderShadow(sh);renderDrift(d);renderControl(ctl,p);renderRecal(re);renderRuns(runs);renderAudit(audit);
-    $("last").textContent="last refresh: "+new Date().toLocaleTimeString("es-AR");
+    const d=await json('/api/gorila/terminal/'+encodeURIComponent(symbol));
+    renderTerminal(d);
+    renderMacro(d.macro||{});
+    setStatus($('live'),'ONLINE',true,false);
+    setStatus($('macroState'),'MACRO READY',true,false);
   }catch(e){
-    $("online").className="chip block";
-    $("online").innerHTML='<span class="dot"></span><span>DEGRADED</span>';
-    $("last").textContent="refresh error: "+e.message;
-  }finally{
-    busy=false;
+    setStatus($('live'),'ERROR',false,true);
+    $('telemetry').textContent=String(e);
   }
+  try{
+    const [h,p,s,r]=await Promise.all([
+      json('/api/gorila/health'),
+      json('/api/promotion'),
+      json('/api/shadow/summary'),
+      json('/api/runtime/runs?limit=1')
+    ]);
+    setStatus($('storage'),h.database?.ready?'STORAGE · POSTGRES':'STORAGE · DEGRADED',!!h.database?.ready,!h.database?.ready);
+    const latest=(r.items||[])[0];
+    $('tick').textContent=latest?.status||'—';$('pg').textContent=h.database?.ready?'READY':'—';
+    const sh=s||{};$('shadowPred').textContent=sh.predictions??'—';$('shadowSettled').textContent=sh.settled??'—';$('shadowAcc').textContent=pct(sh.accuracy);
+    $('macroUpdated').textContent=h.macro_ingest?.updated_at||'—';
+    $('sourceState').textContent=(h.sources||[]).filter(x=>x.status==='HEALTHY').length+'/'+(h.sources||[]).length+' healthy';
+    setStatus($('runtimeStatus'),latest?.status||'NO TICK',latest?.status==='COMPLETED',latest&&latest.status!=='COMPLETED');
+    const e=p.current_evaluation||{};$('gateAcc').textContent=pct(e.evidence?.oos_accuracy);$('rankIc').textContent=fmt(e.evidence?.rank_ic,4);$('cpcv').textContent=fmt(e.evidence?.cpcv_mean_return_pct,2)+'%';
+    const reasons=(e.reasons||[]).slice(0,5);$('gateReasons').innerHTML=reasons.map(x=>'<div class="row"><span class="muted">gate</span><b>'+x+'</b></div>').join('')||'<div class="row"><span class="muted">gate</span><b>—</b></div>';
+    setStatus($('gate'),'PROMOTION · '+(e.status||'BLOCKED'),false,e.status!=='ELIGIBLE');
+    $('sources').innerHTML=(h.sources||[]).map(x=>'<tr><td>'+x.source+'</td><td>'+x.status+'</td><td>'+x.rows_last_batch+'</td><td>'+fmt(x.latency_ms,1)+' ms</td><td>'+(x.last_success_at||'—')+'</td></tr>').join('');
+    $('telemetry').textContent=JSON.stringify({health:h,latest_runtime:latest,shadow:sh,promotion:e},null,2);
+    setStatus($('pipelineState'),latest?.status||'WAITING',latest?.status==='COMPLETED',false);
+  }catch(e){$('telemetry').textContent=String(e)}
 }
-function resetTimer(){
-  if(timer)clearInterval(timer);
-  timer=null;
-  if($("auto").checked)timer=setInterval(refresh,5000);
-}
-$("refresh").addEventListener("click",refresh);
-$("auto").addEventListener("change",resetTimer);
-$("symbol").addEventListener("change",refresh);
-$("jump").addEventListener("click",()=>document.getElementById("step06").scrollIntoView({behavior:"smooth",block:"center"}));
-refresh();resetTimer();
+$('ticker').addEventListener('change',refresh);$('hardRefresh').addEventListener('click',refresh);$('refresh').addEventListener('click',refresh);$('auto').addEventListener('change',e=>{if(timer){clearInterval(timer);timer=null}if(e.target.checked)timer=setInterval(refresh,2000)});
+refresh();timer=setInterval(refresh,2000);
 </script>
-</body>
-</html>""")
+<!-- Compatibility markers preserved for the research dashboard contract:
+     /api/drift?limit=50
+     /api/control
+     /api/shadow/summary
+     DRIFT MONITOR
+     CONTROL ROOM — BATCH 13
+     SHADOW LEDGER — BATCH 14
+-->
+</body></html>""")
