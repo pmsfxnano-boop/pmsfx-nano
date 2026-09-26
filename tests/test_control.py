@@ -37,7 +37,12 @@ def test_control_room_reports_blocked_and_drift_alerts(tmp_path, monkeypatch):
     assert state["promotion_gate"]["status"] == "BLOCKED"
     assert state["promotion_gate"]["automatic_promotion"] is False
     assert state["monitoring"]["data_distribution_drift"] == "IMPLEMENTED"
-    assert state["monitoring"]["automatic_kill_switch"] == "NOT_IMPLEMENTED"
+    assert state["monitoring"]["automatic_kill_switch"] == "IMPLEMENTED_RESEARCH_CIRCUIT_BREAKER"
+    assert state["runtime"]["storage_durable"] is False
+    assert state["runtime"]["circuit_breaker"] == "HALTED"
+    assert "NON_DURABLE_STORAGE" in state["runtime"]["circuit_breaker_reasons"]
+    assert state["runtime"]["promotion_operational_gate"] == "BLOCKED"
+    assert "STORAGE_DURABILITY_FAILED" in state["promotion_gate"]["reason"]
     assert state["drift"]["snapshots_seen"] == 1
     assert len(state["drift"]["warnings_or_alerts"]) == 1
     assert state["drift"]["warnings_or_alerts"][0]["status"] == "ALERT"
