@@ -14,6 +14,7 @@ from .control import build_control_state
 from .shadow import validate_shadow_prediction, compute_shadow_outcome, validate_observed_at
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 from .learning import run_learning_cycle
+from .calibration import build_recalibration_candidate
 from .audit import build_audit_state
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
@@ -95,6 +96,24 @@ def promotion_evaluate():
 @app.post("/api/learning/run")
 def learning_run(symbol: str, horizon_days: int = 5):
     return run_learning_cycle(symbol, horizon_days=max(1, min(20, int(horizon_days))))
+
+@app.get("/api/recalibration")
+def recalibration(limit: int = 10):
+    store = Store(); store.init()
+    return {"items": store.latest_calibration(limit=limit)}
+
+@app.post("/api/recalibration/evaluate")
+def recalibration_evaluate():
+    store = Store(); store.init()
+    rows = store.latest_shadow(status="SETTLED", limit=500)
+    result = build_recalibration_candidate(rows)
+    persisted = store.save_calibration_run("shadow-probability-v0", result)
+    return {
+        "candidate": result,
+        "persisted": persisted,
+        "automatic_apply": False,
+        "apply_gate": "PROMOTION_AND_DURABILITY_REQUIRED",
+    }
 
 @app.get("/api/learning")
 def learning(symbol: str | None = None, limit: int = 20):
