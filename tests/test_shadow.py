@@ -2,7 +2,10 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from gorila_argentum.shadow import compute_shadow_outcome, validate_shadow_prediction, validate_observed_at
+from fastapi.testclient import TestClient
+
 from gorila_argentum.storage import Store
+from gorila_argentum.app import app
 
 
 def test_shadow_prediction_validation():
@@ -60,3 +63,20 @@ def test_shadow_storage_roundtrip(tmp_path, monkeypatch):
     assert summary["settled"] == 1
     assert math.isclose(summary["accuracy"], 1.0)
     assert math.isclose(summary["mean_brier"], (0.72 - 1.0) ** 2)
+
+
+def test_shadow_endpoint_obeys_research_circuit_breaker(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "api.sqlite3"))
+    client = TestClient(app)
+    response = client.post(
+        "/api/shadow/prediction",
+        params={
+            "symbol": "GGAL",
+            "probability_up": 0.72,
+            "horizon_seconds": 900,
+            "entry_price": 100.0,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RESEARCH_CIRCUIT_BREAKER_HALTED"
