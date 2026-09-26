@@ -140,11 +140,20 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
             continue
 
         observed_at = outcome_row[0].isoformat() if hasattr(outcome_row[0], "isoformat") else str(outcome_row[0])
+        observed_price_source = "exit_price"
         try:
+            try:
+                observed_price = float(outcome_row[1])
+            except (TypeError, ValueError):
+                realized_return_bps = float(outcome_row[3])
+                entry_price = float(shadow["entry_price"])
+                observed_price = entry_price * (1.0 + realized_return_bps / 10000.0)
+                observed_price_source = "reconstructed_from_realized_return_bps"
+
             outcome = compute_shadow_outcome(
                 float(shadow["probability_up"]),
                 float(shadow["entry_price"]),
-                float(outcome_row[1]),
+                observed_price,
             )
             store.settle_shadow_prediction(
                 shadow["id"],
@@ -157,6 +166,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                     "upstream_realized_return_bps": outcome_row[3],
                     "upstream_prediction_correct": outcome_row[4],
                     "upstream_brier_loss": outcome_row[5],
+                    "observed_price_source": observed_price_source,
                 },
             )
             settled += 1
