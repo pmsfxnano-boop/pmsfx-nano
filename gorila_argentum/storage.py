@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS research_evidence (
  rank_ic DOUBLE PRECISION,
  net_return_50bps DOUBLE PRECISION,
  placebo_accuracy_p95 DOUBLE PRECISION,
+ pbo DOUBLE PRECISION,
+ dsr DOUBLE PRECISION,
  execution_delta_50bps DOUBLE PRECISION,
  stress_pass INTEGER NOT NULL DEFAULT 0,
  data_health INTEGER NOT NULL DEFAULT 0,
@@ -209,6 +211,12 @@ class Store:
                 cur.execute(SCHEMA)
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_shadow_feature_hash ON shadow_predictions(feature_hash)"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS pbo DOUBLE PRECISION"
+                )
+                cur.execute(
+                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_research_evidence_validation ON research_evidence(validation_status,created_at)"
