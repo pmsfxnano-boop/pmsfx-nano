@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header
+import threading
 from fastapi.responses import HTMLResponse
 from .storage import Store
 from .ingest import run_batch
@@ -23,16 +24,33 @@ app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
 @app.on_event("startup")
 def startup():
-    store = Store()
-    store.init()
-    proof = store.verify_persistence()
-    print(
-        "GORILA_PERSISTENCE_ROUNDTRIP",
-        proof["backend"],
-        proof["verified"],
-        proof["heartbeat_id"],
-        flush=True,
-    )
+    Store().init()
+
+    def persistence_probe():
+        try:
+            probe = Store()
+            probe.init()
+            proof = probe.verify_persistence()
+            print(
+                "GORILA_PERSISTENCE_ROUNDTRIP",
+                proof["backend"],
+                proof["verified"],
+                proof["heartbeat_id"],
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "GORILA_PERSISTENCE_ROUNDTRIP_FAILED",
+                type(exc).__name__,
+                str(exc),
+                flush=True,
+            )
+
+    threading.Thread(
+        target=persistence_probe,
+        name="gorila-persistence-probe",
+        daemon=True,
+    ).start()
 
 @app.get("/health")
 def health():
