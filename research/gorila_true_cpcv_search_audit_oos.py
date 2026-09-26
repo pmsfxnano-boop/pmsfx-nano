@@ -22,7 +22,7 @@ from research.gorila_nested_pairwise_rank_oos import (
 HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 CPCV_GROUPS = int(os.getenv("GORILA_CPCV_GROUPS", "6"))
 CPCV_TEST_GROUPS = int(os.getenv("GORILA_CPCV_TEST_GROUPS", "2"))
-PURGE = int(os.getenv("GORILA_CPCV_PURGE", "5"))
+EXTRA_PURGE = int(os.getenv("GORILA_CPCV_EXTRA_PURGE", "0"))
 EMBARGO = int(os.getenv("GORILA_CPCV_EMBARGO", "5"))
 MIN_TRAIN = int(os.getenv("GORILA_CPCV_MIN_TRAIN", "252"))
 FIT_EPOCHS = int(os.getenv("GORILA_CPCV_FIT_EPOCHS", "80"))
@@ -108,7 +108,7 @@ def run_horizon(series, horizon):
     for train_groups, test_groups in split_specs:
         test_indices = sorted(i for g in test_groups for i in groups[g])
         train_indices = purge_train_indices(
-            len(dates), test_indices, PURGE, EMBARGO
+            len(dates), test_indices, horizon + EXTRA_PURGE, EMBARGO
         )
         train_dates = [dates[i] for i in train_indices]
         test_dates = [dates[i] for i in test_indices]
@@ -190,7 +190,7 @@ def run_horizon(series, horizon):
         "candidate_count": len(candidate_meta),
         "cpcv_group_count": CPCV_GROUPS,
         "cpcv_test_group_count": CPCV_TEST_GROUPS,
-        "purge_days": PURGE,
+        "purge_days": horizon + EXTRA_PURGE,
         "embargo_days": EMBARGO,
         "pbo": pbo,
         "selected_dsr_summary": {
