@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS calibration_runs (
  result TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_calibration_model_time ON calibration_runs(model_id,created_at);
+CREATE TABLE IF NOT EXISTS runtime_heartbeats (
+ id TEXT PRIMARY KEY,
+ created_at TEXT NOT NULL,
+ backend TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_heartbeats_time ON runtime_heartbeats(created_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -150,6 +156,54 @@ class Store:
             with conn.cursor() as cur: cur.execute(SCHEMA)
             conn.commit()
         conn.close(); self.conn=None
+
+    def verify_persistence(self) -> dict:
+        heartbeat_id = uuid.uuid4().hex
+        created_at = utc_now()
+        backend = "postgres" if self.pg else "sqlite-fallback"
+
+        conn = self.connect()
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO runtime_heartbeats(id,created_at,backend) VALUES(%s,%s,%s)",
+                    (heartbeat_id, created_at, backend),
+                )
+        else:
+            conn.execute(
+                "INSERT INTO runtime_heartbeats(id,created_at,backend) VALUES(?,?,?)",
+                (heartbeat_id, created_at, backend),
+            )
+        conn.commit()
+        conn.close()
+        self.conn = None
+
+        # Verify durability with a fresh connection, not the original transaction.
+        check = self.connect()
+        if self.pg:
+            with check.cursor() as cur:
+                cur.execute(
+                    "SELECT id,backend FROM runtime_heartbeats WHERE id=%s",
+                    (heartbeat_id,),
+                )
+                row = cur.fetchone()
+        else:
+            row = check.execute(
+                "SELECT id,backend FROM runtime_heartbeats WHERE id=?",
+                (heartbeat_id,),
+            ).fetchone()
+        check.close()
+        self.conn = None
+
+        verified = bool(row and row[0] == heartbeat_id and row[1] == backend)
+        if not verified:
+            raise RuntimeError("persistence_roundtrip_failed")
+        return {
+            "verified": True,
+            "backend": backend,
+            "heartbeat_id": heartbeat_id,
+            "created_at": created_at,
+        }
 
     def insert_observations(self, rows):
         if not rows: return 0
