@@ -1,6 +1,6 @@
 import os
 
-from gorila_argentum.control import build_control_state
+from gorila_argentum.control import build_control_state, _shadow_diagnostics
 from gorila_argentum.storage import Store
 
 
@@ -46,3 +46,29 @@ def test_control_room_reports_blocked_and_drift_alerts(tmp_path, monkeypatch):
     assert state["drift"]["snapshots_seen"] == 1
     assert len(state["drift"]["warnings_or_alerts"]) == 1
     assert state["drift"]["warnings_or_alerts"][0]["status"] == "ALERT"
+
+
+def test_shadow_diagnostics_detect_prediction_shift():
+    rows = []
+    for i in range(90):
+        rows.append({
+            "created_at": f"2026-01-{(i // 24) + 1:02d}T00:00:00+00:00",
+            "observed_at": f"2026-01-{(i // 24) + 1:02d}T01:00:00+00:00",
+            "status": "SETTLED",
+            "probability_up": 0.50,
+            "realized_direction": "UP" if i % 2 == 0 else "DOWN",
+            "brier": 0.25,
+        })
+    for i in range(30):
+        rows.append({
+            "created_at": f"2026-04-{(i // 24) + 1:02d}T00:00:00+00:00",
+            "observed_at": f"2026-04-{(i // 24) + 1:02d}T01:00:00+00:00",
+            "status": "SETTLED",
+            "probability_up": 0.99,
+            "realized_direction": "DOWN",
+            "brier": 0.9801,
+        })
+    diag = _shadow_diagnostics(rows)
+    assert diag["prediction_drift"]["status"] in {"WARN", "ALERT"}
+    assert diag["realized_vs_predicted"]["status"] == "ALERT"
+    assert diag["status"] == "ALERT"
