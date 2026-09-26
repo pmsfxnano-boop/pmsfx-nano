@@ -290,7 +290,7 @@ class Store:
             except Exception: pass
         return out
 
-    def settle_shadow_prediction(self, prediction_id, outcome, metadata=None):
+    def settle_shadow_prediction(self, prediction_id, outcome, observed_at, metadata=None):
         prediction = self.get_shadow_prediction(prediction_id)
         if not prediction:
             raise KeyError("shadow_prediction_not_found")
@@ -298,7 +298,6 @@ class Store:
             raise ValueError("shadow_prediction_not_open")
 
         outcome_id = uuid.uuid4().hex
-        observed_at = utc_now()
         values = (
             outcome_id, prediction_id, observed_at, float(outcome["observed_price"]),
             outcome["realized_direction"], outcome.get("return_pct"),
