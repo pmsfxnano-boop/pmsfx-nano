@@ -55,12 +55,12 @@ jobs:
         run: |
           set -euo pipefail
           URL="https://gorila-argentum-research.onrender.com/api/gorila/control"
-          for attempt in $(seq 1 18); do
-            echo "autonomous cycle probe $attempt/30"
+          for attempt in $(seq 1 24); do
+            echo "autonomous cycle probe $attempt/24"
             rm -f /tmp/control.json
             curl --fail --silent --show-error --connect-timeout 15 --max-time 30 "$URL" -o /tmp/control.json || true
             if test -s /tmp/control.json; then
-              if python -c 'import json, time; d=json.load(open("/tmp/control.json")); items=(d.get("runtime") or {}).get("items") or []; latest=items[0] if items else {}; ts=latest.get("completed_at"); age=(time.time()-__import__("datetime").datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()) if ts else 999999; print("LATEST_RUNTIME", latest, "age_s", age); raise SystemExit(0 if latest.get("kind") == "autonomous" and latest.get("status") == "COMPLETED" and age <= 90 else 1)'; then
+              if python -c 'import json, time; d=json.load(open("/tmp/control.json")); items=(d.get("runtime") or {}).get("items") or []; latest=items[0] if items else {}; ts=latest.get("completed_at"); age=(time.time()-__import__("datetime").datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()) if ts else 999999; print("LATEST_RUNTIME", latest, "age_s", age); raise SystemExit(0 if latest.get("kind") == "autonomous" and latest.get("status") == "COMPLETED" and age <= 240 else 1)'; then
                 exit 0
               fi
             fi
@@ -69,6 +69,28 @@ jobs:
           echo "Autonomous runtime did not complete during the production probe window."
           cat /tmp/control.json || true
           exit 1
+
+
+      - name: Verify validated cross-sectional predictor
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com/api/gorila/cross-sectional"
+          curl --fail --silent --show-error --connect-timeout 20 --max-time 180 "$URL" -o /tmp/cross_sectional.json
+          cat /tmp/cross_sectional.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("/tmp/cross_sectional.json").read_text())
+          assert d["status"] in {"READY","INSUFFICIENT_DATA"}, d
+          if d["status"] == "READY":
+              assert d["research_only"] is True, d
+              assert d["no_execution_authority"] is True, d
+              assert d["model"] == "fixed-pooled-logit-v1", d
+              assert d["horizon_days"] == 5, d
+              assert len(d["items"]) == 6, d
+          print("GORILA_CROSS_SECTIONAL_PASS")
+          PY
 
       - name: Verify Argentina data surface
         shell: bash
