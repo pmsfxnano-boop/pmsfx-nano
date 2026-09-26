@@ -8,7 +8,10 @@ Gorila control surface on the same FastAPI instance.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+
+import httpx
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -55,6 +58,89 @@ _MACRO_INTERVAL_SECONDS = max(
     60,
     int(__import__("os").getenv("GORILA_MACRO_INTERVAL_SECONDS", "300")),
 )
+
+# The mature PMSF-X Render service already owns the verified Tiingo connection.
+# Gorila can read that research engine when its own Tiingo secret is not present.
+_UPSTREAM_ENGINE_URL = os.getenv(
+    "GORILA_UPSTREAM_ENGINE_URL",
+    "https://pmsfx-nano.onrender.com",
+).rstrip("/")
+_UPSTREAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_UPSTREAM_LOCK = asyncio.Lock()
+_UPSTREAM_CACHE_SECONDS = 10.0
+
+
+async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]:
+    now = time.monotonic()
+    cached = _UPSTREAM_CACHE.get(symbol)
+    if cached and not force and now - cached[0] < _UPSTREAM_CACHE_SECONDS:
+        return dict(cached[1])
+
+    async with _UPSTREAM_LOCK:
+        now = time.monotonic()
+        cached = _UPSTREAM_CACHE.get(symbol)
+        if cached and not force and now - cached[0] < _UPSTREAM_CACHE_SECONDS:
+            return dict(cached[1])
+
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.get(
+                f"{_UPSTREAM_ENGINE_URL}/api/state/{symbol}",
+                headers={"User-Agent": "Gorila-Argentum/1.0"},
+            )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"upstream_engine_http_{response.status_code}",
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("upstream_engine_invalid_payload")
+        _UPSTREAM_CACHE[symbol] = (time.monotonic(), dict(payload))
+        return payload
+
+
+def _upstream_forecast_payload(symbol: str, state: dict[str, Any]) -> dict[str, Any]:
+    result = dict(state)
+    result["engine_source"] = "upstream_pmsf_x"
+    result["engine_url"] = _UPSTREAM_ENGINE_URL
+    result["symbol"] = symbol
+    result.setdefault(
+        "forecast_status",
+        "READY" if result.get("forecast") is not None else "NO_FORECAST",
+    )
+    return result
+
+
+def _upstream_quote_payload(symbol: str, state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": "upstream_pmsf_x",
+        "received_at": state.get("received_at"),
+        "symbol": symbol,
+        "quote": {
+            "last": state.get("last"),
+            "bidPrice": state.get("bid"),
+            "askPrice": state.get("ask"),
+            "bidSize": state.get("bid_size"),
+            "askSize": state.get("ask_size"),
+            "quoteTimestamp": state.get("quote_timestamp"),
+            "timestamp": state.get("quote_timestamp"),
+        },
+    }
+
+
+async def _gorila_forecast(symbol: str, *, force: bool = False) -> dict[str, Any]:
+    if os.getenv("TIINGO_API_KEY", "").strip():
+        return await gorila_forecast(symbol, force=force)
+    state = await _upstream_state(symbol, force=force)
+    return _upstream_forecast_payload(symbol, state)
+
+
+async def _gorila_quote(symbol: str) -> dict[str, Any]:
+    if os.getenv("TIINGO_API_KEY", "").strip():
+        return await advanced_quote(symbol)
+    state = await _upstream_state(symbol)
+    return _upstream_quote_payload(symbol, state)
+
 
 
 def _run_macro_ingest() -> dict[str, Any]:
@@ -165,7 +251,9 @@ def gorila_root():
 
 @app.get("/api/gorila/health")
 def gorila_health():
-    tiingo_configured = bool(__import__("os").getenv("TIINGO_API_KEY", "").strip())
+    tiingo_configured = bool(os.getenv("TIINGO_API_KEY", "").strip())
+    upstream_available = bool(_UPSTREAM_ENGINE_URL)
+    engine_ready = tiingo_configured or upstream_available
     return {
         "service": "gorila-argentum",
         "mode": "RESEARCH",
@@ -174,7 +262,9 @@ def gorila_health():
         "primary_market_data": {
             "provider": "TIINGO",
             "configured": tiingo_configured,
-            "status": "CONFIGURED" if tiingo_configured else "MISSING_KEY",
+            "upstream_engine": "PMSF-X" if upstream_available else None,
+            "source": "LOCAL_TIINGO" if tiingo_configured else ("UPSTREAM_PMSF_X" if upstream_available else "NONE"),
+            "status": "READY" if engine_ready else "MISSING_FEED",
         },
         "database": persistence_summary(),
         "market_stream": stream_status(),
@@ -225,7 +315,13 @@ async def gorila_forecast(ticker: str, force: bool = False):
             result["cache"] = {"hit": True, "age_seconds": round(now - cached[0], 3)}
             return result
 
-        result = await advanced_state(symbol)
+        if os.getenv("TIINGO_API_KEY", "").strip():
+            result = await advanced_state(symbol)
+        else:
+            result = _upstream_forecast_payload(
+                symbol,
+                await _upstream_state(symbol, force=force),
+            )
         _FORECAST_CACHE[symbol] = (time.monotonic(), dict(result))
         result["cache"] = {"hit": False, "age_seconds": 0.0}
         return result
@@ -234,8 +330,8 @@ async def gorila_forecast(ticker: str, force: bool = False):
 @app.get("/api/gorila/terminal/{ticker}")
 async def gorila_terminal(ticker: str):
     symbol = normalize_ticker(ticker)
-    quote_task = asyncio.create_task(advanced_quote(symbol))
-    forecast_task = asyncio.create_task(gorila_forecast(symbol))
+    quote_task = asyncio.create_task(_gorila_quote(symbol))
+    forecast_task = asyncio.create_task(_gorila_forecast(symbol))
     macro_task = asyncio.to_thread(build_market_state)
 
     quote_result = None
