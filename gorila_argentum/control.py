@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .storage import Store
-from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
+from .promotion import evaluate_promotion, evaluate_live_promotion, CURRENT_BATCH10_EVIDENCE
 from .drift import rolling_drift
 from .calibration import build_recalibration_candidate
 
@@ -101,8 +101,9 @@ def build_control_state(store: Store | None = None) -> dict:
     alerts.sort(key=lambda row: (rank.get(row.get("status"), 9), row.get("created_at", "")), reverse=False)
 
     promotion_decision = store.latest_promotion_decision()
-    promotion_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
-    promotion = _promotion_status(promotion_decision or promotion_evaluation)
+    live_evidence = evaluate_live_promotion(store)
+    historical_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
+    promotion = _promotion_status(promotion_decision or live_evidence)
     latest_learning = store.latest_learning(limit=1)
 
     storage_backend = "postgres" if store.pg else "sqlite-fallback"
@@ -147,7 +148,7 @@ def build_control_state(store: Store | None = None) -> dict:
         (
             (promotion_decision or {}).get("reasons")
             if promotion_decision
-            else promotion_evaluation.get("reasons")
+            else live_evidence.get("reasons")
             or []
         )
     )
@@ -173,6 +174,8 @@ def build_control_state(store: Store | None = None) -> dict:
             "status": promotion,
             "automatic_promotion": False,
             "reason": promotion_reasons,
+            "live_evidence": live_evidence,
+            "historical_reference": historical_evaluation,
         },
         "monitoring": {
             "data_distribution_drift": "IMPLEMENTED",
@@ -183,6 +186,8 @@ def build_control_state(store: Store | None = None) -> dict:
             "shadow_ledger": "IMPLEMENTED",
             "continuous_learning": "IMPLEMENTED_AS_CANDIDATE_CYCLE",
             "continuous_learning_promotion": "BLOCKED_UNTIL_PROMOTION_GATE",
+            "fresh_evidence_required": True,
+            "historical_batch10_is_not_live_gate": True,
         },
         "source_health": store.health(),
         "drift": {
