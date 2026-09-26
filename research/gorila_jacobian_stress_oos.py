@@ -7,6 +7,7 @@ import statistics
 import time
 
 import httpx
+import numpy as np
 
 from research.gorila_data_snapshot import load_or_fetch_series
 
@@ -17,7 +18,7 @@ RIDGES = [float(x) for x in os.getenv("GORILA_JAC_RIDGES", "0.0001,0.001,0.01").
 LAGS = [int(x) for x in os.getenv("GORILA_JAC_LAGS", "0,1,2").split(",") if x.strip()]
 TRAIN_MIN = 504
 TEST_SIZE = 126
-FIT_EPOCHS = 220
+FIT_EPOCHS = int(os.getenv("GORILA_JAC_FIT_EPOCHS", "220"))
 FIT_LR = 0.04
 FIT_L2 = 0.002
 GROUPS = {
@@ -196,24 +197,33 @@ def sigmoid(z):
 
 
 def fit(x, y):
-    means = [sum(row[j] for row in x) / len(x) for j in range(len(x[0]))]
-    scales = [
-        max(1e-12, math.sqrt(sum((row[j] - means[j]) ** 2 for row in x) / len(x)))
-        for j in range(len(x[0]))
-    ]
-    w = [0.0] * len(x[0])
-    b = 0.0
-    for _ in range(FIT_EPOCHS):
-        for row, target in zip(x, y):
-            z = b + sum(a * (v - m) / s
-                        for a, v, m, s in zip(w, row, means, scales))
-            p = sigmoid(z)
-            e = p - target
-            for j in range(len(w)):
-                w[j] -= FIT_LR * (e * (row[j] - means[j]) / scales[j] + FIT_L2 * w[j])
-            b -= FIT_LR * e
-    return means, scales, w, b
+    """Vectorized batch-logistic solver.
 
+    Keeps the same standardized logistic model and L2 objective as V1,
+    but performs each epoch as BLAS-backed matrix operations instead of
+    Python-level sample updates. This is a performance refactor for the
+    stress harness, not a feature/model-family change.
+    """
+    X = np.asarray(x, dtype=np.float64)
+    y_arr = np.asarray(y, dtype=np.float64)
+
+    means = X.mean(axis=0)
+    scales = np.maximum(X.std(axis=0), 1e-12)
+    Z = (X - means) / scales
+
+    w = np.zeros(Z.shape[1], dtype=np.float64)
+    b = 0.0
+
+    for _ in range(FIT_EPOCHS):
+        z = np.clip(b + Z @ w, -30.0, 30.0)
+        p = 1.0 / (1.0 + np.exp(-z))
+        e = p - y_arr
+        grad_w = (Z.T @ e) / len(Z) + FIT_L2 * w
+        grad_b = float(e.mean())
+        w -= FIT_LR * grad_w
+        b -= FIT_LR * grad_b
+
+    return means.tolist(), scales.tolist(), w.tolist(), b
 
 def predict(model, row):
     means, scales, w, b = model
@@ -384,7 +394,7 @@ print(json.dumps({
     "train_min": TRAIN_MIN,
     "test_size": TEST_SIZE,
     "purge": "horizon_plus_lag",
-    "fit": {"epochs": FIT_EPOCHS, "lr": FIT_LR, "l2": FIT_L2},
+    "fit": {"epochs": FIT_EPOCHS, "lr": FIT_LR, "l2": FIT_L2, "solver": "numpy-vectorized-batch-logistic"},
     "results": results,
     "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
 }, indent=2))
