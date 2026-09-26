@@ -11,7 +11,7 @@ on:
 
 concurrency:
   group: gorila-argentum-jacobian-stress-v2
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONPATH: .
