@@ -45,3 +45,9 @@ def test_relative_alpha_module_imports_and_schema():
     from research.gorila_relative_alpha_v1 import SCORE_VARIANTS, SYMBOLS
     assert len(SCORE_VARIANTS) == 3
     assert len(SYMBOLS) == 6
+
+
+def test_lockbox_module_imports():
+    from research.gorila_lockbox_v1 import MIN_SPREAD_Z, LOCKBOX_DAYS
+    assert LOCKBOX_DAYS == 252
+    assert MIN_SPREAD_Z > 0
