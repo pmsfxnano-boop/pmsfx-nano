@@ -5,7 +5,7 @@ Rama: `gorila-argentum-v0-hardening`
 
 ## Estado
 
-**IMPLEMENTADO + PERSISTENTE + TEST PREPARADO PARA CI.**
+**IMPLEMENTADO + PERSISTENTE + CI CONFIGURADA; EJECUCIÓN NO OBSERVADA INDEPENDIENTEMENTE.**
 
 Batch 14 añade un ledger de investigación Shadow. No coloca órdenes, no conecta un broker y no modifica la compuerta de promoción.
 
@@ -49,12 +49,13 @@ El dashboard incorpora **SHADOW LEDGER — BATCH 14** y el Control Room identifi
 2. No existe endpoint de orden ni ejecución.
 3. El predictor productivo sigue bloqueado.
 4. Un prediction solo puede cerrarse una vez.
+5. `observed_at` debe alcanzar el horizonte de la predicción; el ledger rechaza settlement prematuro.
 
 ## Validación
 
 Se añadió `tests/test_shadow.py` para validación de inputs, métricas y roundtrip SQLite de predicción → settlement → summary.
 
-La CI del repositorio fue ampliada para ejecutar este test junto al conjunto de hardening.
+La CI del repositorio fue ampliada para ejecutar este test junto al conjunto de hardening. En esta sesión no se cuenta con una ejecución de CI observable desde el conector, por lo que no se declara el test como ejecutado.
 
 ## No declarado como cerrado
 
