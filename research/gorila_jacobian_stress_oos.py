@@ -32,6 +32,25 @@ GROUPS = {
     "all": [0, 1, 2, 3, 4, 5],
 }
 STRESS_GROUPS = ["structural", "nonequilibrium", "all"]
+STAGE = os.getenv("GORILA_JAC_STAGE", "all").strip().lower()
+
+if STAGE not in {
+    "all",
+    "central",
+    "parameter_60",
+    "parameter_90",
+    "parameter_120",
+    "parameter_180",
+    "lag",
+}:
+    raise ValueError(f"unsupported GORILA_JAC_STAGE: {STAGE}")
+
+if STAGE.startswith("parameter_"):
+    WINDOWS = [int(STAGE.split("_", 1)[1])]
+elif STAGE == "lag":
+    WINDOWS = [120]
+    RIDGES = [0.001]
+
 
 
 def get_json(url, params=None):
@@ -300,57 +319,62 @@ def build_rows(series, window, ridge, horizon, lag):
 
 series, SNAPSHOT_SHA256 = load_or_fetch_series(SYMBOLS, yahoo, os.getenv("GORILA_DATA_SNAPSHOT"))
 results = []
-# Central ablation across all groups.
-for horizon in HORIZONS:
-    model_rows = build_rows(series, 120, 0.001, horizon, 0)
-    for group, idxs in GROUPS.items():
-        m = metrics(model_rows, horizon, 0, idxs)
-        results.append({
-            "kind": "central_ablation_wfo",
-            "horizon": horizon,
-            "window": 120,
-            "ridge": 0.001,
-            "lag": 0,
-            "group": group,
-            "metrics": m,
-        })
 
-# Parameter stress at zero lag for the three block-level candidates.
-for horizon in HORIZONS:
-    for window in WINDOWS:
-        for ridge in RIDGES:
-            model_rows = build_rows(series, window, ridge, horizon, 0)
-            for group in STRESS_GROUPS:
-                m = metrics(model_rows, horizon, 0, GROUPS[group])
-                results.append({
-                    "kind": "parameter_stress",
-                    "horizon": horizon,
-                    "window": window,
-                    "ridge": ridge,
-                    "lag": 0,
-                    "group": group,
-                    "metrics": m,
-                })
-
-# Execution-target lag stress at the canonical window/ridge.
-for horizon in HORIZONS:
-    for lag in LAGS:
-        model_rows = build_rows(series, 120, 0.001, horizon, lag)
-        for group in STRESS_GROUPS:
-            m = metrics(model_rows, horizon, lag, GROUPS[group])
+if STAGE in {"all", "central"}:
+    # Central ablation across all groups.
+    for horizon in HORIZONS:
+        model_rows = build_rows(series, 120, 0.001, horizon, 0)
+        for group, idxs in GROUPS.items():
+            m = metrics(model_rows, horizon, 0, idxs)
             results.append({
-                "kind": "lag_stress",
+                "kind": "central_ablation_wfo",
                 "horizon": horizon,
                 "window": 120,
                 "ridge": 0.001,
-                "lag": lag,
+                "lag": 0,
                 "group": group,
                 "metrics": m,
             })
 
+if STAGE == "all" or STAGE.startswith("parameter_"):
+    # Parameter stress at zero lag.
+    for horizon in HORIZONS:
+        for window in WINDOWS:
+            for ridge in RIDGES:
+                model_rows = build_rows(series, window, ridge, horizon, 0)
+                for group in STRESS_GROUPS:
+                    m = metrics(model_rows, horizon, 0, GROUPS[group])
+                    results.append({
+                        "kind": "parameter_stress",
+                        "horizon": horizon,
+                        "window": window,
+                        "ridge": ridge,
+                        "lag": 0,
+                        "group": group,
+                        "metrics": m,
+                    })
+
+if STAGE in {"all", "lag"}:
+    # Execution-target lag stress at the canonical window/ridge.
+    for horizon in HORIZONS:
+        for lag in LAGS:
+            model_rows = build_rows(series, 120, 0.001, horizon, lag)
+            for group in STRESS_GROUPS:
+                m = metrics(model_rows, horizon, lag, GROUPS[group])
+                results.append({
+                    "kind": "lag_stress",
+                    "horizon": horizon,
+                    "window": 120,
+                    "ridge": 0.001,
+                    "lag": lag,
+                    "group": group,
+                    "metrics": m,
+                })
+
 print(json.dumps({
     "status": "COMPLETE",
-    "method": "jacobian-nonequilibrium-wfo-stress-v1",
+    "method": "jacobian-nonequilibrium-wfo-stress-v2-staged",
+    "stage": STAGE,
     "symbols": SYMBOLS,
     "data_snapshot_sha256": SNAPSHOT_SHA256,
     "horizons": HORIZONS,
