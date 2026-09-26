@@ -7,6 +7,10 @@ on:
       - 'research/evidence_manifest.json'
   workflow_dispatch:
 
+concurrency:
+  group: gorila-quantitative-v1
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
