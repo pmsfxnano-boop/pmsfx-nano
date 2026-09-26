@@ -14,6 +14,7 @@ from .control import build_control_state
 from .shadow import validate_shadow_prediction, compute_shadow_outcome, validate_observed_at
 from .promotion import evaluate_promotion, CURRENT_BATCH10_EVIDENCE
 from .learning import run_learning_cycle
+from .audit import build_audit_state
 
 app=FastAPI(title="Gorila Argentum",version="0.1.0")
 
@@ -53,6 +54,10 @@ def drift_summary(symbol: str | None = None, field: str | None = None, limit: in
 @app.get("/api/control")
 def control():
     return build_control_state()
+
+@app.get("/api/audit")
+def audit():
+    return build_audit_state()
 
 @app.get("/api/shadow")
 def shadow(limit: int = 50, symbol: str | None = None, status: str | None = None):
