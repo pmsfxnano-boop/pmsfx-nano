@@ -10,6 +10,8 @@ from itertools import combinations
 
 import httpx
 
+from research.gorila_data_snapshot import load_or_fetch_series
+
 SYMBOLS=["GGAL","BMA","YPFD","PAMP","TGSU2","CEPU"]
 HORIZONS = [int(x) for x in os.getenv("GORILA_HORIZONS", "5,10").split(",") if x.strip()]
 TRAIN_MIN=504
@@ -223,12 +225,13 @@ def run_horizon(series,horizon):
     }
 
 
-series={s:yahoo(s) for s in SYMBOLS}
+series, SNAPSHOT_SHA256 = load_or_fetch_series(SYMBOLS, yahoo, os.getenv("GORILA_DATA_SNAPSHOT"))
 results={str(h):run_horizon(series,h) for h in HORIZONS}
 print(json.dumps({
     "status":"COMPLETE",
     "method":"nested-purged-ranking-temporal-placebo-and-rank-IC-v1",
     "symbols":SYMBOLS,"horizons":HORIZONS,
+    "data_snapshot_sha256": SNAPSHOT_SHA256,
     "outer_train_min":TRAIN_MIN,"outer_test_size":TEST_SIZE,
     "n_permutations_per_fold":N_PERM,
     "seed":SEED,
