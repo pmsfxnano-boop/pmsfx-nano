@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timedelta, timezone
 
 from gorila_argentum.shadow import compute_shadow_outcome, validate_shadow_prediction, validate_observed_at
 from gorila_argentum.storage import Store
@@ -48,7 +49,9 @@ def test_shadow_storage_roundtrip(tmp_path, monkeypatch):
     assert prediction["feature_hash"] == "abc"
 
     outcome = compute_shadow_outcome(0.72, 100.0, 105.0)
-    settled = store.settle_shadow_prediction(created["id"], outcome, "2026-09-26T12:15:00+00:00")
+    created_dt = datetime.fromisoformat(created["created_at"].replace("Z", "+00:00"))
+    observed_at = (created_dt + timedelta(seconds=900)).astimezone(timezone.utc).isoformat()
+    settled = store.settle_shadow_prediction(created["id"], outcome, observed_at)
     assert settled["prediction_id"] == created["id"]
 
     summary = store.shadow_summary()
