@@ -95,6 +95,16 @@ async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError("upstream_engine_invalid_payload")
+        print(
+            "GORILA_ENGINE_BRIDGE",
+            {
+                "symbol": symbol,
+                "source": "PMSF_X",
+                "forecast_status": payload.get("forecast_status"),
+                "forecast_present": payload.get("forecast") is not None,
+            },
+            flush=True,
+        )
         _UPSTREAM_CACHE[symbol] = (time.monotonic(), dict(payload))
         return payload
 
