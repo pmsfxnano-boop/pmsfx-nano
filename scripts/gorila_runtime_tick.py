@@ -41,7 +41,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                     WHERE p_up IS NOT NULL
                       AND horizon_seconds IS NOT NULL
                       AND COALESCE((bid + ask) / 2.0, last) IS NOT NULL
-                    ORDER BY created_at ASC, id ASC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT %s
                     """,
                     (max(1, min(int(limit), 500)),),
@@ -87,7 +87,38 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
         if not result.get("existing"):
             created += 1
 
-    open_rows = store.latest_shadow(status="OPEN", limit=500)
+    open_rows = [
+        row for row in store.latest_shadow(status="OPEN", limit=500)
+        if str(row.get("feature_hash") or "").startswith("pmsfx-forecast:")
+    ]
+    quant_ids = []
+    for shadow in open_rows:
+        try:
+            quant_ids.append(int(str(shadow["feature_hash"]).split(":", 1)[1]))
+        except (ValueError, KeyError):
+            continue
+
+    outcomes_by_forecast = {}
+    if quant_ids:
+        try:
+            with quant_connection() as conn:
+                if conn is not None:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT forecast_id, resolved_at, exit_price, realized_direction,
+                                   realized_return_bps, prediction_correct, brier_loss
+                            FROM forecast_outcomes
+                            WHERE forecast_id = ANY(%s)
+                            """,
+                            (quant_ids,),
+                        )
+                        outcomes_by_forecast = {
+                            int(row[0]): row for row in cur.fetchall()
+                        }
+        except Exception:
+            outcomes_by_forecast = {}
+
     for shadow in open_rows:
         feature_hash = str(shadow.get("feature_hash") or "")
         if not feature_hash.startswith("pmsfx-forecast:"):
@@ -97,25 +128,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
         except ValueError:
             continue
 
-        outcome_row = None
-        try:
-            with quant_connection() as conn:
-                if conn is not None:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            SELECT resolved_at, exit_price, realized_direction,
-                                   realized_return_bps, prediction_correct,
-                                   brier_loss, probabilistic_brier_loss
-                            FROM forecast_outcomes
-                            WHERE forecast_id=%s
-                            LIMIT 1
-                            """,
-                            (forecast_id,),
-                        )
-                        outcome_row = cur.fetchone()
-        except Exception:
-            outcome_row = None
+        outcome_row = outcomes_by_forecast.get(forecast_id)
 
         if not outcome_row or outcome_row[1] is None or outcome_row[0] is None:
             pending += 1
@@ -241,7 +254,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
             learning.append(result)
     learning.sort(key=lambda row: str(row.get("symbol") or ""))
 
-    shadow_capture = _create_learning_shadow_predictions(store, learning_results)
+    shadow_capture = _create_learning_shadow_predictions(store, learning)
     pmsfx_shadow = _sync_pmsfx_shadow_ledger(store)
 
     settlement = store.settle_due_shadow_from_observations(
