@@ -42,6 +42,7 @@ from .regime import classify_regime
 from .security import require_runtime_tick_key, require_internal_key
 from .shadow import compute_shadow_outcome, validate_shadow_prediction
 from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_signal
+from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
@@ -605,6 +606,13 @@ async def gorila_forecast(ticker: str, force: bool = False):
         _FORECAST_CACHE[symbol] = (time.monotonic(), dict(result))
         result["cache"] = {"hit": False, "age_seconds": 0.0}
         return result
+
+
+@app.get("/api/gorila/cross-sectional")
+async def gorila_cross_sectional():
+    store = Store()
+    store.init()
+    return score_cross_sectional(store=store)
 
 
 @app.get("/api/gorila/signal/{ticker}")
