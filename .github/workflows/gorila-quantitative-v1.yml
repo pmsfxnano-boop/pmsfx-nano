@@ -93,7 +93,7 @@ jobs:
           PYTHONPATH: .
           GORILA_DATA_SNAPSHOT: ${{ github.workspace }}/gorila-market-snapshot.json
           GORILA_LOCKBOX_HORIZONS: "5,10"
-          GORILA_LOCKBOX_DAYS: "252"
+          GORILA_LOCKBOX_DAYS: "756"
           GORILA_LOCKBOX_MIN_SPREAD_Z: "1.0"
           GORILA_LOCKBOX_TARGET_VOL: "0.10"
           GORILA_LOCKBOX_MAX_GROSS: "1.0"
