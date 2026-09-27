@@ -149,7 +149,16 @@ def build_signal(
 
     p_down = 1.0 - p_up if p_up is not None else None
     confidence = _finite(forecast.get("confidence_raw"))
-    age_seconds = _finite((state.get("engine_freshness") or {}).get("age_seconds"))
+    forecast_age_seconds = _finite((state.get("engine_freshness") or {}).get("age_seconds"))
+    market_age_seconds = _finite((state.get("market_freshness") or {}).get("age_seconds"))
+    if market_age_seconds is None:
+        market_age_seconds = forecast_age_seconds
+    # Fresh quotes do not make a stale model forecast fresh. The research score
+    # uses the worse of the two ages so market-data freshness and model freshness
+    # remain separate observable quantities.
+    age_seconds = max(
+        x for x in (forecast_age_seconds, market_age_seconds) if x is not None
+    ) if any(x is not None for x in (forecast_age_seconds, market_age_seconds)) else None
     forecast_validated = forecast.get("validated")
     evaluation_validated = evaluation.get("validated")
     validated = (
@@ -272,8 +281,10 @@ def build_signal(
             "ask": state.get("ask"),
             "spread_bps": state.get("spread_bps"),
             "quote_timestamp": state.get("quote_timestamp"),
-            "engine_age_seconds": age_seconds,
-            "data_grade": _data_grade(age_seconds),
+            "engine_age_seconds": forecast_age_seconds,
+            "forecast_age_seconds": forecast_age_seconds,
+            "market_age_seconds": market_age_seconds,
+            "data_grade": _data_grade(market_age_seconds),
             "source": state.get("data_source") or state.get("engine_source"),
         },
         "structure": momentum,
