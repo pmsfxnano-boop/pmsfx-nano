@@ -18,41 +18,13 @@ from typing import Any
 from datetime import datetime, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 
-from main import (
-    app,
-    get_cached_bars,
-    market_session_state,
-    normalize_ticker,
-    outcome_summary,
-    persistence_summary,
-    quote as advanced_quote,
-    state as advanced_state,
-    stream_status,
-)
 from .audit import build_audit_state
 from .config import settings
 from .control import build_control_state
 from .coupling import current_coupling_state
 from .dashboard_terminal import HTML as DASHBOARD_HTML
-
-# Surgical root override for the Gorila service:
-# main.py owns the shared FastAPI app and registers its legacy `/` route first.
-# Point only the Gorila process at the current terminal surface without touching
-# the shared PMSF-X dashboard file or any quantitative engine routes.
-from fastapi.responses import HTMLResponse
-import main as _main_app
-_GORILA_ROOT_HTML = HTMLResponse(
-    content=DASHBOARD_HTML.body,
-    headers={
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
-        "Pragma": "no-cache",
-        "Expires": "0",
-        "X-Gorila-Dashboard": "terminal-v2",
-    },
-)
-_main_app.GORILA_DASHBOARD_HTML = _GORILA_ROOT_HTML
 from .drift import rolling_drift
 from .features import build_features
 from .promotion import evaluate_live_promotion
@@ -66,7 +38,7 @@ from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
-from quant.db import connection as quant_connection
+from quant.db import connection as quant_connection, persistence_summary
 
 # The public service uses a single process. The autonomous runtime loop is
 # intentionally part of this process so research continues without a cron.
@@ -129,7 +101,16 @@ _UPSTREAM_CACHE_SECONDS = 10.0
 _UPSTREAM_TIMEOUT_SECONDS = max(5.0, float(os.getenv("GORILA_UPSTREAM_TIMEOUT_SECONDS", "8")))
 _SIGNAL_MATRIX_SYMBOL_TIMEOUT_SECONDS = max(5.0, float(os.getenv("GORILA_MATRIX_SYMBOL_TIMEOUT_SECONDS", "9")))
 
+app = FastAPI(title="Gorila Argentum", version="1.0")
 ARGENTINA_TIMEZONE = ZoneInfo("America/Argentina/Buenos_Aires")
+ARGENTINA_ALIASES = {"GGAL":"GGAL","BMA":"BMA","YPFD":"YPFD","PAMP":"PAMP","TGSU2":"TGSU2","CEPU":"CEPU"}
+
+def normalize_ticker(value: str) -> str:
+    return str(value).strip().upper()
+
+def market_session_state(now: datetime | None = None) -> dict[str, Any]:
+    return argentina_session_state(now)
+
 ARGENTINA_SESSION_OPEN = dt_time(11, 0)
 ARGENTINA_SESSION_CLOSE = dt_time(17, 0)
 
@@ -316,17 +297,25 @@ def _upstream_quote_payload(symbol: str, state: dict[str, Any]) -> dict[str, Any
     }
 
 
-async def _gorila_forecast(symbol: str, *, force: bool = False) -> dict[str, Any]:
-    if os.getenv("TIINGO_API_KEY", "").strip():
-        return await gorila_forecast(symbol, force=force)
-
-    persisted = _latest_persisted_engine_state(symbol)
-    if persisted is not None:
-        return persisted
-
-    state = await _upstream_state(symbol, force=force)
-    return _upstream_forecast_payload(symbol, state)
-
+def _gorila_forecast(symbol: str) -> dict[str, Any]:
+    store = Store(); store.init()
+    snapshot = store.latest_signal_snapshot(symbol)
+    if snapshot is None:
+        return {"symbol": symbol, "forecast_status": "NO_DATA", "forecast": None, "engine_source": "argentina_snapshot"}
+    p = snapshot.get("probability") or {}
+    return {
+        "symbol": symbol,
+        "forecast_status": snapshot.get("status"),
+        "forecast": {
+            "direction": snapshot.get("signal"),
+            "raw_probability_up": p.get("up"),
+            "raw_probability_down": p.get("down"),
+            "confidence_raw": p.get("confidence"),
+            "validated": bool((snapshot.get("validation") or {}).get("validated")),
+        },
+        "engine_source": "argentina_snapshot",
+        "snapshot": snapshot.get("snapshot"),
+    }
 
 def _latest_persisted_engine_chart(symbol: str, limit: int = 180) -> list[dict[str, Any]]:
     sql = """
@@ -356,17 +345,6 @@ def _latest_persisted_engine_chart(symbol: str, limit: int = 180) -> list[dict[s
             flush=True,
         )
         return []
-
-
-async def _gorila_quote(symbol: str) -> dict[str, Any]:
-    if os.getenv("TIINGO_API_KEY", "").strip():
-        return await advanced_quote(symbol)
-    persisted = _latest_persisted_engine_state(symbol)
-    if persisted is not None:
-        return _upstream_quote_payload(symbol, persisted)
-    state = await _upstream_state(symbol)
-    return _upstream_quote_payload(symbol, state)
-
 
 
 def _run_macro_ingest() -> dict[str, Any]:
