@@ -46,7 +46,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
@@ -424,7 +424,7 @@ async def _argentina_live_loop() -> None:
         try:
             for symbol in settings.core_symbols:
                 result = await asyncio.to_thread(
-                    twelve_data_intraday if provider == "twelve_data" else yahoo_chart_intraday,
+                    twelve_data_live_quote if provider == "twelve_data" else yahoo_chart_intraday,
                     symbol,
                     "1min",
                 )
