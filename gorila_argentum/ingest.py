@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import settings
-from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,yahoo_chart_daily\nfrom .bcra_macro import bcra_macro_cycle
+from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,yahoo_chart_daily
+from .bcra_macro import bcra_macro_cycle
 from .storage import Store
 from .drift import rolling_drift
 
