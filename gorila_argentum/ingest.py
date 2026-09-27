@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import settings
-from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,yahoo_chart_daily
+from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,yahoo_chart_daily\nfrom .bcra_macro import bcra_macro_cycle
 from .storage import Store
 from .drift import rolling_drift
 
@@ -9,7 +9,7 @@ def run_batch():
     # Macro sources are independent and can run concurrently. Yahoo historical
     # pulls are deliberately serialized because the provider rate-limits parallel
     # chart requests and a 429 here starves the cross-sectional daily panel.
-    macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status]
+    macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status,bcra_macro_cycle]
     results=[]
     with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
         futures=[ex.submit(fn) for fn in macro_funcs]
