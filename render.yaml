@@ -32,3 +32,9 @@ services:
         fromDatabase:
           name: pmsfx-nano-db
           property: connectionString
+      - key: GORILA_MACRO_INTERVAL_SECONDS
+        value: "900"
+      - key: GORILA_SIGNAL_INTERVAL_SECONDS
+        value: "10"
+      - key: GORILA_LIVE_INTERVAL_SECONDS
+        value: "15"
