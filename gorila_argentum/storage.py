@@ -181,16 +181,6 @@ CREATE TABLE IF NOT EXISTS research_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_research_evidence_symbol_horizon ON research_evidence(symbol,horizon_days,created_at);
 CREATE INDEX IF NOT EXISTS idx_research_evidence_dataset ON research_evidence(dataset_sha256);
-CREATE TABLE IF NOT EXISTS signal_snapshots (
- symbol TEXT PRIMARY KEY,
- created_at TEXT NOT NULL,
- status TEXT NOT NULL,
- signal_score DOUBLE PRECISION,
- source TEXT NOT NULL,
- stale INTEGER NOT NULL DEFAULT 0,
- payload TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_signal_snapshot_time ON signal_snapshots(created_at);
 """
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
@@ -350,66 +340,6 @@ class Store:
                 pass
             out.append(item)
         return out
-
-    def upsert_signal_snapshot(self, payload: dict, *, source: str = "argentina_snapshot_worker", stale: bool = False) -> None:
-        symbol = str(payload.get("symbol") or "").upper()
-        if not symbol:
-            raise ValueError("signal_snapshot_symbol_required")
-        created_at = utc_now()
-        status = str(payload.get("status") or "NO_DATA")
-        score = payload.get("signal_score")
-        score = float(score) if isinstance(score, (int, float)) else None
-        serialized = json.dumps(payload, sort_keys=True, default=str)
-        conn = self.connect()
-        if self.pg:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO signal_snapshots(symbol,created_at,status,signal_score,source,stale,payload) "
-                    "VALUES(%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT(symbol) DO UPDATE SET created_at=EXCLUDED.created_at,status=EXCLUDED.status,"
-                    "signal_score=EXCLUDED.signal_score,source=EXCLUDED.source,stale=EXCLUDED.stale,payload=EXCLUDED.payload",
-                    (symbol, created_at, status, score, source, int(bool(stale)), serialized),
-                )
-        else:
-            conn.execute(
-                "INSERT INTO signal_snapshots(symbol,created_at,status,signal_score,source,stale,payload) "
-                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol) DO UPDATE SET created_at=excluded.created_at,"
-                "status=excluded.status,signal_score=excluded.signal_score,source=excluded.source,stale=excluded.stale,payload=excluded.payload",
-                (symbol, created_at, status, score, source, int(bool(stale)), serialized),
-            )
-        conn.commit()
-        conn.close(); self.conn=None
-
-    def latest_signal_snapshot(self, symbol: str) -> dict | None:
-        symbol = str(symbol).upper()
-        conn = self.connect()
-        if self.pg:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT created_at,status,signal_score,source,stale,payload FROM signal_snapshots WHERE symbol=%s",
-                    (symbol,),
-                )
-                row = cur.fetchone()
-        else:
-            row = conn.execute(
-                "SELECT created_at,status,signal_score,source,stale,payload FROM signal_snapshots WHERE symbol=?",
-                (symbol,),
-            ).fetchone()
-        conn.close(); self.conn=None
-        if row is None:
-            return None
-        created_at,status,signal_score,source,stale,payload = row
-        try:
-            data=json.loads(payload or "{}")
-        except Exception:
-            data={}
-        age_seconds=max(0.0, (datetime.now(timezone.utc)-datetime.fromisoformat(_as_iso(created_at).replace("Z","+00:00"))).total_seconds()) if created_at else None
-        data.setdefault("symbol",symbol)
-        data["snapshot"]={"created_at":_as_iso(created_at),"age_seconds":round(age_seconds,2) if age_seconds is not None else None,"source":source,"stale":bool(stale)}
-        return data
-
-    def all_signal_snapshots(self, symbols: list[str] | tuple[str,...]) -> list[dict]:
-        return [self.latest_signal_snapshot(symbol) or {"symbol":str(symbol).upper(),"status":"NO_DATA","signal_score":None,"research_only":True,"no_execution_authority":True} for symbol in symbols]
 
     def verify_persistence(self) -> dict:
         heartbeat_id = uuid.uuid4().hex
