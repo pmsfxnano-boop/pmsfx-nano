@@ -25,6 +25,7 @@ HORIZONS = [int(x) for x in os.getenv("GORILA_FROZEN_RELATIVE_HORIZONS", "5,10")
 LOCKBOX_DAYS = int(os.getenv("GORILA_FROZEN_RELATIVE_LOCKBOX_DAYS", "756"))
 SELECTION_DAYS = int(os.getenv("GORILA_FROZEN_RELATIVE_SELECTION_DAYS", "252"))
 COSTS_BPS_PER_LEG = [25, 50, 100]
+REQUIRED_EXECUTION_COST_BPS = 50
 PLACEBO_PERM = int(os.getenv("GORILA_FROZEN_RELATIVE_PLACEBO_PERM", "128"))
 SEED = int(os.getenv("GORILA_FROZEN_RELATIVE_SEED", "20260926"))
 SCORE_VARIANTS = ("probability_delta", "vol_scaled_delta", "blend_momentum")
@@ -317,8 +318,8 @@ def evaluate_symbol_horizon(series, horizon):
             f"COST_ROW_MISSING:{cost_bps}:available={sorted(map(str, mapping.keys()))}"
         )
 
-    strategy_50 = cost_row(strategy, 50)
-    momentum_50 = cost_row(momentum_net, 50)
+    strategy_50 = cost_row(strategy, REQUIRED_EXECUTION_COST_BPS)
+    momentum_50 = cost_row(momentum_net, REQUIRED_EXECUTION_COST_BPS)
     execution_ci = strategy_50["mean_trade_return_ci95"]
     execution_net = strategy_50["net_return"]
     execution_delta = execution_net - momentum_50
@@ -365,7 +366,8 @@ def evaluate_symbol_horizon(series, horizon):
         "placebo_rank_ic_p95": placebo_p95,
         "placebo_rank_ic_p_value": placebo_p,
         "strategy": strategy,
-        "momentum_net_return_50bps": momentum_net["50"],
+        "execution_cost_bps_per_leg": REQUIRED_EXECUTION_COST_BPS,
+        "momentum_net_return_50bps": momentum_50,
         "delta_vs_momentum_50bps": execution_delta,
         "prediction_status": "VALIDATED" if prediction_ok else "BLOCKED",
         "prediction_reasons": prediction_reasons,
