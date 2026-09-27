@@ -160,26 +160,50 @@ def evaluate_symbol_horizon(series, horizon):
     lock_dates = common_dates[-LOCKBOX_DAYS:]
 
     symbol_models = {}
+    selection_models = {}
+    selection_start_idx = max(0, len(dev_dates) - SELECTION_DAYS)
+    selection_start_date = dev_dates[selection_start_idx]
+
     for symbol in SYMBOLS:
-        dev_rows = [r for r in rows[symbol] if r.date in set(dev_dates)]
+        dev_set = set(dev_dates)
+        dev_rows = [r for r in rows[symbol] if r.date in dev_set]
         if len(dev_rows) < TRAIN_MIN:
             return {"status": "INSUFFICIENT_DATA", "symbol": symbol, "horizon_days": horizon}
+
+        # Final model is trained only on development data, never on lockbox dates.
         group, l2, prior_window, selection = select_candidate(dev_rows, horizon)
         names = FEATURE_GROUPS[group]
         model = fit_logistic(dev_rows, names, l2)
         train_rate = sum(r.y for r in dev_rows) / len(dev_rows)
         prior = _prior_rate(dev_rows, prior_window)
+        mapping = {r.date: r for r in rows[symbol]}
         symbol_models[symbol] = (
-            model,
-            names,
-            train_rate,
-            prior,
-            selection,
-            {r.date: r for r in rows[symbol]},
+            model, names, train_rate, prior, selection, mapping
+        )
+
+        # Variant selection is itself kept out-of-sample: fit on the development
+        # prefix and score only the held-out development selection window.
+        pre_selection_rows = [r for r in dev_rows if r.date < selection_start_date]
+        if len(pre_selection_rows) < TRAIN_MIN:
+            return {
+                "status": "INSUFFICIENT_DATA",
+                "symbol": symbol,
+                "horizon_days": horizon,
+                "selection_train_samples": len(pre_selection_rows),
+            }
+        sg, sl2, sprior_window, sselection = select_candidate(
+            pre_selection_rows, horizon
+        )
+        snames = FEATURE_GROUPS[sg]
+        smodel = fit_logistic(pre_selection_rows, snames, sl2)
+        strain_rate = sum(r.y for r in pre_selection_rows) / len(pre_selection_rows)
+        sprior = _prior_rate(pre_selection_rows, sprior_window)
+        selection_models[symbol] = (
+            smodel, snames, strain_rate, sprior, sselection, mapping
         )
 
     variant, variant_meta = choose_variant_on_development(
-        series, horizon, common_dates, dev_dates, symbol_models
+        series, horizon, common_dates, dev_dates, selection_models
     )
 
     rank_all = []
