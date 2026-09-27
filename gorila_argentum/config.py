@@ -7,7 +7,9 @@ DEFAULT_SYMBOLS = tuple(s.strip() for s in os.getenv("GORILA_SYMBOLS","GGAL,BMA,
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.getenv("DATABASE_URL","")
-    http_timeout_s: float = float(os.getenv("GORILA_HTTP_TIMEOUT_S","15"))\n    # BCRA publishes macro series daily; keep its poll interval slower than the intraday market path.\n    macro_interval_seconds: int = int(os.getenv("GORILA_MACRO_INTERVAL_SECONDS","900"))
+    http_timeout_s: float = float(os.getenv("GORILA_HTTP_TIMEOUT_S","15"))
+    # BCRA publishes macro series daily; keep its poll interval slower than the intraday market path.
+    macro_interval_seconds: int = int(os.getenv("GORILA_MACRO_INTERVAL_SECONDS","900"))
     batch_workers: int = int(os.getenv("GORILA_BATCH_WORKERS","8"))
     symbols: Tuple[str,...] = DEFAULT_SYMBOLS
     twelve_data_api_key: str = os.getenv("TWELVE_DATA_API_KEY","").strip()
