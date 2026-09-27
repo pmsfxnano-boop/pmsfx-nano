@@ -30,3 +30,28 @@ def test_complete_passing_evidence_is_eligible():
     assert decision["status"] == "ELIGIBLE"
     assert decision["eligible"] is True
     assert decision["automatic_promotion"] is False
+
+
+def test_predictive_gate_reads_frozen_relative_lockbox(monkeypatch):
+    from gorila_argentum import promotion
+    manifest = {
+        "status": "COMPLETE",
+        "manifest_sha256": "m",
+        "snapshot_sha256": "s",
+        "payload": {
+            "auxiliary": {
+                "lockbox": {"evidence": [{"horizon_days": 5, "prediction_status": "BLOCKED"}]},
+                "frozen_relative_lockbox": {"evidence": [
+                    {"horizon_days": 5, "prediction_status": "VALIDATED"},
+                    {"horizon_days": 10, "prediction_status": "BLOCKED"},
+                ]},
+            }
+        },
+    }
+    monkeypatch.setattr("gorila_argentum.evidence.latest_manifest", lambda store: manifest)
+    result = promotion.evaluate_predictive_promotion(object())
+    assert result["status"] == "PREDICTOR_VALIDATED"
+    assert result["validated"] is True
+    assert result["primary_horizon"] == 5
+    assert result["secondary_horizons"][10] == "BLOCKED"
+    assert result["execution_status"] == "BLOCKED"
