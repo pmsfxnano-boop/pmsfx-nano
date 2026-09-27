@@ -554,7 +554,8 @@ async def _argentina_signal_snapshot_loop() -> None:
                 "errors": [{"symbol":"*","error":f"{type(exc).__name__}: {exc}"}],
                 "interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS, "universe": list(SIGNAL_SYMBOLS),
             })
-        await asyncio.sleep(_ARG_SIGNAL_INTERVAL_SECONDS)
+        sleep_seconds = _ARG_SIGNAL_INTERVAL_SECONDS if argentina_session_state().get("open") else 60
+        await asyncio.sleep(sleep_seconds)
 
 async def _autonomous_loop() -> None:
     await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
