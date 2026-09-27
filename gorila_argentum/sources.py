@@ -106,22 +106,60 @@ def byma_status():
 
 def yahoo_chart_daily(symbol):
     source=f"YahooChart/{symbol}.BA"; t0=time.perf_counter(); received=now()
-    try:
-        ticker=f"{symbol}.BA"
-        url=f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        params={"range":"5y","interval":"1d","events":"history"}
-        with _client() as c:
-            data=c.get(url,params=params); data.raise_for_status(); payload=data.json()
-        result=(payload.get("chart",{}).get("result") or [None])[0]
-        if not result: raise RuntimeError("YAHOO_EMPTY_RESULT")
-        timestamps=result.get("timestamp") or []
-        quote=((result.get("indicators") or {}).get("quote") or [{}])[0]
-        closes=quote.get("close") or []
-        rows=[]
-        for ts,close in zip(timestamps,closes):
-            if close is None: continue
-            rows.append({"symbol":symbol,"field":"close","value":float(close),"event_time":datetime.fromtimestamp(ts,timezone.utc).isoformat(),"received_time":iso(received),"source":source,"latency_ms":(time.perf_counter()-t0)*1000,"metadata":{"interval":"1d","range":"5y","ticker":ticker}})
-        if not rows: raise RuntimeError("YAHOO_NO_USABLE_ROWS")
-        return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
-    except Exception as e:
-        return SourceResult(source,error=str(e),latency_ms=(time.perf_counter()-t0)*1000)
+    ticker=f"{symbol}.BA"
+    urls=[
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}",
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+    ]
+    params={"range":"5y","interval":"1d","events":"history"}
+    last_error=None
+    # Yahoo rate-limits parallel historical pulls. Use bounded retry/backoff and
+    # alternate query hosts; ingestion code also serializes these calls.
+    for attempt in range(4):
+        url=urls[attempt % len(urls)]
+        try:
+            with _client() as c:
+                data=c.get(url,params=params)
+                if data.status_code == 429:
+                    last_error=f"YAHOO_RATE_LIMIT_429 host={url.split('/')[2]} attempt={attempt+1}"
+                    time.sleep(min(8.0, 0.75 * (2 ** attempt)))
+                    continue
+                data.raise_for_status()
+                payload=data.json()
+            result=(payload.get("chart",{}).get("result") or [None])[0]
+            if not result:
+                raise RuntimeError("YAHOO_EMPTY_RESULT")
+            timestamps=result.get("timestamp") or []
+            quote=((result.get("indicators") or {}).get("quote") or [{}])[0]
+            closes=quote.get("close") or []
+            rows=[]
+            for ts,close in zip(timestamps,closes):
+                if close is None: continue
+                rows.append({
+                    "symbol":symbol,
+                    "field":"close",
+                    "value":float(close),
+                    "event_time":datetime.fromtimestamp(ts,timezone.utc).isoformat(),
+                    "received_time":iso(received),
+                    "source":source,
+                    "latency_ms":(time.perf_counter()-t0)*1000,
+                    "metadata":{"interval":"1d","range":"5y","ticker":ticker},
+                })
+            if not rows:
+                raise RuntimeError("YAHOO_NO_USABLE_ROWS")
+            return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+        except httpx.HTTPStatusError as e:
+            status=e.response.status_code if e.response is not None else None
+            last_error=f"HTTP_{status}_{url.split('/')[2]}"
+            if status in {429,500,502,503,504}:
+                time.sleep(min(8.0, 0.75 * (2 ** attempt)))
+                continue
+            break
+        except Exception as e:
+            last_error=f"{type(e).__name__}: {e}"
+            if attempt < 3:
+                time.sleep(min(4.0, 0.5 * (2 ** attempt)))
+                continue
+            break
+    return SourceResult(source,error=last_error or "YAHOO_HISTORY_FAILED",latency_ms=(time.perf_counter()-t0)*1000)
+
