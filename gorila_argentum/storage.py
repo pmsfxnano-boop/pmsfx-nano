@@ -232,26 +232,23 @@ class Store:
                             "CREATE INDEX IF NOT EXISTS idx_shadow_feature_hash ON shadow_predictions(feature_hash)"
                         )
                         cur.execute(
-                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS pbo DOUBLE PRECISION"
-                        )
-                        cur.execute(
-                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION"
-                        )
-                        cur.execute(
-                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_status TEXT DEFAULT 'BLOCKED'"
-                        )
-                        cur.execute(
-                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_status TEXT DEFAULT 'BLOCKED'"
-                        )
-                        cur.execute(
-                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_reasons TEXT DEFAULT '[]'"
-                        )
-                        cur.execute(
-                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_reasons TEXT DEFAULT '[]'"
-                        )
-                        cur.execute(
                             "CREATE INDEX IF NOT EXISTS idx_research_evidence_validation ON research_evidence(validation_status,created_at)"
                         )
+                        # Compatibility migrations are deliberately opt-in in production.
+                        # Running ALTER TABLE during every process replacement can wait on
+                        # long-lived reader locks and stall the whole web service before the
+                        # first request. The persistent production schema is already provisioned;
+                        # an explicit migration run can still be enabled when schema evolution is needed.
+                        migrate = os.getenv("GORILA_RUN_SCHEMA_MIGRATION", "0").strip().lower() in {
+                            "1", "true", "yes"
+                        }
+                        if migrate:
+                            cur.execute("ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS pbo DOUBLE PRECISION")
+                            cur.execute("ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION")
+                            cur.execute("ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_status TEXT DEFAULT 'BLOCKED'")
+                            cur.execute("ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_status TEXT DEFAULT 'BLOCKED'")
+                            cur.execute("ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_reasons TEXT DEFAULT '[]'")
+                            cur.execute("ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_reasons TEXT DEFAULT '[]'")
                     conn.commit()
                     _PG_SCHEMA_INITIALIZED = True
                 except Exception:
