@@ -140,6 +140,36 @@ def twelve_data_intraday(symbol, interval="1min"):
     except Exception as e:
         return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
 
+def twelve_data_live_quote(symbol):
+    source=f"TwelveDataLive/{symbol}"; t0=time.perf_counter(); received=now()
+    if not settings.twelve_data_api_key:
+        return SourceResult(source,error="TWELVE_DATA_API_KEY_MISSING",latency_ms=(time.perf_counter()-t0)*1000)
+    try:
+        params={"symbol":symbol,"mic_code":"XBUE","apikey":settings.twelve_data_api_key}
+        with _client() as client:
+            response=client.get("https://api.twelvedata.com/quote",params=params)
+            response.raise_for_status()
+            payload=response.json()
+        if payload.get("status") == "error":
+            raise RuntimeError(payload.get("message","Twelve Data error"))
+        price=payload.get("close") or payload.get("last") or payload.get("price")
+        if price is None:
+            raise RuntimeError("TWELVE_DATA_QUOTE_NO_PRICE")
+        stamp=payload.get("datetime") or payload.get("timestamp") or iso(received)
+        rows=[{
+            "symbol":symbol,
+            "field":"close_1m",
+            "value":float(price),
+            "event_time":str(stamp),
+            "received_time":iso(received),
+            "source":source,
+            "latency_ms":(time.perf_counter()-t0)*1000,
+            "metadata":{"endpoint":"quote","venue":"BCBA","mic_code":"XBUE","provider":"TwelveData"},
+        }]
+        return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+    except Exception as e:
+        return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
+
 def byma_status():
     if not settings.byma_url:
         return SourceResult("BYMA/MarketData",error="BYMA_MARKET_DATA_URL_NOT_CONFIGURED")
