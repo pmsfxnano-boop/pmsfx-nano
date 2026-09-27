@@ -949,9 +949,12 @@ async def gorila_signal_matrix():
     result["engine"] = {
         "forecast_cache_seconds": 30.0,
         "upstream_cache_seconds": _UPSTREAM_CACHE_SECONDS,
+        "matrix_cache_seconds": _SIGNAL_MATRIX_CACHE_SECONDS,
+        "cross_sectional_cache_seconds": _CROSS_SECTIONAL_CACHE_SECONDS,
         "universe": list(SIGNAL_SYMBOLS),
     }
-    return result
+    _SIGNAL_MATRIX_CACHE = (time.monotonic(), dict(result))
+    return {**result, "cache": {"hit": False, "age_seconds": 0.0}}
 
 
 @app.get("/api/gorila/terminal/{ticker}")
