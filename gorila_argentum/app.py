@@ -118,36 +118,6 @@ def argentina_session_state(now: datetime | None = None) -> dict[str, Any]:
 
 
 
-def _latest_persisted_engine_chart(symbol: str, limit: int = 180) -> list[dict[str, Any]]:
-    sql = """
-    SELECT created_at, last
-    FROM forecasts
-    WHERE symbol = %(symbol)s
-      AND last IS NOT NULL
-    ORDER BY created_at DESC, id DESC
-    LIMIT %(limit)s
-    """
-    try:
-        with quant_connection() as conn:
-            if conn is None:
-                return []
-            with conn.cursor() as cur:
-                cur.execute(sql, {"symbol": symbol, "limit": max(1, min(500, int(limit)))})
-                rows = cur.fetchall()
-        return [
-            {"time": row[0].isoformat(), "close": float(row[1])}
-            for row in reversed(rows)
-            if row[1] is not None
-        ]
-    except Exception as exc:
-        print(
-            "GORILA_PERSISTED_CHART_READ_ERROR",
-            {"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"},
-            flush=True,
-        )
-        return []
-
-
 def _run_macro_ingest() -> dict[str, Any]:
     store = Store()
     store.init()
@@ -850,7 +820,8 @@ def gorila_terminal(ticker: str):
     signal = store.latest_signal_snapshot(symbol)
     live = _ARG_LIVE_CACHE.get(symbol)
     macro = build_market_state()
-    chart = _latest_persisted_engine_chart(symbol, limit=180)
+    chart_rows = store.recent_series(symbol, "close_1m", limit=180) or store.recent_series(symbol, "close_5m", limit=180) or store.recent_series(symbol, "close", limit=180)
+    chart = [{"time": row[0], "close": row[1]} for row in chart_rows]
     return {
         "service": "gorila-argentum",
         "symbol": symbol,
