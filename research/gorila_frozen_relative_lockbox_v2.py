@@ -195,16 +195,6 @@ def choose_variant_on_development(series, horizon, common_dates, dev_dates, symb
         "execution_selection_candidates": len(threshold_scores),
     }
 
-        "status": "OK",
-        "selection_start": selection_dates[0],
-        "selection_end": selection_dates[-1],
-        "selection_n": len(selection_dates),
-        "development_rank_ic_by_variant": means,
-        "execution_threshold": selected_threshold,
-        "execution_variant": selected_trade_variant,
-        "execution_selection_trade_count": selected_trade_count,
-        "execution_selection_candidates": len(threshold_scores),
-    }
 
 
 def evaluate_symbol_horizon(series, horizon):
