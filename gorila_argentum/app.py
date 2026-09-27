@@ -803,7 +803,7 @@ async def _production_self_test() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK
     Store().init()
     print("GORILA_ARG_FEED_CONFIG", {"twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": os.getenv("GORILA_ALLOW_YAHOO_LIVE","0").strip().lower() in {"1","true","yes"}, "symbols": list(settings.core_symbols)}, flush=True)
     if _MACRO_TASK is None or _MACRO_TASK.done():
@@ -821,13 +821,18 @@ async def gorila_runtime_startup() -> None:
             _argentina_live_loop(),
             name="gorila-argentina-live-loop",
         )
+    if _ARG_SIGNAL_TASK is None or _ARG_SIGNAL_TASK.done():
+        _ARG_SIGNAL_TASK = asyncio.create_task(
+            _argentina_signal_snapshot_loop(),
+            name="gorila-argentina-signal-snapshot-loop",
+        )
     if os.getenv("GORILA_SELF_TEST", "").strip().lower() in {"1", "true", "yes"}:
         asyncio.create_task(_production_self_test(), name="gorila-production-self-test")
 
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK
     for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
         if task is not None:
             task.cancel()
@@ -843,9 +848,16 @@ async def gorila_runtime_shutdown() -> None:
             await _ARG_LIVE_TASK
         except asyncio.CancelledError:
             pass
+    if _ARG_SIGNAL_TASK is not None:
+        _ARG_SIGNAL_TASK.cancel()
+        try:
+            await _ARG_SIGNAL_TASK
+        except asyncio.CancelledError:
+            pass
     _MACRO_TASK = None
     _AUTONOMOUS_TASK = None
     _ARG_LIVE_TASK = None
+    _ARG_SIGNAL_TASK = None
 
 
 @app.get("/", include_in_schema=False)
@@ -1048,104 +1060,42 @@ def gorila_live_quote(ticker: str):
     }
 
 @app.get("/api/gorila/signal/{ticker}")
-async def gorila_signal(ticker: str):
-    """Return the auditable research signal for one Argentine symbol."""
+def gorila_signal(ticker: str):
+    """Read one precomputed Argentina snapshot; never execute forecast work in request time."""
     symbol = normalize_ticker(ticker)
     if symbol not in SIGNAL_SYMBOLS:
         raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
-    state = await _gorila_forecast(symbol)
-    live = _ARG_LIVE_CACHE.get(symbol)
-    if live is not None:
-        live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
-        state = {**state, "last": live.get("last", state.get("last")), "quote_timestamp": live.get("quote_timestamp", state.get("quote_timestamp")), "data_source": live.get("source") or state.get("data_source"), "market_freshness": {"age_seconds": live_age}}
-    store = Store()
-    store.init()
-    drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
-    shadow = store.shadow_summary()
-    series = store.recent_series(symbol, "close_1m", limit=240)
-    if not series:
-        series = store.recent_series(symbol, "close_5m", limit=240)
-    if not series:
-        series = store.recent_series(symbol, "close", limit=240)
-    signal = build_signal(
-        symbol=symbol,
-        state=state,
-        price_series=series,
-        drift=drift_rows[0] if drift_rows else None,
-        shadow_summary=shadow,
-    )
-    signal["session"] = market_session_state()
-    signal["source_health"] = [
-        row for row in store.health()
-        if row.get("source") in {
-            "BYMA/MarketData",
-            f"YahooChart/{symbol}.BA",
-            f"YahooChartLive/{symbol}.BA",
-            f"EODHD/{symbol}.BA/5m",
+    store = Store(); store.init()
+    signal = store.latest_signal_snapshot(symbol)
+    if signal is None:
+        return {
+            "symbol": symbol, "signal": "NEUTRAL", "status": "NO_DATA",
+            "actionable": False, "signal_score": None,
+            "probability": {"up": None, "down": None, "confidence": None},
+            "market": {"last": None, "data_grade": "UNKNOWN", "source": None},
+            "error_code": "SNAPSHOT_NOT_READY",
+            "research_only": True, "no_execution_authority": True,
+            "session": argentina_session_state(),
         }
-    ]
+    signal["session"] = market_session_state()
     return signal
 
-
 @app.get("/api/gorila/signal-matrix")
-async def gorila_signal_matrix():
-    global _SIGNAL_MATRIX_CACHE
-    now = time.monotonic()
-    if _SIGNAL_MATRIX_CACHE and now - _SIGNAL_MATRIX_CACHE[0] < _SIGNAL_MATRIX_CACHE_SECONDS:
-        return {**_SIGNAL_MATRIX_CACHE[1], "cache": {"hit": True, "age_seconds": round(now - _SIGNAL_MATRIX_CACHE[0], 3)}}
-    async with _SIGNAL_MATRIX_LOCK:
-        now = time.monotonic()
-        if _SIGNAL_MATRIX_CACHE and now - _SIGNAL_MATRIX_CACHE[0] < _SIGNAL_MATRIX_CACHE_SECONDS:
-            return {**_SIGNAL_MATRIX_CACHE[1], "cache": {"hit": True, "age_seconds": round(now - _SIGNAL_MATRIX_CACHE[0], 3)}}
-    """Return the complete Argentine research signal matrix."""
-    async def build_one(symbol: str):
-        try:
-            state = await asyncio.wait_for(
-                _gorila_forecast(symbol),
-                timeout=_SIGNAL_MATRIX_SYMBOL_TIMEOUT_SECONDS,
-            )
-            live = _ARG_LIVE_CACHE.get(symbol)
-            if live is not None:
-                live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
-                state = {**state, "last": live.get("last", state.get("last")), "quote_timestamp": live.get("quote_timestamp", state.get("quote_timestamp")), "data_source": live.get("source") or state.get("data_source"), "market_freshness": {"age_seconds": live_age}}
-            store = Store()
-            store.init()
-            drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
-            series = store.recent_series(symbol, "close_5m", limit=240)
-            if not series:
-                series = store.recent_series(symbol, "close", limit=240)
-            return build_signal(
-                symbol=symbol,
-                state=state,
-                price_series=series,
-                drift=drift_rows[0] if drift_rows else None,
-                shadow_summary=store.shadow_summary(),
-            )
-        except Exception as exc:
-            return {
-                "symbol": symbol,
-                "signal": "NEUTRAL",
-                "status": "NO_DATA",
-                "actionable": False,
-                "signal_score": 0.0,
-                "error": f"{type(exc).__name__}: {exc}",
-                "research_only": True,
-                "no_execution_authority": True,
-            }
-
-    items = await asyncio.gather(*(build_one(symbol) for symbol in SIGNAL_SYMBOLS))
+def gorila_signal_matrix():
+    """Read the current Argentina snapshot matrix; no forecast computation in request time."""
+    store = Store(); store.init()
+    items = store.all_signal_snapshots(SIGNAL_SYMBOLS)
     result = build_matrix(items)
     result["session"] = market_session_state()
     result["argentina_session"] = argentina_session_state()
+    result["snapshot_runtime"] = dict(_ARG_SIGNAL_STATE)
     result["engine"] = {
-        "forecast_cache_seconds": 30.0,
-        "upstream_cache_seconds": _UPSTREAM_CACHE_SECONDS,
+        "request_path": "postgres_signal_snapshot",
+        "snapshot_interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS,
         "matrix_cache_seconds": _SIGNAL_MATRIX_CACHE_SECONDS,
-        "cross_sectional_cache_seconds": _CROSS_SECTIONAL_CACHE_SECONDS,
         "universe": list(SIGNAL_SYMBOLS),
     }
-    _SIGNAL_MATRIX_CACHE = (time.monotonic(), dict(result))
-    return {**result, "cache": {"hit": False, "age_seconds": 0.0}}
+    return result
 
 
 @app.get("/api/gorila/terminal/{ticker}")
