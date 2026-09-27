@@ -64,8 +64,8 @@ _MACRO_STATE: dict[str, Any] = {
     "last_result": None,
 }
 _MACRO_INTERVAL_SECONDS = max(
-    60,
-    int(__import__("os").getenv("GORILA_MACRO_INTERVAL_SECONDS", "300")),
+    300,
+    int(settings.macro_interval_seconds),
 )
 
 _AUTONOMOUS_INTERVAL_SECONDS = max(
