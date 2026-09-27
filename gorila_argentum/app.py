@@ -87,6 +87,8 @@ _SIGNAL_MATRIX_CACHE_SECONDS = max(5.0, float(os.getenv("GORILA_MATRIX_CACHE_SEC
 _CROSS_SECTIONAL_CACHE: tuple[float, dict[str, Any]] | None = None
 _CROSS_SECTIONAL_LOCK = asyncio.Lock()
 _CROSS_SECTIONAL_CACHE_SECONDS = max(30.0, float(os.getenv("GORILA_CROSS_SECTIONAL_CACHE_SECONDS", "60")))
+_BCRA_SNAPSHOT_CACHE: tuple[float, dict[str, Any]] | None = None
+_BCRA_SNAPSHOT_CACHE_SECONDS = 60.0
 _AUTONOMOUS_STATE: dict[str, Any] = {
     "status": "STARTING",
     "updated_at": None,
@@ -840,9 +842,15 @@ def gorila_control_snapshot():
 
 @app.get("/api/gorila/bcra")
 def gorila_bcra_snapshot():
+    global _BCRA_SNAPSHOT_CACHE
+    now_mono = time.monotonic()
+    if _BCRA_SNAPSHOT_CACHE and now_mono - _BCRA_SNAPSHOT_CACHE[0] < _BCRA_SNAPSHOT_CACHE_SECONDS:
+        return {**_BCRA_SNAPSHOT_CACHE[1], "cache": {"hit": True, "age_seconds": round(now_mono - _BCRA_SNAPSHOT_CACHE[0], 3)}}
     store = Store()
     store.init()
-    return {**build_bcra_trader_snapshot(store), "runtime": {"status": _MACRO_STATE.get("status"), "updated_at": _MACRO_STATE.get("updated_at"), "latency_ms": _MACRO_STATE.get("latency_ms")}}
+    snapshot = {**build_bcra_trader_snapshot(store), "runtime": {"status": _MACRO_STATE.get("status"), "updated_at": _MACRO_STATE.get("updated_at"), "latency_ms": _MACRO_STATE.get("latency_ms")}}
+    _BCRA_SNAPSHOT_CACHE = (time.monotonic(), dict(snapshot))
+    return {**snapshot, "cache": {"hit": False, "age_seconds": 0.0}}
 
 
 @app.get("/api/gorila/sources")
