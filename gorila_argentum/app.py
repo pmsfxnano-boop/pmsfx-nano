@@ -69,6 +69,8 @@ _ARG_SIGNAL_TASK: asyncio.Task | None = None
 _ARG_LIVE_INTERVAL_SECONDS = max(15, int(os.getenv("GORILA_LIVE_INTERVAL_SECONDS", "30")))
 _ARG_SIGNAL_INTERVAL_SECONDS = max(5, int(os.getenv("GORILA_SIGNAL_INTERVAL_SECONDS", "10")))
 _ARG_SIGNAL_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
+_DB_INIT_TASK: asyncio.Task | None = None
+_DB_STATE: dict[str, Any] = {"status":"STARTING","ready":False,"error":None,"updated_at":None}
 _ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
 _ARG_LIVE_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _SIGNAL_MATRIX_CACHE: tuple[float, dict[str, Any]] | None = None
@@ -262,6 +264,30 @@ async def _argentina_live_loop() -> None:
             })
         await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
 
+
+async def _init_store_background() -> None:
+    started = time.perf_counter()
+    try:
+        await asyncio.to_thread(Store().init)
+        _DB_STATE.update({
+            "status": "READY",
+            "ready": True,
+            "error": None,
+            "updated_at": time.time(),
+            "latency_ms": round((time.perf_counter()-started)*1000,2),
+        })
+        print("GORILA_DB_INIT", _DB_STATE.copy(), flush=True)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _DB_STATE.update({
+            "status": "ERROR",
+            "ready": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "updated_at": time.time(),
+            "latency_ms": round((time.perf_counter()-started)*1000,2),
+        })
+        print("GORILA_DB_INIT_ERROR", _DB_STATE.copy(), flush=True)
 
 async def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
     store = Store(); store.init()
@@ -568,8 +594,9 @@ async def _production_self_test() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK
-    Store().init()
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK
+    if _DB_INIT_TASK is None or _DB_INIT_TASK.done():
+        _DB_INIT_TASK = asyncio.create_task(_init_store_background(), name="gorila-db-init")
     print("GORILA_ARG_FEED_CONFIG", {"twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": os.getenv("GORILA_ALLOW_YAHOO_LIVE","0").strip().lower() in {"1","true","yes"}, "symbols": list(settings.core_symbols)}, flush=True)
     if _MACRO_TASK is None or _MACRO_TASK.done():
         _MACRO_TASK = asyncio.create_task(
@@ -597,7 +624,7 @@ async def gorila_runtime_startup() -> None:
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK
     for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
         if task is not None:
             task.cancel()
@@ -617,6 +644,12 @@ async def gorila_runtime_shutdown() -> None:
         _ARG_SIGNAL_TASK.cancel()
         try:
             await _ARG_SIGNAL_TASK
+        except asyncio.CancelledError:
+            pass
+    if _DB_INIT_TASK is not None:
+        _DB_INIT_TASK.cancel()
+        try:
+            await _DB_INIT_TASK
         except asyncio.CancelledError:
             pass
     _MACRO_TASK = None
@@ -642,10 +675,10 @@ def gorila_root():
 
 @app.get("/api/gorila/health")
 def gorila_health():
-    db = persistence_summary()
     live = dict(_ARG_LIVE_STATE)
     snap = dict(_ARG_SIGNAL_STATE)
     snapshot_ready = snap.get("updated_symbols", 0) >= len(SIGNAL_SYMBOLS)
+    db = persistence_summary() if _DB_STATE.get("ready") else {"ready": False, "status": _DB_STATE.get("status")}
     return {
         "service": "gorila-argentum",
         "mode": "RESEARCH",
@@ -658,13 +691,13 @@ def gorila_health():
             "status": "READY_LIVE" if live.get("status") == "HEALTHY" else "READY_SNAPSHOT" if snapshot_ready else "DEGRADED",
         },
         "database": db,
-        "market_stream": {"status": "NOT_APPLICABLE", "source": "argentina_live_cache"},
         "market_session": market_session_state(),
         "autonomous_runtime": dict(_AUTONOMOUS_STATE),
         "argentina_live": live,
         "argentina_signals": snap,
         "macro_ingest": dict(_MACRO_STATE),
-        "sources": Store().health(),
+        "db_init": dict(_DB_STATE),
+        "sources": Store().health() if _DB_STATE.get("ready") else [],
     }
 
 @app.get("/api/gorila/market")
