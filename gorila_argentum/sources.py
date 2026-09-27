@@ -163,3 +163,68 @@ def yahoo_chart_daily(symbol):
             break
     return SourceResult(source,error=last_error or "YAHOO_HISTORY_FAILED",latency_ms=(time.perf_counter()-t0)*1000)
 
+
+def yahoo_chart_intraday(symbol, interval="1m"):
+    """Fetch the latest intraday chart for a Buenos Aires listing.
+
+    This is a research-data heartbeat, not an execution feed. It is intentionally
+    serialized by the caller and returns a bounded snapshot so vendor throttling
+    cannot take the API process down.
+    """
+    source=f"YahooChartLive/{symbol}.BA"; t0=time.perf_counter(); received=now()
+    ticker=f"{symbol}.BA"
+    urls=[
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}",
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+    ]
+    params={"range":"1d","interval":interval,"events":"history"}
+    last_error=None
+    for attempt in range(3):
+        url=urls[attempt % len(urls)]
+        try:
+            with _client() as c:
+                data=c.get(url,params=params)
+                if data.status_code == 429:
+                    last_error=f"YAHOO_RATE_LIMIT_429 host={url.split('/')[2]} attempt={attempt+1}"
+                    time.sleep(min(5.0, 0.75 * (2 ** attempt)))
+                    continue
+                data.raise_for_status()
+                payload=data.json()
+            result=(payload.get("chart",{}).get("result") or [None])[0]
+            if not result:
+                raise RuntimeError("YAHOO_EMPTY_INTRADAY_RESULT")
+            timestamps=result.get("timestamp") or []
+            quote=((result.get("indicators") or {}).get("quote") or [{}])[0]
+            closes=quote.get("close") or []
+            rows=[]
+            for ts,close in zip(timestamps,closes):
+                if close is None:
+                    continue
+                rows.append({
+                    "symbol":symbol,
+                    "field":"close_1m" if interval == "1m" else f"close_{interval}",
+                    "value":float(close),
+                    "event_time":datetime.fromtimestamp(ts,timezone.utc).isoformat(),
+                    "received_time":iso(received),
+                    "source":source,
+                    "latency_ms":(time.perf_counter()-t0)*1000,
+                    "metadata":{"interval":interval,"range":"1d","ticker":ticker},
+                })
+            if not rows:
+                raise RuntimeError("YAHOO_NO_INTRADAY_ROWS")
+            return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+        except httpx.HTTPStatusError as e:
+            status=e.response.status_code if e.response is not None else None
+            last_error=f"HTTP_{status}_{url.split('/')[2]}"
+            if status in {429,500,502,503,504}:
+                time.sleep(min(5.0, 0.75 * (2 ** attempt)))
+                continue
+            break
+        except Exception as e:
+            last_error=f"{type(e).__name__}: {e}"
+            if attempt < 2:
+                time.sleep(min(3.0, 0.5 * (2 ** attempt)))
+                continue
+            break
+    return SourceResult(source,error=last_error or "YAHOO_INTRADAY_FAILED",latency_ms=(time.perf_counter()-t0)*1000)
+
