@@ -526,21 +526,34 @@ async def _autonomous_loop() -> None:
 
 
 async def _macro_loop() -> None:
+    print("GORILA_MACRO_LOOP_ENTERED", {"interval_seconds": _MACRO_INTERVAL_SECONDS}, flush=True)
     while True:
         started = time.perf_counter()
         try:
             result = await asyncio.to_thread(_run_macro_ingest)
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
             _MACRO_STATE.update(
                 {
                     "status": result.get("status", "UNKNOWN"),
                     "updated_at": time.time(),
                     "last_result": result,
-                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "latency_ms": latency_ms,
                 }
+            )
+            print(
+                "GORILA_MACRO_CYCLE",
+                {
+                    "status": result.get("status", "UNKNOWN"),
+                    "latency_ms": latency_ms,
+                    "rows_inserted": result.get("rows_inserted", 0),
+                    "results": result.get("results", []),
+                },
+                flush=True,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
             _MACRO_STATE.update(
                 {
                     "status": "ERROR",
@@ -549,8 +562,16 @@ async def _macro_loop() -> None:
                         "status": "ERROR",
                         "error": f"{type(exc).__name__}: {exc}",
                     },
-                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "latency_ms": latency_ms,
                 }
+            )
+            print(
+                "GORILA_MACRO_CYCLE_ERROR",
+                {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "latency_ms": latency_ms,
+                },
+                flush=True,
             )
         await asyncio.sleep(_MACRO_INTERVAL_SECONDS)
 
