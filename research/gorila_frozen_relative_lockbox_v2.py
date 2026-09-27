@@ -309,9 +309,19 @@ def evaluate_symbol_horizon(series, horizon):
         and placebo_p is not None
         and placebo_p < 0.05
     )
-    execution_ci = strategy["50"]["mean_trade_return_ci95"]
-    execution_net = strategy["50"]["net_return"]
-    execution_delta = execution_net - momentum_net["50"]
+    def cost_row(mapping, cost_bps):
+        for key in (str(cost_bps), cost_bps, f"{float(cost_bps):.1f}"):
+            if key in mapping:
+                return mapping[key]
+        raise RuntimeError(
+            f"COST_ROW_MISSING:{cost_bps}:available={sorted(map(str, mapping.keys()))}"
+        )
+
+    strategy_50 = cost_row(strategy, 50)
+    momentum_50 = cost_row(momentum_net, 50)
+    execution_ci = strategy_50["mean_trade_return_ci95"]
+    execution_net = strategy_50["net_return"]
+    execution_delta = execution_net - momentum_50
     execution_ok = (
         execution_net > 0
         and execution_ci[0] is not None
