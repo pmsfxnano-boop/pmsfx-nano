@@ -456,6 +456,51 @@ async def _macro_loop() -> None:
         await asyncio.sleep(_MACRO_INTERVAL_SECONDS)
 
 
+async def _argentina_e2e_self_test() -> None:
+    if os.getenv("GORILA_SELF_TEST", "").strip().lower() not in {"1", "true", "yes"}:
+        return
+    await asyncio.sleep(30)
+    base = f"http://127.0.0.1:{os.getenv('PORT', '10000')}"
+    paths = {
+        "health": "/api/gorila/health",
+        "matrix": "/api/gorila/signal-matrix",
+        "signal_ggal": "/api/gorila/signal/GGAL",
+        "signal_cepu": "/api/gorila/signal/CEPU",
+        "live_cepu": "/api/gorila/live/CEPU",
+        "bcra": "/api/gorila/bcra",
+    }
+    results = {}
+    timeout = httpx.Timeout(20.0, connect=3.0)
+    async with httpx.AsyncClient(base_url=base, timeout=timeout) as client:
+        for name, path in paths.items():
+            t0 = time.perf_counter()
+            try:
+                r = await client.get(path, headers={"User-Agent":"Gorila-Argentina-E2E/1.0"})
+                try:
+                    payload = r.json()
+                except Exception:
+                    payload = None
+                results[name] = {
+                    "status": r.status_code,
+                    "latency_ms": round((time.perf_counter()-t0)*1000,2),
+                    "json": payload is not None,
+                }
+            except Exception as exc:
+                results[name] = {
+                    "status": None,
+                    "latency_ms": round((time.perf_counter()-t0)*1000,2),
+                    "json": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+    summary = {
+        "all_http_200": all(v.get("status")==200 for v in results.values()),
+        "results": results,
+        "matrix_snapshot_status": _ARG_SIGNAL_STATE.get("status"),
+        "snapshot_updated_symbols": _ARG_SIGNAL_STATE.get("updated_symbols"),
+        "snapshot_errors": _ARG_SIGNAL_STATE.get("errors"),
+    }
+    print("GORILA_ARG_E2E_SELFTEST", json.dumps(summary, sort_keys=True, default=str), flush=True)
+
 async def _production_self_test() -> None:
     if os.getenv("GORILA_SELF_TEST", "").strip().lower() not in {"1", "true", "yes"}:
         return
@@ -620,7 +665,7 @@ async def gorila_runtime_startup() -> None:
             name="gorila-argentina-signal-snapshot-loop",
         )
     if os.getenv("GORILA_SELF_TEST", "").strip().lower() in {"1", "true", "yes"}:
-        asyncio.create_task(_production_self_test(), name="gorila-production-self-test")
+        asyncio.create_task(_argentina_e2e_self_test(), name="gorila-argentina-e2e-self-test")
 
 
 @app.on_event("shutdown")
