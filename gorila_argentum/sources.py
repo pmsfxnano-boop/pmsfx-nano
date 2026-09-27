@@ -99,6 +99,47 @@ def twelve_data_daily(symbol):
     except Exception as e:
         return SourceResult(source,error=str(e),latency_ms=(time.perf_counter()-t0)*1000)
 
+def twelve_data_intraday(symbol, interval="1min"):
+    source=f"TwelveDataLive/{symbol}"; t0=time.perf_counter(); received=now()
+    if not settings.twelve_data_api_key:
+        return SourceResult(source,error="TWELVE_DATA_API_KEY_MISSING",latency_ms=(time.perf_counter()-t0)*1000)
+    try:
+        params={
+            "symbol": f"{symbol}:BCBA",
+            "interval": interval,
+            "outputsize": 120,
+            "order": "asc",
+            "apikey": settings.twelve_data_api_key,
+        }
+        with _client() as client:
+            response=client.get("https://api.twelvedata.com/time_series",params=params)
+            response.raise_for_status()
+            payload=response.json()
+        if payload.get("status") == "error":
+            raise RuntimeError(payload.get("message","Twelve Data error"))
+        values=payload.get("values") or []
+        rows=[]
+        for item in values:
+            close=item.get("close")
+            stamp=item.get("datetime")
+            if close is None or not stamp:
+                continue
+            rows.append({
+                "symbol":symbol,
+                "field":"close_1m" if interval=="1min" else f"close_{interval}",
+                "value":float(close),
+                "event_time":str(stamp),
+                "received_time":iso(received),
+                "source":source,
+                "latency_ms":(time.perf_counter()-t0)*1000,
+                "metadata":{"interval":interval,"outputsize":120,"venue":"BCBA","provider":"TwelveData"},
+            })
+        if not rows:
+            raise RuntimeError("TWELVE_DATA_NO_INTRADAY_ROWS")
+        return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+    except Exception as e:
+        return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
+
 def byma_status():
     if not settings.byma_url:
         return SourceResult("BYMA/MarketData",error="BYMA_MARKET_DATA_URL_NOT_CONFIGURED")
