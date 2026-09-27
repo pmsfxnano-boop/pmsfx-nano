@@ -444,6 +444,77 @@ async def _macro_loop() -> None:
         await asyncio.sleep(_MACRO_INTERVAL_SECONDS)
 
 
+async def _production_self_test() -> None:
+    if os.getenv("GORILA_SELF_TEST", "").strip().lower() not in {"1", "true", "yes"}:
+        return
+    await asyncio.sleep(20)
+    started = time.perf_counter()
+    results: dict[str, Any] = {}
+    try:
+        health = gorila_health()
+        results["health"] = {"ok": True, "service": health.get("service"), "mode": health.get("mode")}
+    except Exception as exc:
+        results["health"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        market = gorila_market()
+        results["market"] = {
+            "ok": True,
+            "status": market.get("status"),
+            "fx_keys": sorted((market.get("fx") or {}).keys()),
+            "risk_keys": sorted((market.get("risk") or {}).keys()),
+        }
+    except Exception as exc:
+        results["market"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        cross = score_cross_sectional(store=Store())
+        results["cross_sectional"] = {
+            "ok": cross.get("status") in {"READY", "INSUFFICIENT_DATA"},
+            "status": cross.get("status"),
+            "model": cross.get("model"),
+            "items": len(cross.get("items") or []),
+            "training_rows": cross.get("training_rows"),
+            "skipped_anchors": cross.get("skipped_anchors"),
+        }
+    except Exception as exc:
+        results["cross_sectional"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        terminal = await gorila_terminal("AAPL")
+        forecast = terminal.get("forecast") or {}
+        results["terminal"] = {
+            "ok": terminal.get("service") == "gorila-argentum"
+            and terminal.get("symbol") == "AAPL"
+            and "quote" in terminal
+            and "macro" in terminal
+            and "chart" in terminal
+            and forecast.get("forecast_status") not in {"ERROR", "BLOCKED_DATA_HEALTH"}
+            and forecast.get("forecast") is not None,
+            "forecast_status": forecast.get("forecast_status"),
+            "engine_source": forecast.get("engine_source"),
+            "chart_points": len(terminal.get("chart") or []),
+        }
+    except Exception as exc:
+        results["terminal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        control = gorila_control_snapshot()
+        runtime_items = (control.get("runtime") or {}).get("items") or []
+        latest = runtime_items[0] if runtime_items else {}
+        results["control"] = {
+            "ok": isinstance(control.get("health"), dict) and "promotion" in control and "shadow" in control,
+            "latest_runtime_kind": latest.get("kind"),
+            "latest_runtime_status": latest.get("status"),
+        }
+    except Exception as exc:
+        results["control"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    results["all_ok"] = all(bool((value or {}).get("ok")) for value in results.values())
+    results["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    print("GORILA_PRODUCTION_SELF_TEST", results, flush=True)
+
+
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
     global _MACRO_TASK, _AUTONOMOUS_TASK
@@ -458,6 +529,8 @@ async def gorila_runtime_startup() -> None:
             _autonomous_loop(),
             name="gorila-autonomous-runtime-loop",
         )
+    if os.getenv("GORILA_SELF_TEST", "").strip().lower() in {"1", "true", "yes"}:
+        asyncio.create_task(_production_self_test(), name="gorila-production-self-test")
 
 
 @app.on_event("shutdown")
