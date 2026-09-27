@@ -221,9 +221,13 @@ def evaluate_predictive_promotion(
         }
 
     aux = ((manifest.get("payload") or {}).get("auxiliary") or {})
+    # The primary predictor is the frozen cross-sectional lockbox, not the
+    # generic absolute-direction lockbox. Keep the predictor gate tied to the
+    # methodology that actually produced the validated H5 evidence.
+    primary_source = aux.get("frozen_relative_lockbox") or {}
     rows = {
         int(x.get("horizon_days")): x
-        for x in (aux.get("lockbox", {}).get("evidence") or [])
+        for x in (primary_source.get("evidence") or [])
         if x.get("horizon_days") is not None
     }
 
