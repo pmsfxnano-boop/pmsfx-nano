@@ -281,6 +281,7 @@ def build_signal(
     if p_up is None:
         signal = "NEUTRAL"
         status = "NO_DATA"
+        signal_score = None
 
     return {
         "symbol": str(symbol).upper(),
