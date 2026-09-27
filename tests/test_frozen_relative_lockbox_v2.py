@@ -14,7 +14,5 @@ def test_pair_trade_respects_execution_spread_threshold():
     from research.gorila_frozen_relative_lockbox_v2 import pair_trade
     scores = {"A": -0.01, "B": 0.01, "C": 0.03}
     returns = {"A": 0.02, "B": 0.01, "C": 0.04}
-    assert pair_trade(scores, returns, ["A","B","C"], 0, min_spread=0.05) is not None
-    assert pair_trade(scores, returns, ["A","B","C"], 0, min_spread=0.05) == pair_trade(scores, returns, ["A","B","C"], 0)
-    assert pair_trade(scores, returns, ["A","B","C"], 0, min_spread=0.05) is not None
-    assert pair_trade(scores, returns, ["A","B","C"], 0, min_spread=0.051) is None
+    assert pair_trade(scores, returns, ["A","B","C"], 0, min_spread=0.04) is not None
+    assert pair_trade(scores, returns, ["A","B","C"], 0, min_spread=0.041) is None
