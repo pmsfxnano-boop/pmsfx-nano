@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json, sqlite3, os, uuid
 from datetime import datetime, timezone, timedelta
+import threading
 
 def _as_iso(value):
     if value is None:
@@ -184,6 +185,9 @@ CREATE INDEX IF NOT EXISTS idx_research_evidence_dataset ON research_evidence(da
 
 def utc_now(): return datetime.now(timezone.utc).isoformat()
 
+_PG_SCHEMA_LOCK = threading.Lock()
+_PG_SCHEMA_INITIALIZED = False
+
 class Store:
     def __init__(self):
         self.pg = bool(os.getenv("DATABASE_URL"))
@@ -208,35 +212,57 @@ class Store:
         return self.conn
 
     def init(self):
-        conn=self.connect()
+        # PostgreSQL schema creation/migration is lock-taking. This service calls
+        # Store.init() from startup, request handlers and the autonomous runtime.
+        # Serialize it per process and use a database advisory lock so concurrent
+        # instances cannot run ALTER TABLE at the same time.
         if self.pg:
-            with conn.cursor() as cur:
-                cur.execute(SCHEMA)
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_shadow_feature_hash ON shadow_predictions(feature_hash)"
-                )
-                cur.execute(
-                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS pbo DOUBLE PRECISION"
-                )
-                cur.execute(
-                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION"
-                )
-                cur.execute(
-                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_status TEXT DEFAULT 'BLOCKED'"
-                )
-                cur.execute(
-                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_status TEXT DEFAULT 'BLOCKED'"
-                )
-                cur.execute(
-                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_reasons TEXT DEFAULT '[]'"
-                )
-                cur.execute(
-                    "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_reasons TEXT DEFAULT '[]'"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_research_evidence_validation ON research_evidence(validation_status,created_at)"
-                )
-            conn.commit()
+            global _PG_SCHEMA_INITIALIZED
+            if _PG_SCHEMA_INITIALIZED:
+                return
+            with _PG_SCHEMA_LOCK:
+                if _PG_SCHEMA_INITIALIZED:
+                    return
+                conn = self.connect()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_xact_lock(hashtext('gorila_argentum_schema_v1'))")
+                        cur.execute(SCHEMA)
+                        cur.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_shadow_feature_hash ON shadow_predictions(feature_hash)"
+                        )
+                        cur.execute(
+                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS pbo DOUBLE PRECISION"
+                        )
+                        cur.execute(
+                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS dsr DOUBLE PRECISION"
+                        )
+                        cur.execute(
+                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_status TEXT DEFAULT 'BLOCKED'"
+                        )
+                        cur.execute(
+                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_status TEXT DEFAULT 'BLOCKED'"
+                        )
+                        cur.execute(
+                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS prediction_reasons TEXT DEFAULT '[]'"
+                        )
+                        cur.execute(
+                            "ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS strategy_reasons TEXT DEFAULT '[]'"
+                        )
+                        cur.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_research_evidence_validation ON research_evidence(validation_status,created_at)"
+                        )
+                    conn.commit()
+                    _PG_SCHEMA_INITIALIZED = True
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+                    self.conn = None
+            return
+
+        conn=self.connect()
         conn.close(); self.conn=None
 
     def claim_runtime_run(self, run_id: str, kind: str) -> bool:
