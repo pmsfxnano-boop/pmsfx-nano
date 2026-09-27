@@ -46,7 +46,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
@@ -76,6 +76,16 @@ _AUTONOMOUS_START_DELAY_SECONDS = max(
     int(os.getenv("GORILA_AUTONOMOUS_START_DELAY_SECONDS", "20")),
 )
 _AUTONOMOUS_TASK: asyncio.Task | None = None
+_ARG_LIVE_TASK: asyncio.Task | None = None
+_ARG_LIVE_INTERVAL_SECONDS = max(15, int(os.getenv("GORILA_LIVE_INTERVAL_SECONDS", "30")))
+_ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
+_ARG_LIVE_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
+_SIGNAL_MATRIX_CACHE: tuple[float, dict[str, Any]] | None = None
+_SIGNAL_MATRIX_LOCK = asyncio.Lock()
+_SIGNAL_MATRIX_CACHE_SECONDS = max(5.0, float(os.getenv("GORILA_MATRIX_CACHE_SECONDS", "15")))
+_CROSS_SECTIONAL_CACHE: tuple[float, dict[str, Any]] | None = None
+_CROSS_SECTIONAL_LOCK = asyncio.Lock()
+_CROSS_SECTIONAL_CACHE_SECONDS = max(30.0, float(os.getenv("GORILA_CROSS_SECTIONAL_CACHE_SECONDS", "60")))
 _AUTONOMOUS_STATE: dict[str, Any] = {
     "status": "STARTING",
     "updated_at": None,
@@ -368,6 +378,54 @@ def _run_macro_ingest() -> dict[str, Any]:
     return payload
 
 
+async def _argentina_live_loop() -> None:
+    """Maintain a lightweight intraday quote cache for the Argentine core."""
+    await asyncio.sleep(5)
+    while True:
+        started = time.perf_counter()
+        errors: list[dict[str, str]] = []
+        updated = 0
+        rows_to_store: list[dict[str, Any]] = []
+        try:
+            for symbol in settings.core_symbols:
+                result = await asyncio.to_thread(yahoo_chart_intraday, symbol, "1m")
+                if not result.rows:
+                    errors.append({"symbol": symbol, "error": result.error or "NO_ROWS"})
+                    continue
+                latest = max(result.rows, key=lambda row: str(row.get("event_time") or ""))
+                snapshot = {
+                    "symbol": symbol,
+                    "last": float(latest["value"]),
+                    "quote_timestamp": str(latest.get("event_time")),
+                    "received_at": str(latest.get("received_time")),
+                    "source": result.source,
+                    "latency_ms": round(float(result.latency_ms or 0), 2),
+                    "updated_epoch": time.time(),
+                }
+                _ARG_LIVE_CACHE[symbol] = snapshot
+                rows_to_store.append({**latest, "field": "close_1m", "metadata": {"poll": "gorila_intraday_live"}})
+                updated += 1
+            if rows_to_store:
+                try:
+                    await asyncio.to_thread(Store().insert_observations, rows_to_store)
+                except Exception as exc:
+                    errors.append({"symbol":"*","error":f"persist:{type(exc).__name__}: {exc}"})
+            _ARG_LIVE_STATE.update({
+                "status": "HEALTHY" if updated else "DEGRADED",
+                "updated_at": time.time(),
+                "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
+                "updated_symbols": updated,
+                "errors": errors[-8:],
+                "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
+                "symbols": list(settings.core_symbols),
+            })
+            print("GORILA_ARG_LIVE_CYCLE", _ARG_LIVE_STATE.copy(), flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _ARG_LIVE_STATE.update({"status":"ERROR","updated_at":time.time(),"last_cycle_ms":round((time.perf_counter()-started)*1000,2),"errors":[{"symbol":"*","error":f"{type(exc).__name__}: {exc}"}]})
+        await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
+
 async def _autonomous_loop() -> None:
     await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
     while True:
@@ -584,7 +642,7 @@ async def _production_self_test() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK
     Store().init()
     if _MACRO_TASK is None or _MACRO_TASK.done():
         _MACRO_TASK = asyncio.create_task(
@@ -596,13 +654,18 @@ async def gorila_runtime_startup() -> None:
             _autonomous_loop(),
             name="gorila-autonomous-runtime-loop",
         )
+    if _ARG_LIVE_TASK is None or _ARG_LIVE_TASK.done():
+        _ARG_LIVE_TASK = asyncio.create_task(
+            _argentina_live_loop(),
+            name="gorila-argentina-live-loop",
+        )
     if os.getenv("GORILA_SELF_TEST", "").strip().lower() in {"1", "true", "yes"}:
         asyncio.create_task(_production_self_test(), name="gorila-production-self-test")
 
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK
     for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
         if task is not None:
             task.cancel()
@@ -612,8 +675,15 @@ async def gorila_runtime_shutdown() -> None:
                 await task
             except asyncio.CancelledError:
                 pass
+    if _ARG_LIVE_TASK is not None:
+        _ARG_LIVE_TASK.cancel()
+        try:
+            await _ARG_LIVE_TASK
+        except asyncio.CancelledError:
+            pass
     _MACRO_TASK = None
     _AUTONOMOUS_TASK = None
+    _ARG_LIVE_TASK = None
 
 
 @app.get("/", include_in_schema=False)
@@ -671,6 +741,13 @@ def gorila_health():
                 ).isoformat()
                 if _AUTONOMOUS_STATE.get("updated_at")
                 else None
+            ),
+        },
+        "argentina_live": {
+            **_ARG_LIVE_STATE,
+            "updated_at": (
+                __import__("datetime").datetime.fromtimestamp(_ARG_LIVE_STATE["updated_at"], tz=__import__("datetime").timezone.utc).isoformat()
+                if _ARG_LIVE_STATE.get("updated_at") else None
             ),
         },
         "macro_ingest": {
@@ -750,10 +827,40 @@ async def gorila_forecast(ticker: str, force: bool = False):
 
 @app.get("/api/gorila/cross-sectional")
 async def gorila_cross_sectional():
-    store = Store()
-    store.init()
-    return score_cross_sectional(store=store)
+    global _CROSS_SECTIONAL_CACHE
+    now = time.monotonic()
+    if _CROSS_SECTIONAL_CACHE and now - _CROSS_SECTIONAL_CACHE[0] < _CROSS_SECTIONAL_CACHE_SECONDS:
+        return {**_CROSS_SECTIONAL_CACHE[1], "cache": {"hit": True, "age_seconds": round(now - _CROSS_SECTIONAL_CACHE[0], 3)}}
+    async with _CROSS_SECTIONAL_LOCK:
+        now = time.monotonic()
+        if _CROSS_SECTIONAL_CACHE and now - _CROSS_SECTIONAL_CACHE[0] < _CROSS_SECTIONAL_CACHE_SECONDS:
+            return {**_CROSS_SECTIONAL_CACHE[1], "cache": {"hit": True, "age_seconds": round(now - _CROSS_SECTIONAL_CACHE[0], 3)}}
+        store = Store()
+        store.init()
+        result = score_cross_sectional(store=store)
+        _CROSS_SECTIONAL_CACHE = (time.monotonic(), dict(result))
+        return {**result, "cache": {"hit": False, "age_seconds": 0.0}}
 
+
+@app.get("/api/gorila/live/{ticker}")
+def gorila_live_quote(ticker: str):
+    symbol = normalize_ticker(ticker)
+    snapshot = _ARG_LIVE_CACHE.get(symbol)
+    if snapshot is None:
+        return {"symbol":symbol,"status":"NO_LIVE_CACHE","quote":None,"session":argentina_session_state(),"runtime":dict(_ARG_LIVE_STATE),"research_only":True,"no_execution_authority":True}
+    age = max(0.0, time.time() - float(snapshot.get("updated_epoch") or time.time()))
+    return {
+        "symbol": symbol,
+        "status": "LIVE" if age <= _ARG_LIVE_INTERVAL_SECONDS * 2.5 else "STALE",
+        "quote": {"last": snapshot.get("last"), "quoteTimestamp": snapshot.get("quote_timestamp"), "timestamp": snapshot.get("quote_timestamp"), "source": snapshot.get("source")},
+        "age_seconds": round(age,2),
+        "received_at": snapshot.get("received_at"),
+        "latency_ms": snapshot.get("latency_ms"),
+        "session": argentina_session_state(),
+        "runtime": dict(_ARG_LIVE_STATE),
+        "research_only": True,
+        "no_execution_authority": True,
+    }
 
 @app.get("/api/gorila/signal/{ticker}")
 async def gorila_signal(ticker: str):
@@ -762,6 +869,10 @@ async def gorila_signal(ticker: str):
     if symbol not in SIGNAL_SYMBOLS:
         raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
     state = await _gorila_forecast(symbol)
+    live = _ARG_LIVE_CACHE.get(symbol)
+    if live is not None:
+        live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
+        state = {**state, "last": live.get("last", state.get("last")), "quote_timestamp": live.get("quote_timestamp", state.get("quote_timestamp")), "data_source": live.get("source") or state.get("data_source"), "market_freshness": {"age_seconds": live_age}}
     store = Store()
     store.init()
     drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
@@ -790,10 +901,22 @@ async def gorila_signal(ticker: str):
 
 @app.get("/api/gorila/signal-matrix")
 async def gorila_signal_matrix():
+    global _SIGNAL_MATRIX_CACHE
+    now = time.monotonic()
+    if _SIGNAL_MATRIX_CACHE and now - _SIGNAL_MATRIX_CACHE[0] < _SIGNAL_MATRIX_CACHE_SECONDS:
+        return {**_SIGNAL_MATRIX_CACHE[1], "cache": {"hit": True, "age_seconds": round(now - _SIGNAL_MATRIX_CACHE[0], 3)}}
+    async with _SIGNAL_MATRIX_LOCK:
+        now = time.monotonic()
+        if _SIGNAL_MATRIX_CACHE and now - _SIGNAL_MATRIX_CACHE[0] < _SIGNAL_MATRIX_CACHE_SECONDS:
+            return {**_SIGNAL_MATRIX_CACHE[1], "cache": {"hit": True, "age_seconds": round(now - _SIGNAL_MATRIX_CACHE[0], 3)}}
     """Return the complete Argentine research signal matrix."""
     async def build_one(symbol: str):
         try:
             state = await _gorila_forecast(symbol)
+            live = _ARG_LIVE_CACHE.get(symbol)
+            if live is not None:
+                live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
+                state = {**state, "last": live.get("last", state.get("last")), "quote_timestamp": live.get("quote_timestamp", state.get("quote_timestamp")), "data_source": live.get("source") or state.get("data_source"), "market_freshness": {"age_seconds": live_age}}
             store = Store()
             store.init()
             drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
