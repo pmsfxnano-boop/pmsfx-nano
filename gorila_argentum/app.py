@@ -47,6 +47,7 @@ from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote
+from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
@@ -86,6 +87,8 @@ _SIGNAL_MATRIX_CACHE_SECONDS = max(5.0, float(os.getenv("GORILA_MATRIX_CACHE_SEC
 _CROSS_SECTIONAL_CACHE: tuple[float, dict[str, Any]] | None = None
 _CROSS_SECTIONAL_LOCK = asyncio.Lock()
 _CROSS_SECTIONAL_CACHE_SECONDS = max(30.0, float(os.getenv("GORILA_CROSS_SECTIONAL_CACHE_SECONDS", "60")))
+_BCRA_SNAPSHOT_CACHE: tuple[float, dict[str, Any]] | None = None
+_BCRA_SNAPSHOT_CACHE_SECONDS = 60.0
 _AUTONOMOUS_STATE: dict[str, Any] = {
     "status": "STARTING",
     "updated_at": None,
@@ -333,7 +336,7 @@ async def _gorila_quote(symbol: str) -> dict[str, Any]:
 def _run_macro_ingest() -> dict[str, Any]:
     store = Store()
     store.init()
-    funcs = [argentina_datos_fx, argentina_datos_risk, bcra_fx]
+    funcs = [argentina_datos_fx, argentina_datos_risk, bcra_fx, bcra_macro_cycle]
     results = []
     with ThreadPoolExecutor(max_workers=len(funcs)) as executor:
         futures = [executor.submit(fn) for fn in funcs]
@@ -835,6 +838,19 @@ def gorila_control_snapshot():
             "items": store.latest_runtime_run(kind=None, limit=1),
         },
     }
+
+
+@app.get("/api/gorila/bcra")
+def gorila_bcra_snapshot():
+    global _BCRA_SNAPSHOT_CACHE
+    now_mono = time.monotonic()
+    if _BCRA_SNAPSHOT_CACHE and now_mono - _BCRA_SNAPSHOT_CACHE[0] < _BCRA_SNAPSHOT_CACHE_SECONDS:
+        return {**_BCRA_SNAPSHOT_CACHE[1], "cache": {"hit": True, "age_seconds": round(now_mono - _BCRA_SNAPSHOT_CACHE[0], 3)}}
+    store = Store()
+    store.init()
+    snapshot = {**build_bcra_trader_snapshot(store), "runtime": {"status": _MACRO_STATE.get("status"), "updated_at": _MACRO_STATE.get("updated_at"), "latency_ms": _MACRO_STATE.get("latency_ms")}}
+    _BCRA_SNAPSHOT_CACHE = (time.monotonic(), dict(snapshot))
+    return {**snapshot, "cache": {"hit": False, "age_seconds": 0.0}}
 
 
 @app.get("/api/gorila/sources")

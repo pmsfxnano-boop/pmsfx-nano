@@ -140,7 +140,7 @@ def twelve_data_intraday(symbol, interval="1min"):
     except Exception as e:
         return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
 
-def twelve_data_live_quote(symbol):
+def twelve_data_live_quote(symbol, interval=None):
     source=f"TwelveDataLive/{symbol}"; t0=time.perf_counter(); received=now()
     if not settings.twelve_data_api_key:
         return SourceResult(source,error="TWELVE_DATA_API_KEY_MISSING",latency_ms=(time.perf_counter()-t0)*1000)
