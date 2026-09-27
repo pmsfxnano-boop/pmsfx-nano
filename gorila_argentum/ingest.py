@@ -6,14 +6,22 @@ from .drift import rolling_drift
 
 def run_batch():
     store=Store(); store.init()
-    funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status]
-    funcs += [lambda s=s: yahoo_chart_daily(s) for s in settings.core_symbols]
-    if settings.twelve_data_api_key:
-        funcs += [lambda s=s: twelve_data_daily(s) for s in settings.symbols]
+    # Macro sources are independent and can run concurrently. Yahoo historical
+    # pulls are deliberately serialized because the provider rate-limits parallel
+    # chart requests and a 429 here starves the cross-sectional daily panel.
+    macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status]
     results=[]
-    with ThreadPoolExecutor(max_workers=settings.batch_workers) as ex:
-        futures=[ex.submit(fn) for fn in funcs]
-        for fut in as_completed(futures): results.append(fut.result())
+    with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
+        futures=[ex.submit(fn) for fn in macro_funcs]
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    for symbol in settings.core_symbols:
+        results.append(yahoo_chart_daily(symbol))
+
+    if settings.twelve_data_api_key:
+        for symbol in settings.symbols:
+            results.append(twelve_data_daily(symbol))
     total=0
     for r in results:
         if r.rows:
