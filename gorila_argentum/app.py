@@ -448,7 +448,7 @@ async def _macro_loop() -> None:
 async def _production_self_test() -> None:
     if os.getenv("GORILA_SELF_TEST", "").strip().lower() not in {"1", "true", "yes"}:
         return
-    await asyncio.sleep(20)
+    await asyncio.sleep(60)
     started = time.perf_counter()
     base = f"http://127.0.0.1:{os.getenv('PORT', '10000')}"
     results: dict[str, Any] = {}
@@ -562,11 +562,24 @@ async def _production_self_test() -> None:
     results["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
 
     # Do not print full payloads; emit a compact, auditable numerical summary.
-    print(
-        "GORILA_PRODUCTION_HTTP_E2E",
-        json.dumps(results, sort_keys=True, default=str),
-        flush=True,
-    )
+    summary = {
+        "http_status": {
+            name: results[name].get("status_code")
+            for name in ("health", "market", "cross_sectional", "terminal", "control")
+        },
+        "contracts": {
+            "health": results["health_contract"],
+            "market": results["market_contract"],
+            "cross_sectional": results["cross_contract"],
+            "terminal": results["terminal_contract"],
+            "control": results["control_contract"],
+        },
+        "all_http_ok": results["all_http_ok"],
+        "all_contracts_ok": results["all_contracts_ok"],
+        "all_ok": results["all_ok"],
+        "latency_ms": results["latency_ms"],
+    }
+    print("GORILA_PRODUCTION_HTTP_E2E", json.dumps(summary, sort_keys=True, default=str), flush=True)
 
 
 @app.on_event("startup")
