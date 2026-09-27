@@ -877,7 +877,9 @@ async def gorila_signal(ticker: str):
     store.init()
     drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
     shadow = store.shadow_summary()
-    series = store.recent_series(symbol, "close_5m", limit=240)
+    series = store.recent_series(symbol, "close_1m", limit=240)
+    if not series:
+        series = store.recent_series(symbol, "close_5m", limit=240)
     if not series:
         series = store.recent_series(symbol, "close", limit=240)
     signal = build_signal(
@@ -893,6 +895,7 @@ async def gorila_signal(ticker: str):
         if row.get("source") in {
             "BYMA/MarketData",
             f"YahooChart/{symbol}.BA",
+            f"YahooChartLive/{symbol}.BA",
             f"EODHD/{symbol}.BA/5m",
         }
     ]
