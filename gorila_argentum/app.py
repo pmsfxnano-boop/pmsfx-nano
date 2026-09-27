@@ -70,6 +70,7 @@ _ARG_LIVE_INTERVAL_SECONDS = max(15, int(os.getenv("GORILA_LIVE_INTERVAL_SECONDS
 _ARG_SIGNAL_INTERVAL_SECONDS = max(5, int(os.getenv("GORILA_SIGNAL_INTERVAL_SECONDS", "10")))
 _ARG_SIGNAL_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _DB_INIT_TASK: asyncio.Task | None = None
+_ARG_E2E_TASK: asyncio.Task | None = None
 _DB_STATE: dict[str, Any] = {"status":"STARTING","ready":False,"error":None,"updated_at":None}
 _ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
 _ARG_SIGNAL_SNAPSHOTS: dict[str, dict[str, Any]] = {}
@@ -640,7 +641,7 @@ async def _production_self_test() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK
     if _DB_INIT_TASK is None or _DB_INIT_TASK.done():
         _DB_INIT_TASK = asyncio.create_task(_init_store_background(), name="gorila-db-init")
     print("GORILA_ARG_FEED_CONFIG", {"twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": os.getenv("GORILA_ALLOW_YAHOO_LIVE","0").strip().lower() in {"1","true","yes"}, "symbols": list(settings.core_symbols)}, flush=True)
@@ -664,13 +665,13 @@ async def gorila_runtime_startup() -> None:
             _argentina_signal_snapshot_loop(),
             name="gorila-argentina-signal-snapshot-loop",
         )
-    if os.getenv("GORILA_SELF_TEST", "").strip().lower() in {"1", "true", "yes"}:
-        asyncio.create_task(_argentina_e2e_self_test(), name="gorila-argentina-e2e-self-test")
+    if _ARG_E2E_TASK is None or _ARG_E2E_TASK.done():
+        _ARG_E2E_TASK = asyncio.create_task(_argentina_e2e_self_test(), name="gorila-argentina-e2e-self-test")
 
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK
     for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
         if task is not None:
             task.cancel()
@@ -698,10 +699,17 @@ async def gorila_runtime_shutdown() -> None:
             await _DB_INIT_TASK
         except asyncio.CancelledError:
             pass
+    if _ARG_E2E_TASK is not None:
+        _ARG_E2E_TASK.cancel()
+        try:
+            await _ARG_E2E_TASK
+        except asyncio.CancelledError:
+            pass
     _MACRO_TASK = None
     _AUTONOMOUS_TASK = None
     _ARG_LIVE_TASK = None
     _ARG_SIGNAL_TASK = None
+    _ARG_E2E_TASK = None
 
 
 @app.head("/", include_in_schema=False)
