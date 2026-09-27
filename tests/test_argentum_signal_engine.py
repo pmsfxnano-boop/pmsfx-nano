@@ -91,3 +91,66 @@ def test_matrix_reports_counts():
         "blocked": 1,
         "no_data": 1,
     }
+
+
+def test_signal_score_uses_single_0_to_100_conversion():
+    result = build_signal(
+        symbol="GGAL",
+        state=base_state(),
+        price_series=[],
+        drift={"status": "OK", "psi": 0.5},
+        shadow_summary={"accuracy": 0.64, "settled": 105},
+    )
+    # 0.30*.36 + 0.18*.36 + 0.18*.84 + 0.16*1 + 0.10*1 + 0.08*.933333...
+    # = 0.658666..., hence 65.9 on the public 0-100 scale.
+    assert result["signal_score"] == 65.9
+    assert result["signal_score"] < 100
+    assert result["score_audit"]["normalized_pre_penalty"] == 0.658667
+    assert sum(result["score_audit"]["weights"].values()) == 1.0
+
+
+def test_signal_score_is_bounded_at_100_with_perfect_factors():
+    state = base_state()
+    state["forecast"]["raw_probability_up"] = 1.0
+    state["forecast"]["confidence_raw"] = 1.0
+    state["forecast"]["horizon_consensus"] = {"confluence_index": 1.0}
+    state["evaluation"]["accuracy"] = 1.0
+    state["engine_freshness"] = {"age_seconds": 0.0}
+    result = build_signal(
+        symbol="GGAL",
+        state=state,
+        price_series=[],
+        drift={"status": "OK", "psi": 0.0},
+        shadow_summary={"accuracy": 0.65, "settled": 100},
+    )
+    assert result["signal_score"] == 100.0
+    assert 0.0 <= result["score_audit"]["normalized_pre_penalty"] <= 1.0
+
+
+def test_low_evidence_state_cannot_become_100_from_scale_error():
+    state = {
+        "forecast": {
+            "raw_probability_up": 0.513,
+            "confidence_raw": 0.025,
+            "direction": "NEUTRAL",
+            "validated": False,
+        },
+        "evaluation": {
+            "validated": False,
+            "accuracy": 0.487,
+            "brier_skill": -0.00088,
+            "oos_count": 1856,
+        },
+        "engine_freshness": {"age_seconds": 900.0},
+        "last": 41.775,
+    }
+    result = build_signal(
+        symbol="GGAL",
+        state=state,
+        price_series=[],
+        drift={"status": "INSUFFICIENT_DATA"},
+        shadow_summary={"accuracy": 0.644, "settled": 105},
+    )
+    assert 0.0 <= result["signal_score"] < 15.0
+    assert result["signal_score"] != 100.0
+    assert result["actionable"] is False
