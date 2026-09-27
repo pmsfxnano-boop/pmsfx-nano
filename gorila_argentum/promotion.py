@@ -202,9 +202,10 @@ def evaluate_live_promotion(
 def evaluate_predictive_promotion(
     store,
     *,
-    horizons=(5,10),
+    primary_horizon: int = 5,
+    secondary_horizons=(10,),
 ) -> dict[str, Any]:
-    """Gate the predictive research layer separately from trade execution."""
+    """Gate the primary research predictor independently from trade execution."""
     from .evidence import latest_manifest
 
     manifest = latest_manifest(store)
@@ -212,34 +213,60 @@ def evaluate_predictive_promotion(
         return {
             "status": "BLOCKED",
             "validated": False,
+            "primary_horizon": int(primary_horizon),
             "reason": "CANONICAL_MANIFEST_MISSING",
             "source": "research_manifests",
+            "execution_authority": False,
+            "execution_status": "BLOCKED",
         }
+
     aux = ((manifest.get("payload") or {}).get("auxiliary") or {})
     rows = {
         int(x.get("horizon_days")): x
         for x in (aux.get("lockbox", {}).get("evidence") or [])
         if x.get("horizon_days") is not None
     }
-    missing = [int(h) for h in horizons if int(h) not in rows]
-    failed = []
-    for h in horizons:
-        row = rows.get(int(h))
-        if not row:
-            continue
-        if row.get("prediction_status") != "VALIDATED":
-            failed.append({
-                "horizon_days": int(h),
-                "status": row.get("prediction_status"),
-                "reasons": row.get("prediction_reasons") or [],
-            })
-    validated = not missing and not failed
+
+    primary = rows.get(int(primary_horizon))
+    secondary = {
+        int(h): rows.get(int(h))
+        for h in secondary_horizons
+        if int(h) != int(primary_horizon)
+    }
+
+    if primary is None:
+        return {
+            "status": "BLOCKED",
+            "validated": False,
+            "primary_horizon": int(primary_horizon),
+            "missing_horizons": [int(primary_horizon)],
+            "secondary_horizons": {h: "MISSING" for h in secondary},
+            "source": "frozen_cross_sectional_lockbox",
+            "execution_authority": False,
+            "execution_status": "BLOCKED",
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "snapshot_sha256": manifest.get("snapshot_sha256"),
+        }
+
+    validated = primary.get("prediction_status") == "VALIDATED"
+    secondary_status = {
+        h: (row.get("prediction_status") if row else "MISSING")
+        for h, row in secondary.items()
+    }
+
     return {
         "status": "PREDICTOR_VALIDATED" if validated else "BLOCKED",
         "validated": validated,
-        "horizons": [int(h) for h in horizons],
-        "missing_horizons": missing,
-        "failed_horizons": failed,
+        "primary_horizon": int(primary_horizon),
+        "primary": primary,
+        "secondary_horizons": secondary_status,
+        "coverage": {
+            "primary_validated": validated,
+            "validated_horizons": [int(primary_horizon)] if validated else [],
+            "blocked_or_missing_secondary": [
+                h for h, status in secondary_status.items() if status != "VALIDATED"
+            ],
+        },
         "source": "frozen_cross_sectional_lockbox",
         "execution_authority": False,
         "execution_status": "BLOCKED",
