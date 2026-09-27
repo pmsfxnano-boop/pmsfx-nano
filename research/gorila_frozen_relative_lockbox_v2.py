@@ -113,9 +113,8 @@ def choose_variant_on_development(series, horizon, common_dates, dev_dates, symb
         scores = {v: {} for v in SCORE_VARIANTS}
         returns = {}
         for symbol in SYMBOLS:
-            model, names, train_rate, prior, _ = symbol_models[symbol]
-            rows = symbol_models[symbol][5]
-            row = rows.get(date)
+            model, names, train_rate, prior, _selection, rows_by_date = symbol_models[symbol]
+            row = rows_by_date.get(date)
             if row is None:
                 continue
             p = _shift_probability(predict(model, row, names), train_rate, prior)
