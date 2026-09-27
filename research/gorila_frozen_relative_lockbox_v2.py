@@ -284,7 +284,7 @@ def evaluate_symbol_horizon(series, horizon):
         placebo_p = sum(v >= rank_mean for v in placebo_means) / len(placebo_means)
 
     strategy = {
-        str(cost): {
+        str(c): {
             "net_return": (math.prod(1.0 + r for r in returns_by_cost[c]) - 1.0) if returns_by_cost[c] else 0.0,
             "trades": len(returns_by_cost[c]),
             "mean_trade_return_ci95": block_bootstrap_ci(returns_by_cost[c], SEED + horizon + c),
@@ -297,7 +297,7 @@ def evaluate_symbol_horizon(series, horizon):
         for c in COSTS_BPS_PER_LEG
     }
     momentum_net = {
-        str(cost): (math.prod(1.0 + r for r in momentum_by_cost[c]) - 1.0) if momentum_by_cost[c] else 0.0
+        str(c): (math.prod(1.0 + r for r in momentum_by_cost[c]) - 1.0) if momentum_by_cost[c] else 0.0
         for c in COSTS_BPS_PER_LEG
     }
 
