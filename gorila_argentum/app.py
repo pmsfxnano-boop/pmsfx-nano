@@ -291,7 +291,7 @@ async def _init_store_background() -> None:
         })
         print("GORILA_DB_INIT_ERROR", _DB_STATE.copy(), flush=True)
 
-async def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
+def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
     store = Store(); store.init()
     state = {
         "symbol": symbol,
