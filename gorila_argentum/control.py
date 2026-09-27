@@ -105,6 +105,7 @@ def build_control_state(store: Store | None = None) -> dict:
     live_evidence = evaluate_live_promotion(store)
     historical_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     promotion = _promotion_status(promotion_decision or live_evidence)
+    predictor_status = str(predictive_evidence.get("status", "BLOCKED"))
     latest_learning = store.latest_learning(limit=1)
 
     storage_backend = "postgres" if store.pg else "sqlite-fallback"
@@ -165,12 +166,14 @@ def build_control_state(store: Store | None = None) -> dict:
         "runtime": {
             "mode": "RESEARCH",
             "storage": storage_backend,
-            "predictor_promotion": promotion,
+            "predictor_promotion": predictor_status,
+            "execution_promotion": promotion,
             "storage_durable": durability_ok,
             "circuit_breaker": circuit_status,
             "circuit_breaker_reasons": halt_reasons,
             "promotion_operational_gate": "PASS" if durability_ok and circuit_status == "NORMAL" else "BLOCKED",
         },
+        "predictor_gate": predictive_evidence,
         "promotion_gate": {
             "status": promotion,
             "automatic_promotion": False,
