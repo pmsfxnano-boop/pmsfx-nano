@@ -70,7 +70,7 @@ def _request_json(path: str, *, params: dict[str, Any] | None = None) -> tuple[d
 def _catalog_page(offset: int) -> tuple[list[dict[str, Any]], int, float]:
     payload, latency_ms = _request_json(
         CATALOG_URL,
-        params={"offset": offset, "limit": 1000, "Accept-Language": "es-AR"},
+        params={"offset": offset, "limit": 1000},
     )
     results = payload.get("results") if isinstance(payload, dict) else None
     metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
@@ -173,8 +173,7 @@ def _fetch_series(variable: dict[str, Any], *, days: int = RANGE_DAYS) -> tuple[
         "hasta": today.isoformat(),
         "limit": 3000,
         "offset": 0,
-        "Accept-Language": "es-AR",
-    }
+        }
     payload, latency_ms = _request_json(
         f"{CATALOG_URL}/{int(variable['idVariable'])}",
         params=params,
