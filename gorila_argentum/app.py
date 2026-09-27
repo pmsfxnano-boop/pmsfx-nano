@@ -334,7 +334,7 @@ async def _gorila_quote(symbol: str) -> dict[str, Any]:
 def _run_macro_ingest() -> dict[str, Any]:
     store = Store()
     store.init()
-    funcs = [argentina_datos_fx, argentina_datos_risk, bcra_fx]
+    funcs = [argentina_datos_fx, argentina_datos_risk, bcra_fx, bcra_macro_cycle]
     results = []
     with ThreadPoolExecutor(max_workers=len(funcs)) as executor:
         futures = [executor.submit(fn) for fn in funcs]
