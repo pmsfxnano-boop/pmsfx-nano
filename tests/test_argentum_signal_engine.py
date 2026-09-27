@@ -154,3 +154,31 @@ def test_low_evidence_state_cannot_become_100_from_scale_error():
     assert 0.0 <= result["signal_score"] < 15.0
     assert result["signal_score"] != 100.0
     assert result["actionable"] is False
+
+
+def test_no_forecast_is_not_rendered_as_numeric_zero_score():
+    state = {
+        "forecast": None,
+        "evaluation": {},
+        "engine_freshness": {"age_seconds": None},
+    }
+    result = build_signal(
+        symbol="CEPU",
+        state=state,
+        price_series=[],
+        drift=None,
+        shadow_summary={"accuracy": None, "settled": 0},
+    )
+    assert result["status"] == "NO_DATA"
+    assert result["signal_score"] is None
+    assert result["probability"]["up"] is None
+
+
+def test_matrix_preserves_no_data_semantics():
+    rows = build_matrix([
+        {"symbol": "GGAL", "status": "NO_DATA", "signal": "NEUTRAL", "signal_score": None},
+        {"symbol": "BMA", "status": "WATCH", "signal": "UP", "signal_score": 51.0},
+    ])
+    assert rows["counts"]["no_data"] == 1
+    assert rows["items"][0]["symbol"] == "BMA"
+    assert rows["items"][1]["symbol"] == "GGAL"
