@@ -20,6 +20,35 @@ from typing import Any
 CORE_SYMBOLS = ("GGAL", "BMA", "YPFD", "PAMP", "TGSU2", "CEPU")
 DEFAULT_SIGNAL_THRESHOLD = 62.0
 
+# All factors are dimensionless and bounded to [0, 1]. Their weights form a
+# convex combination, so the pre-penalty score is mathematically constrained
+# to [0, 1] before the single conversion to the public 0-100 scale.
+SCORE_WEIGHTS = {
+    "edge": 0.30,
+    "confidence": 0.18,
+    "consensus": 0.18,
+    "validation": 0.16,
+    "freshness": 0.10,
+    "shadow_support": 0.08,
+}
+
+
+def _bounded_weighted_strength(components: dict[str, float]) -> float:
+    """Return the convex-combination score in [0, 1]."""
+    weighted = sum(
+        SCORE_WEIGHTS[name] * _clamp(float(components.get(name, 0.0)))
+        for name in SCORE_WEIGHTS
+    )
+    return _clamp(weighted)
+
+
+def _score_100(components: dict[str, float], drift_penalty: float) -> tuple[float, float]:
+    """Convert one normalized score to the public 0-100 scale exactly once."""
+    pre_penalty = _bounded_weighted_strength(components)
+    penalty_multiplier = 1.0 - _clamp(float(drift_penalty), 0.0, 1.0)
+    final_fraction = _clamp(pre_penalty * penalty_multiplier)
+    return round(final_fraction * 100.0, 1), pre_penalty
+
 
 def _finite(value: Any) -> float | None:
     try:
@@ -197,16 +226,15 @@ def build_signal(
     elif drift_psi is not None and drift_psi > 10:
         drift_penalty = 0.20
 
-    signal_score = 100.0 * (
-        0.30 * edge
-        + 0.18 * (confidence if confidence is not None else edge)
-        + 0.18 * consensus
-        + 0.16 * validation
-        + 0.10 * freshness
-        + 0.08 * shadow_support
-    )
-    signal_score *= (1.0 - drift_penalty)
-    signal_score = round(_clamp(signal_score, 0.0, 1.0) * 100.0, 1)
+    score_components = {
+        "edge": _clamp(edge),
+        "confidence": _clamp(confidence if confidence is not None else edge),
+        "consensus": _clamp(consensus),
+        "validation": _clamp(validation),
+        "freshness": _clamp(freshness),
+        "shadow_support": _clamp(shadow_support),
+    }
+    signal_score, pre_penalty_score = _score_100(score_components, drift_penalty)
 
     reasons: list[str] = []
     risk_flags: list[str] = []
@@ -261,6 +289,17 @@ def build_signal(
         "actionable": actionable,
         "signal_score": signal_score,
         "threshold": threshold,
+        "score_audit": {
+            "scale": "0-100",
+            "normalized_pre_penalty": round(pre_penalty_score, 6),
+            "drift_penalty": round(drift_penalty, 6),
+            "weights": SCORE_WEIGHTS.copy(),
+            "components": {name: round(value, 6) for name, value in score_components.items()},
+            "weighted_contributions": {
+                name: round(SCORE_WEIGHTS[name] * value, 6)
+                for name, value in score_components.items()
+            },
+        },
         "probability": {
             "up": round(p_up, 4) if p_up is not None else None,
             "down": round(p_down, 4) if p_down is not None else None,
