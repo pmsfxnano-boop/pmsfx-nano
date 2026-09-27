@@ -36,6 +36,23 @@ from .config import settings
 from .control import build_control_state
 from .coupling import current_coupling_state
 from .dashboard_terminal import HTML as DASHBOARD_HTML
+
+# Surgical root override for the Gorila service:
+# main.py owns the shared FastAPI app and registers its legacy `/` route first.
+# Point only the Gorila process at the current terminal surface without touching
+# the shared PMSF-X dashboard file or any quantitative engine routes.
+from fastapi.responses import HTMLResponse
+import main as _main_app
+_GORILA_ROOT_HTML = HTMLResponse(
+    content=DASHBOARD_HTML.body,
+    headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-Gorila-Dashboard": "terminal-v2",
+    },
+)
+_main_app.GORILA_DASHBOARD_HTML = _GORILA_ROOT_HTML
 from .drift import rolling_drift
 from .features import build_features
 from .promotion import evaluate_live_promotion
