@@ -38,7 +38,7 @@ from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
-from quant.db import connection as quant_connection, persistence_summary
+from quant.db import persistence_summary
 
 # The public service uses a single process. The autonomous runtime loop is
 # intentionally part of this process so research continues without a cron.
@@ -868,8 +868,9 @@ def gorila_terminal(ticker: str):
     symbol = normalize_ticker(ticker)
     if symbol not in SIGNAL_SYMBOLS:
         raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
-    store = Store(); store.init()
-    signal = store.latest_signal_snapshot(symbol)
+    store = Store()
+    store.init()
+    signal = _ARG_SIGNAL_SNAPSHOTS.get(symbol)
     live = _ARG_LIVE_CACHE.get(symbol)
     macro = build_market_state()
     chart_rows = store.recent_series(symbol, "close_1m", limit=180) or store.recent_series(symbol, "close_5m", limit=180) or store.recent_series(symbol, "close", limit=180)
