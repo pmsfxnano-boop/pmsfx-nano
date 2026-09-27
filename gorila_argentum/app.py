@@ -72,6 +72,7 @@ _ARG_SIGNAL_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last
 _DB_INIT_TASK: asyncio.Task | None = None
 _DB_STATE: dict[str, Any] = {"status":"STARTING","ready":False,"error":None,"updated_at":None}
 _ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
+_ARG_SIGNAL_SNAPSHOTS: dict[str, dict[str, Any]] = {}
 _ARG_LIVE_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _SIGNAL_MATRIX_CACHE: tuple[float, dict[str, Any]] | None = None
 _SIGNAL_MATRIX_LOCK = asyncio.Lock()
@@ -330,9 +331,9 @@ async def _argentina_signal_snapshot_loop() -> None:
             for symbol, result in zip(SIGNAL_SYMBOLS, results):
                 if isinstance(result, Exception):
                     errors.append({"symbol": symbol, "error": f"{type(result).__name__}: {result}"})
+                    _ARG_SIGNAL_SNAPSHOTS.pop(symbol, None)
                     continue
-                store = Store(); store.init()
-                await asyncio.to_thread(store.upsert_signal_snapshot, result)
+                _ARG_SIGNAL_SNAPSHOTS[symbol] = result
                 updated += 1
             _ARG_SIGNAL_STATE.update({
                 "status": "HEALTHY" if updated == len(SIGNAL_SYMBOLS) and not errors else "DEGRADED",
@@ -748,8 +749,17 @@ def gorila_forecast(ticker: str):
     symbol = normalize_ticker(ticker)
     if symbol not in SIGNAL_SYMBOLS:
         raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
-    store = Store(); store.init()
-    signal = store.latest_signal_snapshot(symbol)
+    if not _DB_STATE.get("ready"):
+        return {
+            "symbol": symbol, "signal": "NEUTRAL", "status": "NO_DATA",
+            "actionable": False, "signal_score": None,
+            "probability": {"up": None, "down": None, "confidence": None},
+            "market": {"last": None, "data_grade": "UNKNOWN", "source": None},
+            "error_code": "DATABASE_INITIALIZING",
+            "research_only": True, "no_execution_authority": True,
+            "session": argentina_session_state(),
+        }
+    signal = _ARG_SIGNAL_SNAPSHOTS.get(symbol)
     if signal is None:
         return {"symbol": symbol, "forecast_status": "NO_DATA", "forecast": None, "source": "ARGENTINA_SNAPSHOT"}
     p = signal.get("probability") or {}
@@ -811,8 +821,10 @@ def gorila_signal(ticker: str):
     symbol = normalize_ticker(ticker)
     if symbol not in SIGNAL_SYMBOLS:
         raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
-    store = Store(); store.init()
-    signal = store.latest_signal_snapshot(symbol)
+    if not _DB_STATE.get("ready"):
+        signal = _ARG_SIGNAL_SNAPSHOTS.get(symbol)
+    else:
+        signal = _ARG_SIGNAL_SNAPSHOTS.get(symbol)
     if signal is None:
         return {
             "symbol": symbol, "signal": "NEUTRAL", "status": "NO_DATA",
@@ -829,14 +841,21 @@ def gorila_signal(ticker: str):
 @app.get("/api/gorila/signal-matrix")
 def gorila_signal_matrix():
     """Read the current Argentina snapshot matrix; no forecast computation in request time."""
-    store = Store(); store.init()
-    items = store.all_signal_snapshots(SIGNAL_SYMBOLS)
+    items = [
+        _ARG_SIGNAL_SNAPSHOTS.get(symbol) or {
+            "symbol": symbol, "signal": "NEUTRAL", "status": "NO_DATA",
+            "signal_score": None, "probability": {"up": None, "down": None, "confidence": None},
+            "market": {"last": None, "data_grade": "UNKNOWN", "source": None},
+            "research_only": True, "no_execution_authority": True,
+        }
+        for symbol in SIGNAL_SYMBOLS
+    ]
     result = build_matrix(items)
     result["session"] = market_session_state()
     result["argentina_session"] = argentina_session_state()
     result["snapshot_runtime"] = dict(_ARG_SIGNAL_STATE)
     result["engine"] = {
-        "request_path": "postgres_signal_snapshot",
+        "request_path": "memory_signal_snapshot",
         "snapshot_interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS,
         "matrix_cache_seconds": _SIGNAL_MATRIX_CACHE_SECONDS,
         "universe": list(SIGNAL_SYMBOLS),
