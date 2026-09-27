@@ -494,9 +494,12 @@ async def _argentina_live_loop() -> None:
 
 async def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
     store = Store(); store.init()
-    state = _latest_persisted_engine_state(symbol) or {
-        "symbol": symbol, "forecast": None, "forecast_status": "NO_LOCAL_FORECAST",
-        "engine_source": "argentina_local_snapshot", "evaluation": {},
+    state = {
+        "symbol": symbol,
+        "forecast": None,
+        "forecast_status": "NO_LOCAL_ARGENTINA_FORECAST",
+        "engine_source": "argentina_local_snapshot",
+        "evaluation": {},
         "engine_freshness": {"age_seconds": None, "stale": True},
     }
     live = _ARG_LIVE_CACHE.get(symbol)
