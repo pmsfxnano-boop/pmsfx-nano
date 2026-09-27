@@ -19,6 +19,9 @@ class Settings:
         "BCRA_FX_URL",
         "https://api.bcra.gob.ar/estadisticascambiarias/v1.0/Cotizaciones/USD",
     ).strip()
+    bcra_monetary_url: str = os.getenv("BCRA_MONETARY_URL","https://api.bcra.gob.ar/estadisticas/v4.0/monetarias").strip()
+    bcra_catalog_ttl_seconds: int = int(os.getenv("BCRA_CATALOG_TTL_SECONDS","21600"))
+    bcra_monetary_range_days: int = int(os.getenv("BCRA_MONETARY_RANGE_DAYS","180"))
     argentina_datos_fx_url: str = os.getenv("ARGENTINA_DATOS_FX_URL","https://api.argentinadatos.com/v1/cotizaciones/dolares").strip()
     argentina_datos_risk_url: str = os.getenv("ARGENTINA_DATOS_RISK_URL","https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais").strip()
     byma_url: str = os.getenv("BYMA_MARKET_DATA_URL","").strip()
