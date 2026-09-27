@@ -120,8 +120,10 @@ _UPSTREAM_ENGINE_URL = os.getenv(
     "https://pmsfx-nano.onrender.com",
 ).rstrip("/")
 _UPSTREAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_UPSTREAM_LOCK = asyncio.Lock()
+_UPSTREAM_LOCKS: dict[str, asyncio.Lock] = {}
 _UPSTREAM_CACHE_SECONDS = 10.0
+_UPSTREAM_TIMEOUT_SECONDS = max(5.0, float(os.getenv("GORILA_UPSTREAM_TIMEOUT_SECONDS", "8")))
+_SIGNAL_MATRIX_SYMBOL_TIMEOUT_SECONDS = max(5.0, float(os.getenv("GORILA_MATRIX_SYMBOL_TIMEOUT_SECONDS", "9")))
 
 ARGENTINA_TIMEZONE = ZoneInfo("America/Argentina/Buenos_Aires")
 ARGENTINA_SESSION_OPEN = dt_time(11, 0)
@@ -152,13 +154,15 @@ async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]
     if cached and not force and now - cached[0] < _UPSTREAM_CACHE_SECONDS:
         return dict(cached[1])
 
-    async with _UPSTREAM_LOCK:
+    lock = _UPSTREAM_LOCKS.setdefault(symbol, asyncio.Lock())
+    async with lock:
         now = time.monotonic()
         cached = _UPSTREAM_CACHE.get(symbol)
         if cached and not force and now - cached[0] < _UPSTREAM_CACHE_SECONDS:
             return dict(cached[1])
 
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        timeout = httpx.Timeout(_UPSTREAM_TIMEOUT_SECONDS, connect=min(3.0, _UPSTREAM_TIMEOUT_SECONDS))
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(
                 f"{_UPSTREAM_ENGINE_URL}/api/state/{symbol}",
                 headers={"User-Agent": "Gorila-Argentum/1.0"},
@@ -1029,7 +1033,10 @@ async def gorila_signal_matrix():
     """Return the complete Argentine research signal matrix."""
     async def build_one(symbol: str):
         try:
-            state = await _gorila_forecast(symbol)
+            state = await asyncio.wait_for(
+                _gorila_forecast(symbol),
+                timeout=_SIGNAL_MATRIX_SYMBOL_TIMEOUT_SECONDS,
+            )
             live = _ARG_LIVE_CACHE.get(symbol)
             if live is not None:
                 live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
