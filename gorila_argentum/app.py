@@ -762,7 +762,17 @@ async def gorila_runtime_shutdown() -> None:
 
 @app.get("/", include_in_schema=False)
 def gorila_root():
-    return DASHBOARD_HTML
+    # The control surface is dynamic and must never be served from a browser/proxy cache.
+    # This prevents an older dashboard contract from masking the current production API.
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        content=DASHBOARD_HTML.body,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/gorila/health")
