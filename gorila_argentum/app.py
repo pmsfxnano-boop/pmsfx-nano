@@ -659,6 +659,11 @@ async def gorila_runtime_shutdown() -> None:
     _ARG_SIGNAL_TASK = None
 
 
+@app.head("/", include_in_schema=False)
+def gorila_root_head():
+    from fastapi.responses import Response
+    return Response(status_code=200, headers={"Cache-Control":"no-store"})
+
 @app.get("/", include_in_schema=False)
 def gorila_root():
     # The control surface is dynamic and must never be served from a browser/proxy cache.
