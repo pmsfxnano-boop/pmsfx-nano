@@ -27,28 +27,32 @@ WATCHLIST: tuple[dict[str, Any], ...] = (
     {
         "symbol": "BCRA_WHOLESALE_FX",
         "field": "value",
-        "labels": ("tipo de cambio mayorista", "3500"),
+        "labels": ("tipo de cambio mayorista",),
+        "aliases": (("tipo de cambio mayorista",), ("tipo de cambio de referencia",), ("mayorista", "3500")),
         "periodicidad": "D",
         "kind": "level",
     },
     {
         "symbol": "BCRA_BASE_MONETARIA",
         "field": "value",
-        "labels": ("base monetaria - total",),
+        "labels": ("base monetaria",),
+        "aliases": (("base monetaria - total",), ("base monetaria",)),
         "periodicidad": "D",
         "kind": "stock",
     },
     {
         "symbol": "BCRA_BADLAR_NA",
         "field": "value",
-        "labels": ("badlar en pesos de bancos privados",),
+        "labels": ("badlar",),
+        "aliases": (("badlar en pesos de bancos privados",), ("badlar", "bancos privados")),
         "periodicidad": "D",
         "kind": "rate",
     },
     {
         "symbol": "BCRA_TAMAR_NA",
         "field": "value",
-        "labels": ("tamar en pesos de bancos privados",),
+        "labels": ("tamar",),
+        "aliases": (("tamar en pesos de bancos privados",), ("tamar", "bancos privados")),
         "periodicidad": "D",
         "kind": "rate",
     },
@@ -119,10 +123,15 @@ def _score_candidate(candidate: dict[str, Any], spec: dict[str, Any]) -> float:
     unit = _normalize_text(candidate.get("unidadExpresion"))
 
     score = 0.0
-    labels = tuple(_normalize_text(x) for x in spec["labels"])
-    if labels and all(label in desc for label in labels):
+    aliases = spec.get("aliases") or (tuple(_normalize_text(x) for x in spec["labels"]),)
+    normalized_aliases = tuple(
+        tuple(_normalize_text(token) for token in alias)
+        for alias in aliases
+    )
+    if any(alias and all(token in desc for token in alias) for alias in normalized_aliases):
         score += 10.0
-    elif labels:
+    else:
+        labels = tuple(_normalize_text(x) for x in spec["labels"])
         score += sum(2.0 for label in labels if label in desc)
 
     wanted_period = str(spec.get("periodicidad") or "").upper()
