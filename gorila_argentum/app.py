@@ -877,77 +877,30 @@ def gorila_root():
 
 @app.get("/api/gorila/health")
 def gorila_health():
-    tiingo_configured = bool(os.getenv("TIINGO_API_KEY", "").strip())
-    upstream_available = bool(_UPSTREAM_ENGINE_URL)
-    engine_ready = tiingo_configured or upstream_available
+    db = persistence_summary()
+    live = dict(_ARG_LIVE_STATE)
+    snap = dict(_ARG_SIGNAL_STATE)
+    snapshot_ready = snap.get("updated_symbols", 0) >= len(SIGNAL_SYMBOLS)
     return {
         "service": "gorila-argentum",
         "mode": "RESEARCH",
         "trading_execution": False,
         "automatic_promotion": False,
-        "autonomous_cycle": {
-            "enabled": True,
-            "interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS,
-            "start_delay_seconds": _AUTONOMOUS_START_DELAY_SECONDS,
-        },
         "primary_market_data": {
-            "provider": "TIINGO",
-            "configured": tiingo_configured,
-            "upstream_engine": "PMSF-X" if upstream_available else None,
-            "source": (
-                "LOCAL_TIINGO"
-                if tiingo_configured
-                else "SHARED_POSTGRES_FORECAST"
-                if persistence_summary().get("forecast_count")
-                else "UPSTREAM_PMSF_X"
-                if upstream_available
-                else "NONE"
-            ),
-            "status": (
-                "READY"
-                if tiingo_configured
-                else "READY_LAST_FORECAST"
-                if persistence_summary().get("forecast_count")
-                else "READY_BRIDGE"
-                if upstream_available
-                else "MISSING_FEED"
-            ),
+            "provider": "ARGENTINA",
+            "configured": bool(settings.twelve_data_api_key),
+            "source": "ARGENTINA_LIVE_FEED" if live.get("status") == "HEALTHY" else "ARGENTINA_SIGNAL_SNAPSHOT",
+            "status": "READY_LIVE" if live.get("status") == "HEALTHY" else "READY_SNAPSHOT" if snapshot_ready else "DEGRADED",
         },
-        "database": persistence_summary(),
+        "database": db,
         "market_stream": stream_status(),
         "market_session": market_session_state(),
-        "autonomous_runtime": {
-            **_AUTONOMOUS_STATE,
-            "updated_at": (
-                __import__("datetime").datetime.fromtimestamp(
-                    _AUTONOMOUS_STATE["updated_at"],
-                    tz=__import__("datetime").timezone.utc,
-                ).isoformat()
-                if _AUTONOMOUS_STATE.get("updated_at")
-                else None
-            ),
-        },
-        "argentina_live": {
-            **_ARG_LIVE_STATE,
-            "updated_at": (
-                __import__("datetime").datetime.fromtimestamp(_ARG_LIVE_STATE["updated_at"], tz=__import__("datetime").timezone.utc).isoformat()
-                if _ARG_LIVE_STATE.get("updated_at") else None
-            ),
-        },
-        "macro_ingest": {
-            **_MACRO_STATE,
-            "updated_at": (
-                __import__("datetime").datetime.fromtimestamp(
-                    _MACRO_STATE["updated_at"],
-                    tz=__import__("datetime").timezone.utc,
-                ).isoformat()
-                if _MACRO_STATE.get("updated_at")
-                else None
-            ),
-        },
+        "autonomous_runtime": dict(_AUTONOMOUS_STATE),
+        "argentina_live": live,
+        "argentina_signals": snap,
+        "macro_ingest": dict(_MACRO_STATE),
         "sources": Store().health(),
     }
-
 
 @app.get("/api/gorila/market")
 def gorila_market():
@@ -993,34 +946,29 @@ def gorila_sources():
 
 
 @app.get("/api/gorila/forecast/{ticker}")
-async def gorila_forecast(ticker: str, force: bool = False):
+def gorila_forecast(ticker: str):
     symbol = normalize_ticker(ticker)
-    now = time.monotonic()
-    cached = _FORECAST_CACHE.get(symbol)
-    if cached and not force and now - cached[0] < 30.0:
-        result = dict(cached[1])
-        result["cache"] = {"hit": True, "age_seconds": round(now - cached[0], 3)}
-        return result
-
-    async with _FORECAST_LOCK:
-        now = time.monotonic()
-        cached = _FORECAST_CACHE.get(symbol)
-        if cached and not force and now - cached[0] < 30.0:
-            result = dict(cached[1])
-            result["cache"] = {"hit": True, "age_seconds": round(now - cached[0], 3)}
-            return result
-
-        if os.getenv("TIINGO_API_KEY", "").strip():
-            result = await advanced_state(symbol)
-        else:
-            result = _upstream_forecast_payload(
-                symbol,
-                await _upstream_state(symbol, force=force),
-            )
-        _FORECAST_CACHE[symbol] = (time.monotonic(), dict(result))
-        result["cache"] = {"hit": False, "age_seconds": 0.0}
-        return result
-
+    if symbol not in SIGNAL_SYMBOLS:
+        raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
+    store = Store(); store.init()
+    signal = store.latest_signal_snapshot(symbol)
+    if signal is None:
+        return {"symbol": symbol, "forecast_status": "NO_DATA", "forecast": None, "source": "ARGENTINA_SNAPSHOT"}
+    p = signal.get("probability") or {}
+    return {
+        "symbol": symbol,
+        "forecast_status": signal.get("status"),
+        "forecast": {
+            "direction": signal.get("signal"),
+            "raw_probability_up": p.get("up"),
+            "raw_probability_down": p.get("down"),
+            "confidence_raw": p.get("confidence"),
+            "validated": bool((signal.get("validation") or {}).get("validated")),
+            "model_id": (signal.get("snapshot") or {}).get("source", "argentina_snapshot"),
+        },
+        "source": "ARGENTINA_SNAPSHOT",
+        "snapshot": signal.get("snapshot"),
+    }
 
 @app.get("/api/gorila/cross-sectional")
 async def gorila_cross_sectional():
@@ -1099,52 +1047,25 @@ def gorila_signal_matrix():
 
 
 @app.get("/api/gorila/terminal/{ticker}")
-async def gorila_terminal(ticker: str):
+def gorila_terminal(ticker: str):
     symbol = normalize_ticker(ticker)
-    local_tiingo = bool(os.getenv("TIINGO_API_KEY", "").strip())
-    forecast_task = asyncio.create_task(_gorila_forecast(symbol))
-    quote_task = asyncio.create_task(advanced_quote(symbol)) if local_tiingo else None
-    macro_task = asyncio.to_thread(build_market_state)
-
-    quote_result = None
-    quote_error = None
-    try:
-        forecast = await forecast_task
-        if not local_tiingo:
-            quote_result = _upstream_quote_payload(symbol, forecast)
-    except Exception as exc:
-        forecast = {
-            "symbol": symbol,
-            "forecast_status": "ERROR",
-            "forecast": None,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-    if quote_task is not None:
-        try:
-            quote_result = await quote_task
-        except Exception as exc:
-            quote_error = f"{type(exc).__name__}: {exc}"
-
-    macro = await macro_task
-    bars = get_cached_bars(symbol) or []
-    chart = [
-        {
-            "time": row.get("date") or row.get("timestamp"),
-            "close": row.get("close"),
-        }
-        for row in bars[-180:]
-        if row.get("close") is not None
-    ]
-    if not chart and not local_tiingo:
-        chart = _latest_persisted_engine_chart(symbol, limit=180)
-
+    if symbol not in SIGNAL_SYMBOLS:
+        raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
+    store = Store(); store.init()
+    signal = store.latest_signal_snapshot(symbol)
+    live = _ARG_LIVE_CACHE.get(symbol)
+    macro = build_market_state()
+    chart = _latest_persisted_engine_chart(symbol, limit=180)
     return {
         "service": "gorila-argentum",
         "symbol": symbol,
-        "quote": quote_result,
-        "quote_error": quote_error,
-        "forecast": forecast,
+        "quote": {
+            "last": (live or {}).get("last") if live else (signal or {}).get("market", {}).get("last"),
+            "quoteTimestamp": (live or {}).get("quote_timestamp") if live else (signal or {}).get("market", {}).get("quote_timestamp"),
+            "source": (live or {}).get("source") if live else (signal or {}).get("market", {}).get("source"),
+        } if (live or signal) else None,
+        "quote_error": None,
+        "forecast": signal or {"symbol": symbol, "status":"NO_DATA", "forecast":None},
         "macro": macro,
         "chart": chart,
         "stream": stream_status(),
