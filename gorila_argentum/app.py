@@ -838,6 +838,13 @@ def gorila_control_snapshot():
     }
 
 
+@app.get("/api/gorila/bcra")
+def gorila_bcra_snapshot():
+    store = Store()
+    store.init()
+    return {**build_bcra_trader_snapshot(store), "runtime": {"status": _MACRO_STATE.get("status"), "updated_at": _MACRO_STATE.get("updated_at"), "latency_ms": _MACRO_STATE.get("latency_ms")}}
+
+
 @app.get("/api/gorila/sources")
 def gorila_sources():
     return {
