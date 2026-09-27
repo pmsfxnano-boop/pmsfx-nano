@@ -252,12 +252,20 @@ def bcra_macro_cycle() -> SourceResult:
                 + (f": {'; '.join(errors)}" if errors else "")
             )
 
-        return SourceResult(
+        result = SourceResult(
             source,
             rows,
             error=("; ".join(errors) if errors else None),
             latency_ms=(time.perf_counter() - started) * 1000.0,
         )
+        print("GORILA_BCRA_MACRO_CYCLE", {
+            "status": "HEALTHY" if rows else "DEGRADED",
+            "rows": len(rows),
+            "resolved_variables": {spec["symbol"]: resolved.get(spec["symbol"], {}).get("idVariable") for spec in WATCHLIST},
+            "errors": errors[:8],
+            "latency_ms": round(float(result.latency_ms or 0), 2),
+        }, flush=True)
+        return result
     except Exception as exc:
         return SourceResult(
             source,
