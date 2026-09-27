@@ -29,6 +29,7 @@ REQUIRED_EXECUTION_COST_BPS = 50
 PLACEBO_PERM = int(os.getenv("GORILA_FROZEN_RELATIVE_PLACEBO_PERM", "128"))
 SEED = int(os.getenv("GORILA_FROZEN_RELATIVE_SEED", "20260926"))
 SCORE_VARIANTS = ("probability_delta", "vol_scaled_delta", "blend_momentum")
+EXECUTION_SPREAD_THRESHOLDS = (0.0, 0.02, 0.04, 0.06, 0.08)
 
 
 def rank_ic(values, returns):
@@ -93,11 +94,14 @@ def score_variant(variant, delta, row):
     return delta + 0.25 * float(row["r5"]) / vol
 
 
-def pair_trade(scores, returns, symbols, cost_per_leg_bps):
+def pair_trade(scores, returns, symbols, cost_per_leg_bps, min_spread=0.0):
     ranked = sorted(symbols, key=scores.get)
     if len(ranked) < 2:
         return None
     short_symbol, long_symbol = ranked[0], ranked[-1]
+    spread = float(scores[long_symbol]) - float(scores[short_symbol])
+    if spread < float(min_spread):
+        return None
     gross = 0.5 * math.expm1(float(returns[long_symbol])) - 0.5 * math.expm1(float(returns[short_symbol]))
     net = gross - 2.0 * cost_per_leg_bps / 10000.0
     return net
@@ -139,12 +143,48 @@ def choose_variant_on_development(series, horizon, common_dates, dev_dates, symb
         for variant, vals in rank_values.items()
     }
     selected = max(SCORE_VARIANTS, key=lambda v: (means[v], v))
-    return selected, {
+
+    # Execution threshold is selected only on the development selection window.
+    threshold_scores = []
+    for variant in SCORE_VARIANTS:
+        for threshold in EXECUTION_SPREAD_THRESHOLDS:
+            trades = []
+            for idx, date in enumerate(selection_dates):
+                if idx % horizon != 0:
+                    continue
+                scores = {}
+                returns = {}
+                for symbol in SYMBOLS:
+                    model, names, train_rate, prior, _selection, rows_by_date = symbol_models[symbol]
+                    row = rows_by_date.get(date)
+                    if row is None:
+                        continue
+                    p = _shift_probability(predict(model, row, names), train_rate, prior)
+                    scores[symbol] = score_variant(variant, p - prior, row.x)
+                    returns[symbol] = row.forward_return
+                common = [s for s in SYMBOLS if s in scores and s in returns]
+                trade = pair_trade(scores, returns, common, REQUIRED_EXECUTION_COST_BPS, threshold)
+                if trade is not None:
+                    trades.append(trade)
+            if len(trades) >= 10:
+                compound = math.prod(1.0 + r for r in trades) - 1.0
+                threshold_scores.append((compound, len(trades), variant, threshold))
+    if threshold_scores:
+        threshold_scores.sort(reverse=True)
+        _, selected_trade_count, selected_trade_variant, selected_threshold = threshold_scores[0]
+    else:
+        selected_trade_count, selected_trade_variant, selected_threshold = 0, selected, 0.0
+
+    return selected_trade_variant, {
         "status": "OK",
         "selection_start": selection_dates[0],
         "selection_end": selection_dates[-1],
         "selection_n": len(selection_dates),
         "development_rank_ic_by_variant": means,
+        "execution_threshold": selected_threshold,
+        "execution_variant": selected_trade_variant,
+        "execution_selection_trade_count": selected_trade_count,
+        "execution_selection_candidates": len(threshold_scores),
     }
 
 
@@ -206,6 +246,7 @@ def evaluate_symbol_horizon(series, horizon):
     variant, variant_meta = choose_variant_on_development(
         series, horizon, common_dates, dev_dates, selection_models
     )
+    execution_threshold = float(variant_meta.get("execution_threshold") or 0.0)
 
     rank_all = []
     rank_rebalance = []
@@ -238,9 +279,9 @@ def evaluate_symbol_horizon(series, horizon):
             continue
         rank_rebalance.append(rank)
         for cost in COSTS_BPS_PER_LEG:
-            trade = pair_trade(scores, returns, common, cost)
+            trade = pair_trade(scores, returns, common, cost, execution_threshold)
             mom_scores = {s: rows_today[s].x["r5"] for s in common}
-            mom = pair_trade(mom_scores, returns, common, cost)
+            mom = pair_trade(mom_scores, returns, common, cost, 0.0)
             if trade is not None:
                 returns_by_cost[cost].append(trade)
             if mom is not None:
@@ -357,6 +398,7 @@ def evaluate_symbol_horizon(series, horizon):
         "lockbox_days": len(lock_dates),
         "variant": variant,
         "variant_selection": variant_meta,
+        "execution_threshold": execution_threshold,
         "mean_rank_ic": rank_mean,
         "rank_ic_hac_ci95": rank_hac,
         "rank_ic_block_bootstrap_ci95": rank_boot,
