@@ -883,7 +883,7 @@ def gorila_health():
             "status": "READY_LIVE" if live.get("status") == "HEALTHY" else "READY_SNAPSHOT" if snapshot_ready else "DEGRADED",
         },
         "database": db,
-        "market_stream": stream_status(),
+        "market_stream": {"status": "NOT_APPLICABLE", "source": "argentina_live_cache"},
         "market_session": market_session_state(),
         "autonomous_runtime": dict(_AUTONOMOUS_STATE),
         "argentina_live": live,
@@ -1058,7 +1058,7 @@ def gorila_terminal(ticker: str):
         "forecast": signal or {"symbol": symbol, "status":"NO_DATA", "forecast":None},
         "macro": macro,
         "chart": chart,
-        "stream": stream_status(),
+        "stream": dict(_ARG_LIVE_STATE),
         "session": market_session_state(),
     }
 
