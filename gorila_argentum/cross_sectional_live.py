@@ -90,19 +90,41 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
             "no_execution_authority": True,
         }
 
+    # Build the training panel only from anchors for which every symbol has
+    # both the anchor and the H-day-ahead observation. This is deliberately
+    # defensive: the live store can contain sparse vendor histories or date
+    # normalization collisions. A raw dict lookup must never turn that into
+    # an HTTP 500 or silently contaminate the panel.
     rows = []
-    last_train_index = len(common_dates) - HORIZON_DAYS - 1
-    for i in range(65, last_train_index + 1):
+    skipped_anchors = 0
+    candidate_anchors = range(65, len(common_dates) - HORIZON_DAYS)
+    for i in candidate_anchors:
+        anchor_date = common_dates[i]
+        future_date = common_dates[i + HORIZON_DAYS]
+        if any(
+            anchor_date not in series[s]
+            or future_date not in series[s]
+            or series[s][anchor_date] <= 0
+            or series[s][future_date] <= 0
+            for s in SYMBOLS
+        ):
+            skipped_anchors += 1
+            continue
         future = np.asarray(
             [
-                math.log(series[s][common_dates[i + HORIZON_DAYS]] / series[s][common_dates[i]])
+                math.log(series[s][future_date] / series[s][anchor_date])
                 for s in SYMBOLS
             ],
             dtype=np.float64,
         )
+        if not np.isfinite(future).all():
+            skipped_anchors += 1
+            continue
         median_future = float(np.median(future))
         for j, symbol in enumerate(SYMBOLS):
             features = _feature(series, symbol, common_dates, i)
+            if not all(np.isfinite(x) for x in features):
+                continue
             residual = float(future[j] - median_future)
             rows.append(
                 {
@@ -111,6 +133,21 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
                     "symbol": symbol,
                 }
             )
+
+    training_anchors = len({i for i in range(65, len(common_dates) - HORIZON_DAYS) if i < len(common_dates)})
+    if len(rows) < max(120, len(SYMBOLS) * 20):
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "reason": "VALID_TRAINING_PANEL_TOO_SHORT",
+            "observations": len(common_dates),
+            "training_rows": len(rows),
+            "training_anchors": training_anchors - skipped_anchors,
+            "skipped_anchors": skipped_anchors,
+            "latest_dates": latest_dates,
+            "symbols": list(SYMBOLS),
+            "research_only": True,
+            "no_execution_authority": True,
+        }
 
     model_rows = [
         type(
@@ -188,6 +225,9 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
         "selection_trials": 1,
         "common_dates": len(common_dates),
         "latest_date": common_dates[-1],
+        "training_rows": len(rows),
+        "training_anchors": max(0, training_anchors - skipped_anchors),
+        "skipped_anchors": skipped_anchors,
         "latest_dates": latest_dates,
         "coverage": {
             "required_symbols": list(SYMBOLS),
