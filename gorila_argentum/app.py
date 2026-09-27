@@ -95,7 +95,10 @@ _AUTONOMOUS_START_DELAY_SECONDS = max(
 )
 _AUTONOMOUS_TASK: asyncio.Task | None = None
 _ARG_LIVE_TASK: asyncio.Task | None = None
+_ARG_SIGNAL_TASK: asyncio.Task | None = None
 _ARG_LIVE_INTERVAL_SECONDS = max(15, int(os.getenv("GORILA_LIVE_INTERVAL_SECONDS", "30")))
+_ARG_SIGNAL_INTERVAL_SECONDS = max(5, int(os.getenv("GORILA_SIGNAL_INTERVAL_SECONDS", "10")))
+_ARG_SIGNAL_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
 _ARG_LIVE_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _SIGNAL_MATRIX_CACHE: tuple[float, dict[str, Any]] | None = None
@@ -498,6 +501,70 @@ async def _argentina_live_loop() -> None:
             })
         await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
 
+
+async def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
+    store = Store(); store.init()
+    state = _latest_persisted_engine_state(symbol) or {
+        "symbol": symbol, "forecast": None, "forecast_status": "NO_LOCAL_FORECAST",
+        "engine_source": "argentina_local_snapshot", "evaluation": {},
+        "engine_freshness": {"age_seconds": None, "stale": True},
+    }
+    live = _ARG_LIVE_CACHE.get(symbol)
+    if live is not None:
+        live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
+        state = {**state, "last": live.get("last", state.get("last")),
+                 "quote_timestamp": live.get("quote_timestamp", state.get("quote_timestamp")),
+                 "data_source": live.get("source") or state.get("data_source"),
+                 "market_freshness": {"age_seconds": live_age}}
+    series = store.recent_series(symbol, "close_1m", limit=240) or store.recent_series(symbol, "close_5m", limit=240) or store.recent_series(symbol, "close", limit=240)
+    drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
+    signal = build_signal(symbol=symbol, state=state, price_series=series,
+                          drift=drift_rows[0] if drift_rows else None,
+                          shadow_summary=store.shadow_summary())
+    signal["session"] = market_session_state()
+    signal["snapshot_source"] = "argentina_local_snapshot"
+    signal["snapshot_runtime"] = {"worker_interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS,
+                                  "generated_at": datetime.now(timezone.utc).isoformat()}
+    return signal
+
+async def _argentina_signal_snapshot_loop() -> None:
+    await asyncio.sleep(2)
+    print("GORILA_ARG_SIGNAL_LOOP_ENTERED", {"interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS}, flush=True)
+    while True:
+        started = time.perf_counter(); updated = 0; errors = []
+        try:
+            results = await asyncio.gather(
+                *[asyncio.to_thread(_build_argentina_signal_snapshot, symbol) for symbol in SIGNAL_SYMBOLS],
+                return_exceptions=True,
+            )
+            for symbol, result in zip(SIGNAL_SYMBOLS, results):
+                if isinstance(result, Exception):
+                    errors.append({"symbol": symbol, "error": f"{type(result).__name__}: {result}"})
+                    continue
+                store = Store(); store.init()
+                await asyncio.to_thread(store.upsert_signal_snapshot, result)
+                updated += 1
+            _ARG_SIGNAL_STATE.update({
+                "status": "HEALTHY" if updated == len(SIGNAL_SYMBOLS) and not errors else "DEGRADED",
+                "updated_at": time.time(),
+                "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
+                "updated_symbols": updated,
+                "errors": errors[-8:],
+                "interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS,
+                "universe": list(SIGNAL_SYMBOLS),
+            })
+            print("GORILA_ARG_SIGNAL_CYCLE", _ARG_SIGNAL_STATE.copy(), flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _ARG_SIGNAL_STATE.update({
+                "status": "ERROR", "updated_at": time.time(),
+                "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
+                "updated_symbols": updated,
+                "errors": [{"symbol":"*","error":f"{type(exc).__name__}: {exc}"}],
+                "interval_seconds": _ARG_SIGNAL_INTERVAL_SECONDS, "universe": list(SIGNAL_SYMBOLS),
+            })
+        await asyncio.sleep(_ARG_SIGNAL_INTERVAL_SECONDS)
 
 async def _autonomous_loop() -> None:
     await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
