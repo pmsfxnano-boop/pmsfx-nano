@@ -124,6 +124,7 @@ _UPSTREAM_ENGINE_URL = os.getenv(
 ).rstrip("/")
 _UPSTREAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _UPSTREAM_LOCKS: dict[str, asyncio.Lock] = {}
+_UPSTREAM_COOLDOWN_UNTIL: dict[str, float] = {}
 _UPSTREAM_CACHE_SECONDS = 10.0
 _UPSTREAM_TIMEOUT_SECONDS = max(5.0, float(os.getenv("GORILA_UPSTREAM_TIMEOUT_SECONDS", "8")))
 _SIGNAL_MATRIX_SYMBOL_TIMEOUT_SECONDS = max(5.0, float(os.getenv("GORILA_MATRIX_SYMBOL_TIMEOUT_SECONDS", "9")))
@@ -152,6 +153,9 @@ def argentina_session_state(now: datetime | None = None) -> dict[str, Any]:
 
 
 async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]:
+    cooldown_until = _UPSTREAM_COOLDOWN_UNTIL.get(symbol, 0.0)
+    if cooldown_until > time.monotonic():
+        raise HTTPException(status_code=429, detail="upstream_engine_rate_limited_cooldown")
     now = time.monotonic()
     cached = _UPSTREAM_CACHE.get(symbol)
     if cached and not force and now - cached[0] < _UPSTREAM_CACHE_SECONDS:
@@ -170,6 +174,14 @@ async def _upstream_state(symbol: str, *, force: bool = False) -> dict[str, Any]
                 f"{_UPSTREAM_ENGINE_URL}/api/state/{symbol}",
                 headers={"User-Agent": "Gorila-Argentum/1.0"},
             )
+        if response.status_code == 429:
+            retry_after = 10.0
+            try:
+                retry_after = max(5.0, min(120.0, float(response.headers.get("Retry-After", "10"))))
+            except Exception:
+                pass
+            _UPSTREAM_COOLDOWN_UNTIL[symbol] = time.monotonic() + retry_after
+            raise HTTPException(status_code=429, detail=f"upstream_engine_http_429_retry_after_{retry_after:.0f}s")
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=response.status_code,
