@@ -46,7 +46,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
@@ -379,21 +379,60 @@ def _run_macro_ingest() -> dict[str, Any]:
 
 
 async def _argentina_live_loop() -> None:
-    """Maintain a lightweight intraday quote cache for the Argentine core."""
+    """Maintain a bounded intraday cache without blocking the API process.
+
+    Priority: configured Twelve Data intraday feed. Yahoo is opt-in only because
+    repeated anonymous polling was observed to return HTTP 429 from Render.
+    When BYMA is closed the loop does not hit any vendor and reports CLOSED.
+    """
     await asyncio.sleep(5)
     while True:
         started = time.perf_counter()
         errors: list[dict[str, str]] = []
         updated = 0
         rows_to_store: list[dict[str, Any]] = []
+        session = argentina_session_state()
+        provider = "twelve_data" if settings.twelve_data_api_key else (
+            "yahoo_fallback" if os.getenv("GORILA_ALLOW_YAHOO_LIVE", "0").strip().lower() in {"1","true","yes"} else "none"
+        )
+        if not session["open"]:
+            _ARG_LIVE_STATE.update({
+                "status": "MARKET_CLOSED",
+                "updated_at": time.time(),
+                "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
+                "updated_symbols": 0,
+                "errors": [],
+                "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
+                "provider": provider,
+                "symbols": list(settings.core_symbols),
+            })
+            await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
+            continue
+        if provider == "none":
+            _ARG_LIVE_STATE.update({
+                "status": "NO_PROFESSIONAL_FEED",
+                "updated_at": time.time(),
+                "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
+                "updated_symbols": 0,
+                "errors": [{"symbol":"*","error":"TWELVE_DATA_API_KEY_MISSING_AND_YAHOO_FALLBACK_DISABLED"}],
+                "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
+                "provider": provider,
+                "symbols": list(settings.core_symbols),
+            })
+            await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
+            continue
         try:
             for symbol in settings.core_symbols:
-                result = await asyncio.to_thread(yahoo_chart_intraday, symbol, "1m")
+                result = await asyncio.to_thread(
+                    twelve_data_intraday if provider == "twelve_data" else yahoo_chart_intraday,
+                    symbol,
+                    "1min",
+                )
                 if not result.rows:
                     errors.append({"symbol": symbol, "error": result.error or "NO_ROWS"})
                     continue
                 latest = max(result.rows, key=lambda row: str(row.get("event_time") or ""))
-                snapshot = {
+                _ARG_LIVE_CACHE[symbol] = {
                     "symbol": symbol,
                     "last": float(latest["value"]),
                     "quote_timestamp": str(latest.get("event_time")),
@@ -402,8 +441,7 @@ async def _argentina_live_loop() -> None:
                     "latency_ms": round(float(result.latency_ms or 0), 2),
                     "updated_epoch": time.time(),
                 }
-                _ARG_LIVE_CACHE[symbol] = snapshot
-                rows_to_store.append({**latest, "field": "close_1m", "metadata": {"poll": "gorila_intraday_live"}})
+                rows_to_store.append(latest)
                 updated += 1
             if rows_to_store:
                 try:
@@ -411,20 +449,31 @@ async def _argentina_live_loop() -> None:
                 except Exception as exc:
                     errors.append({"symbol":"*","error":f"persist:{type(exc).__name__}: {exc}"})
             _ARG_LIVE_STATE.update({
-                "status": "HEALTHY" if updated else "DEGRADED",
+                "status": "HEALTHY" if updated == len(settings.core_symbols) else "DEGRADED",
                 "updated_at": time.time(),
                 "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
                 "updated_symbols": updated,
                 "errors": errors[-8:],
                 "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
+                "provider": provider,
                 "symbols": list(settings.core_symbols),
             })
             print("GORILA_ARG_LIVE_CYCLE", _ARG_LIVE_STATE.copy(), flush=True)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _ARG_LIVE_STATE.update({"status":"ERROR","updated_at":time.time(),"last_cycle_ms":round((time.perf_counter()-started)*1000,2),"errors":[{"symbol":"*","error":f"{type(exc).__name__}: {exc}"}]})
+            _ARG_LIVE_STATE.update({
+                "status":"ERROR",
+                "updated_at":time.time(),
+                "last_cycle_ms":round((time.perf_counter()-started)*1000,2),
+                "updated_symbols":updated,
+                "errors":[{"symbol":"*","error":f"{type(exc).__name__}: {exc}"}],
+                "interval_seconds":_ARG_LIVE_INTERVAL_SECONDS,
+                "provider":provider,
+                "symbols":list(settings.core_symbols),
+            })
         await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
+
 
 async def _autonomous_loop() -> None:
     await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
@@ -644,6 +693,7 @@ async def _production_self_test() -> None:
 async def gorila_runtime_startup() -> None:
     global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK
     Store().init()
+    print("GORILA_ARG_FEED_CONFIG", {"twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": os.getenv("GORILA_ALLOW_YAHOO_LIVE","0").strip().lower() in {"1","true","yes"}, "symbols": list(settings.core_symbols)}, flush=True)
     if _MACRO_TASK is None or _MACRO_TASK.done():
         _MACRO_TASK = asyncio.create_task(
             _macro_loop(),
