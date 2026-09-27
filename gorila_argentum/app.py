@@ -47,6 +47,7 @@ from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote
+from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import connection as quant_connection
 
