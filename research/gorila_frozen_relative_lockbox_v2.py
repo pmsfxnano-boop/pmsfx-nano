@@ -144,38 +144,57 @@ def choose_variant_on_development(series, horizon, common_dates, dev_dates, symb
     }
     selected = max(SCORE_VARIANTS, key=lambda v: (means[v], v))
 
-    # Execution threshold is selected only on the development selection window.
+    # Execution threshold is selected only for the predictor variant already
+    # selected by development rank-IC evidence. It must not change the predictor
+    # variant itself; otherwise execution optimization would leak into predictor selection.
     threshold_scores = []
-    for variant in SCORE_VARIANTS:
-        for threshold in EXECUTION_SPREAD_THRESHOLDS:
-            trades = []
-            for idx, date in enumerate(selection_dates):
-                if idx % horizon != 0:
+    variant = selected
+    for threshold in EXECUTION_SPREAD_THRESHOLDS:
+        trades = []
+        for idx, date in enumerate(selection_dates):
+            if idx % horizon != 0:
+                continue
+            scores = {}
+            returns = {}
+            for symbol in SYMBOLS:
+                model, names, train_rate, prior, _selection, rows_by_date = symbol_models[symbol]
+                row = rows_by_date.get(date)
+                if row is None:
                     continue
-                scores = {}
-                returns = {}
-                for symbol in SYMBOLS:
-                    model, names, train_rate, prior, _selection, rows_by_date = symbol_models[symbol]
-                    row = rows_by_date.get(date)
-                    if row is None:
-                        continue
-                    p = _shift_probability(predict(model, row, names), train_rate, prior)
-                    scores[symbol] = score_variant(variant, p - prior, row.x)
-                    returns[symbol] = row.forward_return
-                common = [s for s in SYMBOLS if s in scores and s in returns]
-                trade = pair_trade(scores, returns, common, REQUIRED_EXECUTION_COST_BPS, threshold)
-                if trade is not None:
-                    trades.append(trade)
-            if len(trades) >= 10:
-                compound = math.prod(1.0 + r for r in trades) - 1.0
-                threshold_scores.append((compound, len(trades), variant, threshold))
+                p = _shift_probability(predict(model, row, names), train_rate, prior)
+                scores[symbol] = score_variant(variant, p - prior, row.x)
+                returns[symbol] = row.forward_return
+            common = [s for s in SYMBOLS if s in scores and s in returns]
+            trade = pair_trade(
+                scores,
+                returns,
+                common,
+                REQUIRED_EXECUTION_COST_BPS,
+                threshold,
+            )
+            if trade is not None:
+                trades.append(trade)
+        if len(trades) >= 10:
+            compound = math.prod(1.0 + r for r in trades) - 1.0
+            threshold_scores.append((compound, len(trades), threshold))
     if threshold_scores:
         threshold_scores.sort(reverse=True)
-        _, selected_trade_count, selected_trade_variant, selected_threshold = threshold_scores[0]
+        _, selected_trade_count, selected_threshold = threshold_scores[0]
     else:
-        selected_trade_count, selected_trade_variant, selected_threshold = 0, selected, 0.0
+        selected_trade_count, selected_threshold = 0, 0.0
 
-    return selected_trade_variant, {
+    return selected, {
+        "status": "OK",
+        "selection_start": selection_dates[0],
+        "selection_end": selection_dates[-1],
+        "selection_n": len(selection_dates),
+        "development_rank_ic_by_variant": means,
+        "execution_threshold": selected_threshold,
+        "execution_variant": selected,
+        "execution_selection_trade_count": selected_trade_count,
+        "execution_selection_candidates": len(threshold_scores),
+    }
+
         "status": "OK",
         "selection_start": selection_dates[0],
         "selection_end": selection_dates[-1],
