@@ -630,7 +630,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     )
 
     stage_started = datetime.now(timezone.utc)
-    audit = build_audit_state(store)
+    audit = build_audit_state(store, live_evidence=decision, promotion_decision=decision)
     stage_end("audit", stage_started, shadow_open= (audit.get("shadow") or {}).get("open"))
     return {
         "status": "COMPLETED",
