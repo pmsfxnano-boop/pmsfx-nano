@@ -35,7 +35,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_data_intraday, twelve_data_live_quote, byma_live_panel
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_data_intraday, twelve_data_live_quote, byma_live_panel, byma_historical_daily
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import persistence_summary
@@ -479,6 +479,27 @@ async def _argentina_e2e_self_test() -> None:
         "bcra": "/api/gorila/bcra",
     }
     results = {}
+    history_t0 = time.perf_counter()
+    try:
+        history_result = await asyncio.to_thread(byma_historical_daily, "GGAL")
+        results["byma_history"] = {
+            "ok": bool(history_result.rows),
+            "rows": len(history_result.rows),
+            "source": history_result.source,
+            "latency_ms": round(float(history_result.latency_ms or 0), 2),
+            "error": history_result.error,
+            "last_event_time": history_result.rows[-1].get("event_time") if history_result.rows else None,
+            "age_probe_ms": round((time.perf_counter() - history_t0) * 1000, 2),
+        }
+    except Exception as exc:
+        results["byma_history"] = {
+            "ok": False,
+            "rows": 0,
+            "source": "BYMADATA/GGAL/historical",
+            "latency_ms": round((time.perf_counter() - history_t0) * 1000, 2),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
     timeout = httpx.Timeout(20.0, connect=3.0)
     async with httpx.AsyncClient(base_url=base, timeout=timeout) as client:
         for name, path in paths.items():
@@ -502,7 +523,8 @@ async def _argentina_e2e_self_test() -> None:
                     "error": f"{type(exc).__name__}: {exc}",
                 }
     summary = {
-        "all_http_200": all(v.get("status")==200 for v in results.values()),
+        "all_http_200": all(v.get("status")==200 for name,v in results.items() if name != "byma_history"),
+        "byma_history_ok": bool((results.get("byma_history") or {}).get("ok")),
         "results": results,
         "matrix_snapshot_status": _ARG_SIGNAL_STATE.get("status"),
         "snapshot_updated_symbols": _ARG_SIGNAL_STATE.get("updated_symbols"),
@@ -652,7 +674,7 @@ async def gorila_runtime_startup() -> None:
     global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK
     if _DB_INIT_TASK is None or _DB_INIT_TASK.done():
         _DB_INIT_TASK = asyncio.create_task(_init_store_background(), name="gorila-db-init")
-    print("GORILA_ARG_FEED_CONFIG", {"twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": os.getenv("GORILA_ALLOW_YAHOO_LIVE","0").strip().lower() in {"1","true","yes"}, "symbols": list(settings.core_symbols)}, flush=True)
+    print("GORILA_ARG_FEED_CONFIG", {"byma_open_access": True, "twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": False, "symbols": list(settings.core_symbols)}, flush=True)
     if _MACRO_TASK is None or _MACRO_TASK.done():
         _MACRO_TASK = asyncio.create_task(
             _macro_loop(),
@@ -752,9 +774,9 @@ def gorila_health():
         "trading_execution": False,
         "automatic_promotion": False,
         "primary_market_data": {
-            "provider": "ARGENTINA",
-            "configured": bool(settings.twelve_data_api_key),
-            "source": "ARGENTINA_LIVE_FEED" if live.get("status") == "HEALTHY" else "ARGENTINA_SIGNAL_SNAPSHOT",
+            "provider": "BYMADATA_OPEN_ACCESS",
+            "configured": True,
+            "source": "BYMADATA_OPEN_ACCESS" if live.get("status") == "HEALTHY" else "ARGENTINA_SIGNAL_SNAPSHOT",
             "status": "READY_LIVE" if live.get("status") == "HEALTHY" else "READY_SNAPSHOT" if snapshot_ready else "DEGRADED",
         },
         "database": db,
