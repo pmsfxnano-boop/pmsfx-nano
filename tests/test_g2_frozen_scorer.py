@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 import numpy as np
 
+from gorila_argentum.g2_frozen_scorer import _rolling_std
 from gorila_argentum.g2_frozen_scorer import G2FrozenModel, score_g2_h10
 
 
@@ -83,3 +84,12 @@ def test_g2_scorer_returns_deterministic_cross_section(monkeypatch):
         [x["score"] for x in second["items"]],
     )
     assert first["runtime_serving"] == "DISABLED"
+
+
+def test_g2_rolling_std_matches_pandas_window_alignment():
+    values = np.asarray([1.0, 2.0, 3.0, 4.0])
+    result = _rolling_std(values, 3)
+    assert np.isnan(result[0])
+    assert np.isnan(result[1])
+    assert np.isclose(result[2], 1.0)
+    assert np.isclose(result[3], 1.0)
