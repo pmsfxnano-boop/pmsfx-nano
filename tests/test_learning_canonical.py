@@ -90,3 +90,51 @@ def test_rejected_learning_candidate_is_not_shadowed():
     assert result["created_count"] == 0
     assert store.saved == []
     assert result["skipped"][0]["reason"] == "CANDIDATE_NOT_ELIGIBLE"
+
+
+def test_learning_shadow_creation_deduplicates_and_batches():
+    from scripts.gorila_runtime_tick import _create_learning_shadow_predictions
+
+    class FakeStore:
+        def __init__(self):
+            self.saved = []
+
+        def shadow_existing_feature_hashes(self, hashes):
+            return {"existing-hash"} & set(hashes)
+
+        def save_shadow_predictions_bulk(self, predictions):
+            self.saved.extend(predictions)
+            return {
+                "created": len(predictions),
+                "items": [{"id": f"shadow-{i}", "feature_hash": row["feature_hash"]} for i, row in enumerate(predictions)],
+            }
+
+    store = FakeStore()
+    base = {
+        "status": "CANDIDATE_ELIGIBLE",
+        "data_fabric": "CANONICAL_DAILY_V1",
+        "learner_id": "learner-test",
+        "dataset_hash": "dataset-test",
+        "canonical_content_hash": "canonical-test",
+        "model_hash": "model-test",
+        "latest_probability_up": 0.61,
+        "feature_names": list(learning.FEATURE_NAMES),
+        "validation": {"accuracy": 0.56},
+        "candidate_policy": {"automatic_promotion": False},
+    }
+    class Canonical:
+        pass
+
+    original = learning.canonical_daily_series
+    try:
+        learning.canonical_daily_series = lambda store, symbol, field, limit: [("2026-09-25", 100.0)]
+        result = _create_learning_shadow_predictions(
+            store,
+            [{**base, "symbol": "GGAL"}],
+        )
+    finally:
+        learning.canonical_daily_series = original
+
+    assert result["created_count"] == 1
+    assert len(store.saved) == 1
+    assert store.saved[0]["feature_hash"] != "existing-hash"
