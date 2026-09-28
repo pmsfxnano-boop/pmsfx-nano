@@ -744,8 +744,11 @@ async def _production_self_test() -> None:
         and "forecast" in terminal_payload
         and "macro" in terminal_payload
         and "chart" in terminal_payload
-        and forecast.get("forecast_status") not in {"ERROR", "BLOCKED_DATA_HEALTH"}
-        and forecast.get("forecast") is not None,
+        and forecast.get("forecast_status") in {"READY", "NO_DATA"}
+        and (
+            forecast.get("forecast_status") == "NO_DATA"
+            or forecast.get("forecast") is not None
+        ),
         "forecast_status": forecast.get("forecast_status"),
         "engine_source": forecast.get("engine_source"),
         "chart_points": len(terminal_payload.get("chart") or []),
@@ -1152,6 +1155,22 @@ def gorila_terminal(ticker: str):
     macro = build_market_state()
     chart_rows = store.recent_series(symbol, "close_1m", limit=180) or store.recent_series(symbol, "close_5m", limit=180) or store.recent_series(symbol, "close", limit=180)
     chart = [{"time": row[0], "close": row[1]} for row in chart_rows]
+    signal_payload = signal or {"symbol": symbol, "status": "NO_DATA", "probability": {"up": None, "down": None}}
+    probability = signal_payload.get("probability") or {}
+    forecast_status = "READY" if probability.get("up") is not None else "NO_DATA"
+    forecast_payload = {
+        "forecast_status": forecast_status,
+        "forecast": {
+            "p_up": probability.get("up"),
+            "p_down": probability.get("down"),
+            "confidence": probability.get("confidence"),
+            "direction": signal_payload.get("signal"),
+        } if forecast_status == "READY" else None,
+        "signal_status": signal_payload.get("status"),
+        "validated": (signal_payload.get("validation") or {}).get("validated"),
+        "research_only": True,
+        "no_execution_authority": True,
+    }
     return {
         "service": "gorila-argentum",
         "symbol": symbol,
@@ -1161,7 +1180,8 @@ def gorila_terminal(ticker: str):
             "source": (live or {}).get("source") if live else (signal or {}).get("market", {}).get("source"),
         } if (live or signal) else None,
         "quote_error": None,
-        "forecast": signal or {"symbol": symbol, "status":"NO_DATA", "forecast":None},
+        "forecast": forecast_payload,
+        "signal": signal_payload,
         "macro": macro,
         "chart": chart,
         "stream": dict(_ARG_LIVE_STATE),
