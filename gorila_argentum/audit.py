@@ -5,10 +5,19 @@ from .promotion import evaluate_promotion, evaluate_live_promotion, CURRENT_BATC
 from .storage import Store
 
 
-def build_audit_state(store: Store | None = None) -> dict:
+def build_audit_state(
+    store: Store | None = None,
+    *,
+    live_evidence: dict | None = None,
+    promotion_decision: dict | None = None,
+) -> dict:
     store = store or Store()
     store.init()
-    control = build_control_state(store)
+    control = build_control_state(
+        store,
+        live_evidence=live_evidence,
+        promotion_decision=promotion_decision,
+    )
     # Reuse the control-state evidence already fetched during this tick. This
     # removes a duplicate research-evidence query and repeated promotion
     # evaluation from the hot autonomous path.
