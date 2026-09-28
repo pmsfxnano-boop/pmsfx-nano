@@ -22,15 +22,16 @@ def _daily_history_due(*, force: bool = False) -> bool:
         return True
     return False
 
-def run_batch(*, force_daily_history: bool = False):
+def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
     store=Store(); store.init()
-    macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status,bcra_macro_cycle]
+    macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status,bcra_macro_cycle] if include_macro else []
     results=[]
     daily_history_refreshed = _daily_history_due(force=force_daily_history)
-    with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
-        futures=[ex.submit(fn) for fn in macro_funcs]
-        for fut in as_completed(futures):
-            results.append(fut.result())
+    if macro_funcs:
+        with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
+            futures=[ex.submit(fn) for fn in macro_funcs]
+            for fut in as_completed(futures):
+                results.append(fut.result())
 
     if daily_history_refreshed:
         # Public BYMADATA history is deliberately throttled. Repeatedly asking
@@ -105,6 +106,7 @@ def run_batch(*, force_daily_history: bool = False):
     return {"sources":len(results),"rows_inserted":total,
             "daily_history_refreshed": daily_history_refreshed,
             "daily_history_refresh_interval_seconds": _DAILY_HISTORY_REFRESH_SECONDS,
+            "macro_ingestion_included": bool(include_macro),
             "results":[{"source":r.source,"rows":len(r.rows),"error":r.error,"latency_ms":round(r.latency_ms or 0,2)} for r in results],
             "canonical_daily": canonical_results,
             "drift":drift_results}
