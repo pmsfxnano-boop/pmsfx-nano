@@ -31,16 +31,19 @@ _RAVA_RETRY_SECONDS = max(
 )
 
 
-def _source_due(
+def _due_sources(
     store: Store,
     sources: set[str],
     *,
     success_interval_seconds: int,
     retry_interval_seconds: int | None = None,
     force: bool = False,
-) -> bool:
+) -> set[str]:
     if force:
-        return True
+        return set(sources)
+
+    if not sources:
+        return set()
 
     conn = store.connect()
     try:
@@ -73,11 +76,13 @@ def _source_due(
         for source, last_success, last_attempt in rows
     }
     now = datetime.now(timezone.utc)
+    due: set[str] = set()
 
-    for source in sources:
+    for source in sorted(sources):
         state = by_source.get(source)
         if not state:
-            return True
+            due.add(source)
+            continue
 
         success_stamp = state["last_success_at"]
         attempt_stamp = state["last_attempt_at"]
@@ -95,16 +100,16 @@ def _source_due(
                     (now - dt.astimezone(timezone.utc)).total_seconds(),
                 )
             except (TypeError, ValueError, OverflowError):
-                return True
+                due.add(source)
+                continue
             if age_seconds >= success_interval_seconds:
-                return True
+                due.add(source)
             continue
 
-        # A source that has been attempted but has not succeeded must not
-        # force the entire equity-history pipeline to hammer the provider on
-        # every five-minute autonomous cycle.
         if retry_interval_seconds is None or not attempt_stamp:
-            return True
+            due.add(source)
+            continue
+
         try:
             dt = (
                 attempt_stamp
@@ -118,37 +123,62 @@ def _source_due(
                 (now - dt.astimezone(timezone.utc)).total_seconds(),
             )
         except (TypeError, ValueError, OverflowError):
-            return True
+            due.add(source)
+            continue
         if age_seconds >= retry_interval_seconds:
-            return True
+            due.add(source)
 
-    return False
+    return due
 
 
-def _daily_history_refresh_plan(store: Store, *, force: bool = False) -> dict[str, bool]:
+def _source_due(
+    store: Store,
+    sources: set[str],
+    *,
+    success_interval_seconds: int,
+    retry_interval_seconds: int | None = None,
+    force: bool = False,
+) -> bool:
+    return bool(
+        _due_sources(
+            store,
+            sources,
+            success_interval_seconds=success_interval_seconds,
+            retry_interval_seconds=retry_interval_seconds,
+            force=force,
+        )
+    )
+
+
+def _daily_history_refresh_plan(store: Store, *, force: bool = False) -> dict[str, object]:
     byma_sources = {f"BYMADATA/{symbol}/historical" for symbol in settings.core_symbols}
     rava_enabled = os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
     rava_sources = {f"RavaPublic/{symbol}" for symbol in settings.core_symbols}
 
-    return {
-        "byma": _source_due(
+    byma_due_sources = _due_sources(
+        store,
+        byma_sources,
+        success_interval_seconds=_DAILY_HISTORY_REFRESH_SECONDS,
+        retry_interval_seconds=900,
+        force=force,
+    )
+    rava_due_sources = (
+        _due_sources(
             store,
-            byma_sources,
-            success_interval_seconds=_DAILY_HISTORY_REFRESH_SECONDS,
-            retry_interval_seconds=900,
+            rava_sources,
+            success_interval_seconds=_RAVA_HISTORY_REFRESH_SECONDS,
+            retry_interval_seconds=_RAVA_RETRY_SECONDS,
             force=force,
-        ),
-        "rava": (
-            _source_due(
-                store,
-                rava_sources,
-                success_interval_seconds=_RAVA_HISTORY_REFRESH_SECONDS,
-                retry_interval_seconds=_RAVA_RETRY_SECONDS,
-                force=force,
-            )
-            if rava_enabled
-            else False
-        ),
+        )
+        if rava_enabled
+        else set()
+    )
+
+    return {
+        "byma": bool(byma_due_sources),
+        "rava": bool(rava_due_sources),
+        "byma_sources_due": sorted(byma_due_sources),
+        "rava_sources_due": sorted(rava_due_sources),
     }
 
 
@@ -159,6 +189,8 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
     refresh_plan = _daily_history_refresh_plan(store, force=force_daily_history)
     byma_due = bool(refresh_plan["byma"])
     rava_due = bool(refresh_plan["rava"])
+    byma_due_sources = set(refresh_plan.get("byma_sources_due") or [])
+    rava_due_sources = set(refresh_plan.get("rava_sources_due") or [])
     daily_history_refreshed = byma_due or rava_due
     if macro_funcs:
         with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
@@ -171,11 +203,14 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
         # for the same ~1y series every five minutes is unnecessary and increases
         # latency/rate-limit risk without adding information.
         for idx, symbol in enumerate(settings.core_symbols):
+            source = f"BYMADATA/{symbol}/historical"
+            if source not in byma_due_sources:
+                continue
             if idx:
                 time.sleep(1.05)
             results.append(byma_historical_daily(symbol))
 
-        if settings.twelve_data_api_key:
+        if settings.twelve_data_api_key and byma_due:
             for symbol in settings.symbols:
                 results.append(twelve_data_daily(symbol))
 
@@ -186,8 +221,12 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
         workers = max(1, min(2, int(os.getenv("GORILA_RAVA_WORKERS", "2"))))
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = {
-                ex.submit(rava_public_historical_daily, symbol): symbol
+                ex.submit(
+                    rava_public_historical_daily,
+                    symbol,
+                ): symbol
                 for symbol in settings.core_symbols
+                if f"RavaPublic/{symbol}" in rava_due_sources
             }
             for fut in as_completed(futures):
                 rava_tasks.append(fut.result())
