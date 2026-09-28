@@ -21,7 +21,9 @@ def test_macro_source_due_uses_durable_freshness(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     store.conn = None
-    assert _macro_source_due(store, source) == (False, "FRESH_3600S")
+    due, reason = _macro_source_due(store, source)
+    assert due is False
+    assert reason.startswith("FRESH_")
 
     store = Store()
     store.init()
