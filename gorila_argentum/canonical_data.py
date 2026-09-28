@@ -404,6 +404,45 @@ def reconcile_all(
     ]
 
 
+def canonical_content_hash(
+    store: Store,
+    symbol: str,
+    field: str = "close",
+) -> str:
+    """Stable content fingerprint for the accepted model-facing canonical series."""
+    ensure_canonical_schema(store)
+    conn = store.connect()
+    try:
+        if store.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT session_date,value,source,status,max_relative_spread
+                       FROM canonical_daily
+                       WHERE symbol=%s AND field=%s AND status LIKE 'ACCEPTED%%'
+                       ORDER BY session_date ASC""",
+                    (symbol, field),
+                )
+                rows = cur.fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT session_date,value,source,status,max_relative_spread
+                   FROM canonical_daily
+                   WHERE symbol=? AND field=? AND status LIKE 'ACCEPTED%'
+                   ORDER BY session_date ASC""",
+                (symbol, field),
+            ).fetchall()
+    finally:
+        conn.close()
+        store.conn = None
+    payload = [
+        [str(row[0]), float(row[1]), str(row[2]), str(row[3]), None if row[4] is None else float(row[4])]
+        for row in rows
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+
+
 def canonical_daily_series(store: Store, symbol: str, field: str = "close", limit: int = 2500) -> list[tuple[str, float]]:
     ensure_canonical_schema(store)
     limit = max(1, int(limit))
