@@ -662,7 +662,9 @@ async def _argentina_e2e_self_test() -> None:
     print("GORILA_ARG_E2E_SELFTEST", json.dumps(summary, sort_keys=True, default=str), flush=True)
 
 async def _production_self_test() -> None:
-    if os.getenv("GORILA_SELF_TEST", "").strip().lower() not in {"1", "true", "yes"}:
+    enabled = os.getenv("GORILA_SELF_TEST", "true").strip().lower() in {"1", "true", "yes"}
+    print("GORILA_PRODUCTION_SELFTEST_CONFIG", {"enabled": enabled}, flush=True)
+    if not enabled:
         return
     await asyncio.sleep(60)
     started = time.perf_counter()
@@ -835,6 +837,7 @@ async def gorila_runtime_startup() -> None:
     if _DB_INIT_TASK is None or _DB_INIT_TASK.done():
         _DB_INIT_TASK = asyncio.create_task(_init_store_background(), name="gorila-db-init")
     print("GORILA_ARG_FEED_CONFIG", {"byma_open_access": True, "twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": False, "symbols": list(settings.core_symbols)}, flush=True)
+    print("GORILA_PRODUCTION_SELFTEST_CONFIG", {"enabled": os.getenv("GORILA_SELF_TEST", "true").strip().lower() in {"1", "true", "yes"}}, flush=True)
     if _MACRO_TASK is None or _MACRO_TASK.done():
         _MACRO_TASK = asyncio.create_task(
             _macro_loop(),
