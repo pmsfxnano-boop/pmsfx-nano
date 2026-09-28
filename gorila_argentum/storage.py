@@ -977,13 +977,15 @@ class Store:
             "last_observed_at": payload[-1][2] if payload else None,
         }
 
-    def latest_shadow(self, symbol=None, status=None, limit=100):
+    def latest_shadow(self, symbol=None, status=None, model_version=None, limit=100):
         conn = self.connect()
         where = []; params = []
         if symbol is not None:
             where.append("p.symbol=%s" if self.pg else "p.symbol=?"); params.append(symbol)
         if status is not None:
             where.append("p.status=%s" if self.pg else "p.status=?"); params.append(status)
+        if model_version is not None:
+            where.append("p.model_version=%s" if self.pg else "p.model_version=?"); params.append(model_version)
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         limit = int(max(1, min(500, limit)))
         sql = f"""SELECT p.id,p.created_at,p.symbol,p.model_version,p.probability_up,p.direction,
