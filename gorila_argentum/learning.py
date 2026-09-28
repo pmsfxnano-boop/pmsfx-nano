@@ -138,6 +138,7 @@ def run_learning_cycle(
             "learner_id": LEARNER_ID,
             "trainer_version": TRAINER_VERSION,
             "data_fabric": DATA_FABRIC,
+            "learning_spec_hash": LEARNING_SPEC_HASH,
             "dataset_hash": dataset["dataset_hash"],
             "samples": dataset["samples"],
         }
@@ -179,6 +180,7 @@ def run_learning_cycle(
             "learner_id": LEARNER_ID,
             "trainer_version": TRAINER_VERSION,
             "data_fabric": DATA_FABRIC,
+            "learning_spec_hash": LEARNING_SPEC_HASH,
             "dataset_hash": dataset["dataset_hash"],
             "samples": dataset["samples"],
             "validation": validation,
