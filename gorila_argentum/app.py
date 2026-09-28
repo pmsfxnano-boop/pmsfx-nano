@@ -71,6 +71,7 @@ _AUTONOMOUS_START_DELAY_SECONDS = max(
     int(os.getenv("GORILA_AUTONOMOUS_START_DELAY_SECONDS", "20")),
 )
 _AUTONOMOUS_TASK: asyncio.Task | None = None
+_AUTONOMOUS_WATCHDOG_TASK: asyncio.Task | None = None
 _ARG_LIVE_TASK: asyncio.Task | None = None
 _ARG_SIGNAL_TASK: asyncio.Task | None = None
 _ARG_LIVE_INTERVAL_SECONDS = max(15, int(os.getenv("GORILA_LIVE_INTERVAL_SECONDS", "30")))
@@ -95,6 +96,12 @@ _AUTONOMOUS_STATE: dict[str, Any] = {
     "status": "STARTING",
     "updated_at": None,
     "last_result": None,
+    "started_at": None,
+    "completed_at": None,
+    "running": False,
+    "latency_ms": None,
+    "watchdog_status": "STARTING",
+    "watchdog_updated_at": None,
     "interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS,
 }
 
@@ -410,11 +417,84 @@ async def _argentina_signal_snapshot_loop() -> None:
         sleep_seconds = _ARG_SIGNAL_INTERVAL_SECONDS if argentina_session_state().get("open") else 60
         await asyncio.sleep(sleep_seconds)
 
+async def _autonomous_watchdog_loop() -> None:
+    """Watchdog for the long-lived autonomous task without creating overlapping ticks."""
+    while True:
+        try:
+            now = time.time()
+            task = _AUTONOMOUS_TASK
+            running = bool(_AUTONOMOUS_STATE.get("running"))
+            started_at = _AUTONOMOUS_STATE.get("started_at")
+            completed_at = _AUTONOMOUS_STATE.get("completed_at")
+
+            if task is not None and task.done() and not task.cancelled():
+                print(
+                    "GORILA_AUTONOMOUS_WATCHDOG_RESTART",
+                    {"reason": "TASK_TERMINATED_UNEXPECTEDLY"},
+                    flush=True,
+                )
+                _AUTONOMOUS_STATE.update({
+                    "status": "RESTARTING",
+                    "running": False,
+                    "watchdog_status": "RESTARTING",
+                    "watchdog_updated_at": now,
+                })
+                globals()["_AUTONOMOUS_TASK"] = asyncio.create_task(
+                    _autonomous_loop(),
+                    name="gorila-autonomous-runtime-loop-restarted",
+                )
+            else:
+                warning = False
+                age_seconds = None
+                if running and started_at:
+                    age_seconds = max(0.0, now - float(started_at))
+                    warning = age_seconds > max(60.0, 2.0 * _AUTONOMOUS_INTERVAL_SECONDS)
+                elif completed_at:
+                    age_seconds = max(0.0, now - float(completed_at))
+                    warning = age_seconds > max(120.0, 2.5 * _AUTONOMOUS_INTERVAL_SECONDS)
+
+                _AUTONOMOUS_STATE.update({
+                    "watchdog_status": "STALE" if warning else "HEALTHY",
+                    "watchdog_updated_at": now,
+                    "watchdog_age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+                })
+                if warning:
+                    print(
+                        "GORILA_AUTONOMOUS_WATCHDOG_STALE",
+                        {
+                            "running": running,
+                            "age_seconds": round(age_seconds or 0.0, 3),
+                            "interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS,
+                        },
+                        flush=True,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _AUTONOMOUS_STATE.update({
+                "watchdog_status": "ERROR",
+                "watchdog_updated_at": time.time(),
+                "watchdog_error": f"{type(exc).__name__}: {exc}",
+            })
+            print(
+                "GORILA_AUTONOMOUS_WATCHDOG_ERROR",
+                {"error": f"{type(exc).__name__}: {exc}"},
+                flush=True,
+            )
+        await asyncio.sleep(30.0)
+
+
 async def _autonomous_loop() -> None:
     await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
     print("GORILA_AUTONOMOUS_LOOP_ENTERED", {"interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS}, flush=True)
     while True:
         started = time.perf_counter()
+        _AUTONOMOUS_STATE.update({
+            "status": _AUTONOMOUS_STATE.get("status") if _AUTONOMOUS_STATE.get("status") not in {"STARTING", "RESTARTING"} else "RUNNING",
+            "running": True,
+            "started_at": time.time(),
+            "watchdog_status": "HEALTHY",
+        })
         try:
             print("GORILA_AUTONOMOUS_TICK_STARTED", flush=True)
             result = await asyncio.to_thread(
@@ -425,8 +505,10 @@ async def _autonomous_loop() -> None:
                 {
                     "status": result.get("status", "UNKNOWN"),
                     "updated_at": time.time(),
+                    "completed_at": time.time(),
                     "last_result": result,
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "running": False,
                 }
             )
             print(
@@ -449,6 +531,8 @@ async def _autonomous_loop() -> None:
                 {
                     "status": "ERROR",
                     "updated_at": time.time(),
+                    "completed_at": time.time(),
+                    "running": False,
                     "last_result": {
                         "status": "ERROR",
                         "error": f"{type(exc).__name__}: {exc}",
@@ -833,7 +917,7 @@ async def _production_self_test() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK, _PRODUCTION_E2E_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _AUTONOMOUS_WATCHDOG_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK, _PRODUCTION_E2E_TASK
     if _DB_INIT_TASK is None or _DB_INIT_TASK.done():
         _DB_INIT_TASK = asyncio.create_task(_init_store_background(), name="gorila-db-init")
     print("GORILA_ARG_FEED_CONFIG", {"byma_open_access": True, "twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": False, "symbols": list(settings.core_symbols)}, flush=True)
@@ -847,6 +931,11 @@ async def gorila_runtime_startup() -> None:
         _AUTONOMOUS_TASK = asyncio.create_task(
             _autonomous_loop(),
             name="gorila-autonomous-runtime-loop",
+        )
+    if _AUTONOMOUS_WATCHDOG_TASK is None or _AUTONOMOUS_WATCHDOG_TASK.done():
+        _AUTONOMOUS_WATCHDOG_TASK = asyncio.create_task(
+            _autonomous_watchdog_loop(),
+            name="gorila-autonomous-watchdog-loop",
         )
     if _ARG_LIVE_TASK is None or _ARG_LIVE_TASK.done():
         _ARG_LIVE_TASK = asyncio.create_task(
@@ -866,7 +955,14 @@ async def gorila_runtime_startup() -> None:
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK, _PRODUCTION_E2E_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _AUTONOMOUS_WATCHDOG_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK, _PRODUCTION_E2E_TASK
+    if _AUTONOMOUS_WATCHDOG_TASK is not None:
+        _AUTONOMOUS_WATCHDOG_TASK.cancel()
+        try:
+            await _AUTONOMOUS_WATCHDOG_TASK
+        except asyncio.CancelledError:
+            pass
+
     for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
         if task is not None:
             task.cancel()
@@ -908,6 +1004,7 @@ async def gorila_runtime_shutdown() -> None:
             pass
     _MACRO_TASK = None
     _AUTONOMOUS_TASK = None
+    _AUTONOMOUS_WATCHDOG_TASK = None
     _ARG_LIVE_TASK = None
     _ARG_SIGNAL_TASK = None
     _ARG_E2E_TASK = None
