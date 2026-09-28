@@ -77,6 +77,7 @@ _ARG_SIGNAL_INTERVAL_SECONDS = max(5, int(os.getenv("GORILA_SIGNAL_INTERVAL_SECO
 _ARG_SIGNAL_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _DB_INIT_TASK: asyncio.Task | None = None
 _ARG_E2E_TASK: asyncio.Task | None = None
+_PRODUCTION_E2E_TASK: asyncio.Task | None = None
 _DB_STATE: dict[str, Any] = {"status":"STARTING","ready":False,"error":None,"updated_at":None}
 _ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
 _ARG_SIGNAL_SNAPSHOTS: dict[str, dict[str, Any]] = {}
@@ -790,7 +791,7 @@ async def _production_self_test() -> None:
 
 @app.on_event("startup")
 async def gorila_runtime_startup() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK, _PRODUCTION_E2E_TASK
     if _DB_INIT_TASK is None or _DB_INIT_TASK.done():
         _DB_INIT_TASK = asyncio.create_task(_init_store_background(), name="gorila-db-init")
     print("GORILA_ARG_FEED_CONFIG", {"byma_open_access": True, "twelve_data_configured": bool(settings.twelve_data_api_key), "yahoo_fallback_enabled": False, "symbols": list(settings.core_symbols)}, flush=True)
@@ -816,6 +817,8 @@ async def gorila_runtime_startup() -> None:
         )
     if _ARG_E2E_TASK is None or _ARG_E2E_TASK.done():
         _ARG_E2E_TASK = asyncio.create_task(_argentina_e2e_self_test(), name="gorila-argentina-e2e-self-test")
+    if _PRODUCTION_E2E_TASK is None or _PRODUCTION_E2E_TASK.done():
+        _PRODUCTION_E2E_TASK = asyncio.create_task(_production_self_test(), name="gorila-production-http-e2e")
 
 
 @app.on_event("shutdown")
@@ -854,11 +857,18 @@ async def gorila_runtime_shutdown() -> None:
             await _ARG_E2E_TASK
         except asyncio.CancelledError:
             pass
+    if _PRODUCTION_E2E_TASK is not None:
+        _PRODUCTION_E2E_TASK.cancel()
+        try:
+            await _PRODUCTION_E2E_TASK
+        except asyncio.CancelledError:
+            pass
     _MACRO_TASK = None
     _AUTONOMOUS_TASK = None
     _ARG_LIVE_TASK = None
     _ARG_SIGNAL_TASK = None
     _ARG_E2E_TASK = None
+    _PRODUCTION_E2E_TASK = None
 
 
 @app.head("/", include_in_schema=False)
