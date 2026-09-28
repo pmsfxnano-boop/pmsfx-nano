@@ -64,32 +64,41 @@ def run_batch(*, force_daily_history: bool = False):
             limit_sessions=2500,
         )
 
-    for symbol in settings.core_symbols:
-        series = canonical_daily_series(store, symbol, "close", limit=180)
-        close_values = [value for _, value in series]
-        result = rolling_drift(close_values, current_size=30, reference_size=90)
-        store.save_drift(symbol, "close", result, metadata={"trigger": "ingest", "rows_inserted": total})
+    if daily_history_refreshed:
+        for symbol in settings.core_symbols:
+            series = canonical_daily_series(store, symbol, "close", limit=180)
+            close_values = [value for _, value in series]
+            result = rolling_drift(close_values, current_size=30, reference_size=90)
+            store.save_drift(
+                symbol,
+                "close",
+                result,
+                metadata={"trigger": "ingest", "rows_inserted": total},
+            )
 
-        returns = [
-            (close_values[i] / close_values[i - 1]) - 1.0
-            for i in range(1, len(close_values))
-            if close_values[i - 1] > 0 and close_values[i] > 0
-        ]
-        return_result = rolling_drift(returns, current_size=30, reference_size=90)
-        store.save_drift(
-            symbol,
-            "return_1d",
-            return_result,
-            metadata={"trigger": "ingest", "rows_inserted": total, "source_field": "close"},
-        )
-        if daily_history_refreshed:
+            returns = [
+                (close_values[i] / close_values[i - 1]) - 1.0
+                for i in range(1, len(close_values))
+                if close_values[i - 1] > 0 and close_values[i] > 0
+            ]
+            return_result = rolling_drift(returns, current_size=30, reference_size=90)
+            store.save_drift(
+                symbol,
+                "return_1d",
+                return_result,
+                metadata={
+                    "trigger": "ingest",
+                    "rows_inserted": total,
+                    "source_field": "close",
+                },
+            )
             drift_results.append({
                 "symbol": symbol,
                 "close_status": result.get("status"),
-            "return_status": return_result.get("status"),
-            "close_psi": result.get("psi"),
-            "return_psi": return_result.get("psi"),
-            "close_ks": result.get("ks"),
+                "return_status": return_result.get("status"),
+                "close_psi": result.get("psi"),
+                "return_psi": return_result.get("psi"),
+                "close_ks": result.get("ks"),
                 "return_ks": return_result.get("ks"),
             })
 
