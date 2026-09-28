@@ -795,6 +795,7 @@ async def _production_self_test() -> None:
         results["terminal"] = await probe("terminal", "/api/gorila/terminal/GGAL")
         results["control"] = await probe("control", "/api/gorila/control")
         results["g2_h10"] = await probe("g2_h10", "/api/gorila/g2-h10/status")
+        results["g2_h10_score"] = await probe("g2_h10_score", "/api/gorila/g2-h10/score")
 
     health_payload = results["health"].get("payload") or {}
     market_payload = results["market"].get("payload") or {}
@@ -802,6 +803,7 @@ async def _production_self_test() -> None:
     terminal_payload = results["terminal"].get("payload") or {}
     control_payload = results["control"].get("payload") or {}
     g2_payload = results["g2_h10"].get("payload") or {}
+    g2_score_payload = results["g2_h10_score"].get("payload") or {}
     forecast = terminal_payload.get("forecast") or {}
     runtime_items = (control_payload.get("runtime") or {}).get("items") or []
 
@@ -869,6 +871,16 @@ async def _production_self_test() -> None:
         "status": autonomous.get("status"),
         "interval_seconds": autonomous.get("interval_seconds"),
     }
+    results["g2_h10_score_contract"] = {
+        "ok": results["g2_h10_score"]["ok"]
+        and g2_score_payload.get("model_id") == "G2_PIT_FIXED_C0.25_H10"
+        and g2_score_payload.get("research_only") is True
+        and g2_score_payload.get("no_execution_authority") is True
+        and g2_score_payload.get("runtime_serving") == "DISABLED"
+        and g2_score_payload.get("status") in {"ARTIFACT_UNAVAILABLE", "READY", "INSUFFICIENT_DATA"},
+        "status": g2_score_payload.get("status"),
+    }
+
     results["g2_h10_contract"] = {
         "ok": results["g2_h10"]["ok"]
         and g2_payload.get("status") == "REGISTERED"
@@ -888,7 +900,7 @@ async def _production_self_test() -> None:
     # endpoint may legitimately return INSUFFICIENT_DATA; that is not an HTTP failure.
     results["all_http_ok"] = all(
         bool(results[name].get("ok"))
-        for name in ("health", "market", "cross_sectional", "terminal", "control", "g2_h10")
+        for name in ("health", "market", "cross_sectional", "terminal", "control", "g2_h10", "g2_h10_score")
     )
     results["all_contracts_ok"] = all(
         bool(results[name].get("ok"))
@@ -900,6 +912,7 @@ async def _production_self_test() -> None:
             "control_contract",
             "autonomous_contract",
             "g2_h10_contract",
+            "g2_h10_score_contract",
         )
     )
     results["all_ok"] = results["all_http_ok"] and results["all_contracts_ok"]
@@ -909,7 +922,7 @@ async def _production_self_test() -> None:
     summary = {
         "http_status": {
             name: results[name].get("status_code")
-            for name in ("health", "market", "cross_sectional", "terminal", "control", "g2_h10")
+            for name in ("health", "market", "cross_sectional", "terminal", "control", "g2_h10", "g2_h10_score")
         },
         "contracts": {
             "health": results["health_contract"],
@@ -919,6 +932,7 @@ async def _production_self_test() -> None:
             "control": results["control_contract"],
             "autonomous": results["autonomous_contract"],
             "g2_h10": results["g2_h10_contract"],
+            "g2_h10_score": results["g2_h10_score_contract"],
         },
         "all_http_ok": results["all_http_ok"],
         "all_contracts_ok": results["all_contracts_ok"],
