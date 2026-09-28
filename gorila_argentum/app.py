@@ -823,7 +823,7 @@ async def gorila_runtime_startup() -> None:
 
 @app.on_event("shutdown")
 async def gorila_runtime_shutdown() -> None:
-    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK
+    global _MACRO_TASK, _AUTONOMOUS_TASK, _ARG_LIVE_TASK, _ARG_SIGNAL_TASK, _DB_INIT_TASK, _ARG_E2E_TASK, _PRODUCTION_E2E_TASK
     for task in (_MACRO_TASK, _AUTONOMOUS_TASK):
         if task is not None:
             task.cancel()
@@ -868,6 +868,7 @@ async def gorila_runtime_shutdown() -> None:
     _ARG_LIVE_TASK = None
     _ARG_SIGNAL_TASK = None
     _ARG_E2E_TASK = None
+    _PRODUCTION_E2E_TASK = None
     _PRODUCTION_E2E_TASK = None
 
 
