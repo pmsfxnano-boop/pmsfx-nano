@@ -72,10 +72,6 @@ def _parse_time(value: Any) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _session_date(value: Any) -> str:
-    return _parse_time(value).astimezone(SESSION_TZ).date().isoformat()
-
-
 def _source_family(source: str) -> str | None:
     text = str(source or "").strip()
     for family in _SOURCE_PRIORITY:
@@ -139,7 +135,7 @@ def _collapse_session_candidates(rows: list[tuple]) -> dict[str, list[dict[str, 
     for row in rows:
         symbol, field, value, event_time, received_time, source, quality, metadata = row
         family = _source_family(str(source))
-        if family is None:
+        if family is None or str(quality or "OK").upper() not in {"OK", "VALIDATED"}:
             continue
         try:
             numeric = float(value)
