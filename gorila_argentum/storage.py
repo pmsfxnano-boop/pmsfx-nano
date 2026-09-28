@@ -759,65 +759,170 @@ class Store:
         return {"id": outcome_id, "prediction_id": prediction_id, "observed_at": observed_at}
 
 
-    def settle_due_shadow_from_observations(self, *, max_lateness_seconds=3600, limit=50):
-        import datetime as _dt
-
-        predictions = self.latest_shadow(status="OPEN", limit=limit)
-        settled = []
-        for prediction in predictions:
-            created = _dt.datetime.fromisoformat(prediction["created_at"].replace("Z", "+00:00"))
-            due = created + _dt.timedelta(seconds=int(prediction["horizon_seconds"]))
-            conn = self.connect()
+    def settle_shadow_predictions_bulk(self, settlements):
+        """Persist multiple already-validated shadow settlements in one transaction."""
+        if not settlements:
+            return {"settled": 0, "items": []}
+        conn = self.connect()
+        outcome_values = []
+        update_values = []
+        items = []
+        for item in settlements:
+            outcome_id = uuid.uuid4().hex
+            outcome_values.append((
+                outcome_id,
+                str(item["prediction_id"]),
+                item["observed_at"],
+                float(item["observed_price"]),
+                str(item["realized_direction"]),
+                item.get("return_pct"),
+                None if item.get("correct") is None else int(bool(item["correct"])),
+                item.get("brier"),
+                item.get("logloss"),
+                json.dumps(item.get("metadata") or {}, sort_keys=True),
+            ))
+            update_values.append(("SETTLED", item["observed_at"], str(item["prediction_id"])))
+            items.append({
+                "id": outcome_id,
+                "prediction_id": str(item["prediction_id"]),
+                "observed_at": item["observed_at"],
+            })
+        try:
             if self.pg:
                 with conn.cursor() as cur:
-                    cur.execute(
+                    cur.executemany(
+                        """INSERT INTO shadow_outcomes(
+                           id,prediction_id,observed_at,observed_price,realized_direction,
+                           return_pct,correct,brier,logloss,metadata)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        outcome_values,
+                    )
+                    cur.executemany(
+                        "UPDATE shadow_predictions SET status=%s,settled_at=%s WHERE id=%s AND status='OPEN'",
+                        update_values,
+                    )
+            else:
+                conn.executemany(
+                    """INSERT INTO shadow_outcomes(
+                       id,prediction_id,observed_at,observed_price,realized_direction,
+                       return_pct,correct,brier,logloss,metadata)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    outcome_values,
+                )
+                conn.executemany(
+                    "UPDATE shadow_predictions SET status=?,settled_at=? WHERE id=? AND status='OPEN'",
+                    update_values,
+                )
+            conn.commit()
+            return {"settled": len(items), "items": items}
+        finally:
+            conn.close()
+            self.conn = None
+
+    def settle_due_shadow_from_observations(self, *, max_lateness_seconds=3600, limit=50):
+        import bisect
+
+        predictions = self.latest_shadow(status="OPEN", limit=limit)
+        if not predictions:
+            return {"attempted": 0, "settled": 0, "items": [], "query_symbols": 0}
+
+        grouped: dict[str, list[tuple[dict, datetime]]] = {}
+        for prediction in predictions:
+            created = datetime.fromisoformat(str(prediction["created_at"]).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            due = created.astimezone(timezone.utc) + timedelta(seconds=int(prediction["horizon_seconds"]))
+            grouped.setdefault(str(prediction["symbol"]).upper(), []).append((prediction, due))
+
+        observations_by_symbol: dict[str, list[tuple[datetime, float]]] = {}
+        for symbol, rows in grouped.items():
+            min_due = min(due for _, due in rows)
+            max_due = max(due for _, due in rows) + timedelta(seconds=int(max_lateness_seconds))
+            conn = self.connect()
+            try:
+                if self.pg:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """SELECT event_time,value
+                               FROM observations
+                               WHERE symbol=%s
+                                 AND field='close'
+                                 AND value IS NOT NULL
+                                 AND event_time >= %s
+                                 AND event_time <= %s
+                               ORDER BY event_time ASC""",
+                            (symbol, min_due.isoformat(), max_due.isoformat()),
+                        )
+                        fetched = cur.fetchall()
+                else:
+                    fetched = conn.execute(
                         """SELECT event_time,value
                            FROM observations
-                           WHERE symbol=%s AND field='close' AND value IS NOT NULL
+                           WHERE symbol=?
+                             AND field='close'
+                             AND value IS NOT NULL
+                             AND event_time >= ?
+                             AND event_time <= ?
                            ORDER BY event_time ASC""",
-                        (prediction["symbol"],),
-                    )
-                    rows = cur.fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT event_time,value
-                       FROM observations
-                       WHERE symbol=? AND field='close' AND value IS NOT NULL
-                       ORDER BY event_time ASC""",
-                    (prediction["symbol"],),
-                ).fetchall()
-            conn.close(); self.conn = None
+                        (symbol, min_due.isoformat(), max_due.isoformat()),
+                    ).fetchall()
+            finally:
+                conn.close()
+                self.conn = None
 
-            chosen = None
-            for event_time, value in rows:
+            parsed: list[tuple[datetime, float]] = []
+            for event_time, value in fetched:
                 observed = (
                     event_time
-                    if isinstance(event_time, _dt.datetime)
-                    else _dt.datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+                    if isinstance(event_time, datetime)
+                    else datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
                 )
                 if observed.tzinfo is None:
-                    observed = observed.replace(tzinfo=_dt.timezone.utc)
-                observed = observed.astimezone(_dt.timezone.utc)
-                if observed < due:
+                    observed = observed.replace(tzinfo=timezone.utc)
+                observed = observed.astimezone(timezone.utc)
+                try:
+                    parsed.append((observed, float(value)))
+                except (TypeError, ValueError):
                     continue
-                if observed > due + _dt.timedelta(seconds=int(max_lateness_seconds)):
-                    break
-                chosen = (observed, float(value))
-                break
-            if chosen is None:
-                continue
+            observations_by_symbol[symbol] = parsed
 
-            from .shadow import compute_shadow_outcome
-            outcome = compute_shadow_outcome(
-                prediction["probability_up"], prediction["entry_price"], chosen[1]
-            )
-            settled.append(
-                self.settle_shadow_prediction(
-                    prediction["id"], outcome, chosen[0].isoformat(),
-                    metadata={"resolution": "observation_event_time", "field": "close"},
+        settlements = []
+        attempted = 0
+        for symbol, rows in grouped.items():
+            observations = observations_by_symbol.get(symbol, [])
+            times = [row[0] for row in observations]
+            for prediction, due in rows:
+                attempted += 1
+                idx = bisect.bisect_left(times, due)
+                if idx >= len(observations):
+                    continue
+                observed, price = observations[idx]
+                if observed > due + timedelta(seconds=int(max_lateness_seconds)):
+                    continue
+                outcome = __import__("gorila_argentum.shadow", fromlist=["compute_shadow_outcome"]).compute_shadow_outcome(
+                    prediction["probability_up"],
+                    prediction["entry_price"],
+                    price,
                 )
-            )
-        return {"attempted": len(predictions), "settled": len(settled), "items": settled}
+                settlements.append({
+                    "prediction_id": prediction["id"],
+                    "observed_at": observed.isoformat(),
+                    "observed_price": float(outcome["observed_price"]),
+                    "realized_direction": outcome["realized_direction"],
+                    "return_pct": outcome.get("return_pct"),
+                    "correct": outcome.get("correct"),
+                    "brier": outcome.get("brier"),
+                    "logloss": outcome.get("logloss"),
+                    "metadata": {"resolution": "observation_event_time", "field": "close"},
+                })
+
+        bulk = self.settle_shadow_predictions_bulk(settlements)
+        return {
+            "attempted": attempted,
+            "settled": int(bulk.get("settled", 0)),
+            "items": bulk.get("items", []),
+            "query_symbols": len(grouped),
+        }
 
     def latest_shadow(self, symbol=None, status=None, limit=100):
         conn = self.connect()
