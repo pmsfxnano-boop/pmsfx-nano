@@ -247,6 +247,7 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
     items.sort(key=lambda x: x["p_residual_up"], reverse=True)
     return {
         "status": "READY",
+        "research_score_status": "VALIDATED_RESEARCH_BOUND" if evidence_bound_to_live else "UNVALIDATED_LIVE_REFIT",
         "model": "fixed-pooled-logit-v1",
         "data_fabric": "CANONICAL_DAILY_V1",
         "features": list(FEATURE_NAMES),
