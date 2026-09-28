@@ -2,6 +2,7 @@ from __future__ import annotations
 import json, sqlite3, os, uuid
 from datetime import datetime, timezone, timedelta
 import threading
+from .shadow import compute_shadow_outcome
 
 def _as_iso(value):
     if value is None:
@@ -899,7 +900,7 @@ class Store:
                 observed, price = observations[idx]
                 if observed > due + timedelta(seconds=int(max_lateness_seconds)):
                     continue
-                outcome = __import__("gorila_argentum.shadow", fromlist=["compute_shadow_outcome"]).compute_shadow_outcome(
+                outcome = compute_shadow_outcome(
                     prediction["probability_up"],
                     prediction["entry_price"],
                     price,
