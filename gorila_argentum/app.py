@@ -54,6 +54,12 @@ _MACRO_INTERVAL_SECONDS = max(
     300,
     int(settings.macro_interval_seconds),
 )
+_MACRO_SOURCE_REFRESH_SECONDS = {
+    "ArgentinaDatos/FX": max(900, int(os.getenv("GORILA_MACRO_FX_REFRESH_SECONDS", "3600"))),
+    "ArgentinaDatos/EMBI+": max(3600, int(os.getenv("GORILA_MACRO_RISK_REFRESH_SECONDS", "21600"))),
+    "BCRA/FX": max(900, int(os.getenv("GORILA_BCRA_FX_REFRESH_SECONDS", "3600"))),
+    "BCRA/MonetaryV4": max(3600, int(os.getenv("GORILA_BCRA_MONETARY_REFRESH_SECONDS", "21600"))),
+}
 
 _AUTONOMOUS_INTERVAL_SECONDS = max(
     300,
@@ -122,18 +128,45 @@ def argentina_session_state(now: datetime | None = None) -> dict[str, Any]:
 
 
 
+def _macro_source_due(store: Store, source: str) -> tuple[bool, str]:
+    interval = int(_MACRO_SOURCE_REFRESH_SECONDS.get(source, _MACRO_INTERVAL_SECONDS))
+    health_by_source = {str(row.get("source")): row for row in store.health()}
+    state = health_by_source.get(source)
+    if not state or not state.get("last_success_at"):
+        return True, "NO_SUCCESS_YET"
+    stamp = state["last_success_at"]
+    try:
+        if isinstance(stamp, datetime):
+            dt = stamp
+        else:
+            dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return True, "INVALID_LAST_SUCCESS_AT"
+    if age >= interval:
+        return True, f"STALE_{round(age)}S"
+    return False, f"FRESH_{round(age)}S"
+
+
 def _run_macro_ingest() -> dict[str, Any]:
     store = Store()
     store.init()
-    # Macro polling stays separate from daily equity history. The autonomous
-    # learner owns the throttled daily history refresh so this loop cannot
-    # repeatedly redownload the same ~1y BYMADATA payload.
-    funcs = [argentina_datos_fx, argentina_datos_risk, bcra_fx, bcra_macro_cycle]
+    source_functions = (
+        ("ArgentinaDatos/FX", argentina_datos_fx),
+        ("ArgentinaDatos/EMBI+", argentina_datos_risk),
+        ("BCRA/FX", bcra_fx),
+        ("BCRA/MonetaryV4", bcra_macro_cycle),
+    )
     results = []
-    with ThreadPoolExecutor(max_workers=len(funcs)) as executor:
-        futures = [executor.submit(fn) for fn in funcs]
-        for future in futures:
-            results.append(future.result())
+    skipped = []
+    for source, fn in source_functions:
+        due, reason = _macro_source_due(store, source)
+        if due:
+            results.append(fn())
+        else:
+            skipped.append({"source": source, "reason": reason, "refresh_interval_seconds": _MACRO_SOURCE_REFRESH_SECONDS[source]})
 
     rows_inserted = 0
     for result in results:
@@ -158,7 +191,7 @@ def _run_macro_ingest() -> dict[str, Any]:
             )
 
     return {
-        "status": "COMPLETED" if all(r.rows for r in results) else "DEGRADED",
+        "status": "COMPLETED" if all(r.rows for r in results) else ("IDLE" if not results else "DEGRADED"),
         "rows_inserted": rows_inserted,
         "results": [
             {
@@ -169,11 +202,14 @@ def _run_macro_ingest() -> dict[str, Any]:
             }
             for r in results
         ],
+        "skipped": skipped,
+        "refresh_intervals_seconds": _MACRO_SOURCE_REFRESH_SECONDS,
         "daily_equity_history": {
             "owner": "autonomous_runtime",
             "refresh_policy": "THROTTLED_IN_INGEST_RUN_BATCH",
         },
     }
+
 
 async def _argentina_live_loop() -> None:
     """Maintain a bounded intraday cache without blocking the API process.
