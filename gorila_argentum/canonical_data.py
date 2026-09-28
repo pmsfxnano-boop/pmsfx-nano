@@ -77,6 +77,8 @@ def _source_family(source: str) -> str | None:
     for family in _SOURCE_PRIORITY:
         if text.startswith(f"{family}/"):
             return family
+    if text.startswith("RavaPublic/"):
+        return "Rava"
     if text.startswith(_EXCLUDED_PREFIXES):
         return None
     return None
