@@ -8,6 +8,7 @@ Gorila control surface on the same FastAPI instance.
 from __future__ import annotations
 
 import asyncio
+import logging
 import json
 import os
 import time
@@ -40,6 +41,8 @@ from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_d
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import persistence_summary
+
+_LOGGER = logging.getLogger("gorila-argentum")
 
 # The public service uses a single process. The autonomous runtime loop is
 # intentionally part of this process so research continues without a cron.
@@ -336,7 +339,7 @@ async def _init_store_background() -> None:
             "updated_at": time.time(),
             "latency_ms": round((time.perf_counter()-started)*1000,2),
         })
-        print("GORILA_DB_STATE", _DB_STATE.copy(), flush=True)
+        _LOGGER.info("GORILA_DB_STATE %s", json.dumps(_DB_STATE.copy(), sort_keys=True, default=str))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -347,7 +350,7 @@ async def _init_store_background() -> None:
             "updated_at": time.time(),
             "latency_ms": round((time.perf_counter()-started)*1000,2),
         })
-        print("GORILA_DB_STATE_ERROR", _DB_STATE.copy(), flush=True)
+        _LOGGER.error("GORILA_DB_STATE_ERROR %s", json.dumps(_DB_STATE.copy(), sort_keys=True, default=str))
 
 def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
     store = Store(); store.init()
@@ -569,16 +572,19 @@ async def _macro_loop() -> None:
                     "latency_ms": latency_ms,
                 }
             )
-            print(
-                "GORILA_MACRO_RESULT",
-                {
-                    "status": result.get("status", "UNKNOWN"),
-                    "latency_ms": latency_ms,
-                    "rows_inserted": result.get("rows_inserted", 0),
-                    "results": result.get("results", []),
-                    "canonical_daily": result.get("canonical_daily", []),
-                },
-                flush=True,
+            _LOGGER.info(
+                "GORILA_MACRO_RESULT %s",
+                json.dumps(
+                    {
+                        "status": result.get("status", "UNKNOWN"),
+                        "latency_ms": latency_ms,
+                        "rows_inserted": result.get("rows_inserted", 0),
+                        "results": result.get("results", []),
+                        "canonical_daily": result.get("canonical_daily", []),
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
             )
         except asyncio.CancelledError:
             raise
@@ -595,13 +601,15 @@ async def _macro_loop() -> None:
                     "latency_ms": latency_ms,
                 }
             )
-            print(
-                "GORILA_MACRO_RESULT_ERROR",
-                {
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "latency_ms": latency_ms,
-                },
-                flush=True,
+            _LOGGER.error(
+                "GORILA_MACRO_RESULT_ERROR %s",
+                json.dumps(
+                    {
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "latency_ms": latency_ms,
+                    },
+                    sort_keys=True,
+                ),
             )
         await asyncio.sleep(_MACRO_INTERVAL_SECONDS)
 
@@ -745,7 +753,7 @@ async def _argentina_e2e_self_test() -> None:
         "snapshot_errors": _ARG_SIGNAL_STATE.get("errors"),
     }
     summary["ok"] = bool(summary["all_http_200"] and summary["history_sources_ok"] and summary["matrix_snapshot_status"] == "HEALTHY")
-    print("GORILA_ARG_E2E_RESULT", json.dumps(summary, sort_keys=True, default=str), flush=True)
+    _LOGGER.info("GORILA_ARG_E2E_RESULT %s", json.dumps(summary, sort_keys=True, default=str))
 
 async def _production_self_test() -> None:
     enabled = os.getenv("GORILA_SELF_TEST", "true").strip().lower() in {"1", "true", "yes"}
