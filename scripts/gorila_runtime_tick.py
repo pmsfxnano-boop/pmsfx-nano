@@ -11,7 +11,7 @@ from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from gorila_argentum.audit import build_audit_state
-from gorila_argentum.calibration import build_recalibration_candidate
+from gorila_argentum.calibration import apply_logit_intercept, build_recalibration_candidate
 from gorila_argentum.config import settings
 from gorila_argentum.learning import run_learning_cycle
 from gorila_argentum.ingest import run_batch
@@ -255,6 +255,141 @@ def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[s
     return {"status": "COMPLETED" if not errors else "PARTIAL", "saved": saved, "errors": errors[:20]}
 
 
+def _create_recalibration_shadow_predictions(
+    store: Store,
+    learning_results: list[dict[str, Any]],
+    recalibration: dict[str, Any],
+) -> dict[str, Any]:
+    """Capture a validated probability-calibration challenger prospectively."""
+    if recalibration.get("status") != "CANDIDATE_READY":
+        return {
+            "status": "NOT_READY",
+            "created": [],
+            "created_count": 0,
+            "skipped": [{"reason": "RECALIBRATION_NOT_READY"}],
+        }
+
+    intercept = recalibration.get("intercept")
+    if intercept is None:
+        return {
+            "status": "INVALID_CANDIDATE",
+            "created": [],
+            "created_count": 0,
+            "skipped": [{"reason": "MISSING_INTERCEPT"}],
+        }
+
+    model_version = "gorila-calibration-intercept-v1"
+    calibration_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "model_version": model_version,
+                "intercept": float(intercept),
+                "reference_n": int(recalibration.get("reference_n", 0)),
+                "validation_n": int(recalibration.get("validation_n", 0)),
+                "brier_improvement": float(recalibration.get("brier_improvement", 0.0)),
+                "logloss_improvement": float(recalibration.get("logloss_improvement", 0.0)),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    candidates = []
+    skipped = []
+    for result in learning_results:
+        if result.get("status") != "CANDIDATE_ELIGIBLE":
+            skipped.append({
+                "symbol": result.get("symbol"),
+                "reason": "LEARNER_NOT_ELIGIBLE",
+            })
+            continue
+
+        probability = result.get("latest_probability_up")
+        symbol = str(result.get("symbol") or "").upper()
+        if not symbol or probability is None:
+            skipped.append({
+                "symbol": symbol or None,
+                "reason": "NO_BASE_PROBABILITY",
+            })
+            continue
+
+        series = canonical_daily_series(store, symbol, "close", limit=1)
+        if not series:
+            skipped.append({
+                "symbol": symbol,
+                "reason": "NO_CANONICAL_ENTRY_PRICE",
+            })
+            continue
+
+        session_date, entry_price = series[-1]
+        calibrated_probability = apply_logit_intercept(float(probability), float(intercept))
+        feature_hash = hashlib.sha256(
+            f"{symbol}|{session_date}|{entry_price}|{calibration_fingerprint}|{probability}".encode()
+        ).hexdigest()
+        candidates.append({
+            "symbol": symbol,
+            "model_version": model_version,
+            "probability_up": float(calibrated_probability),
+            "horizon_seconds": 5 * 24 * 3600,
+            "regime": "LEARNING_5D_CALIBRATED_CHALLENGER",
+            "entry_price": float(entry_price),
+            "feature_hash": feature_hash,
+            "metadata": {
+                "source": "autonomous_recalibration_challenger",
+                "base_learner_id": result.get("learner_id"),
+                "base_model_hash": result.get("model_hash"),
+                "base_dataset_hash": result.get("dataset_hash"),
+                "base_canonical_content_hash": result.get("canonical_content_hash"),
+                "base_probability_up": float(probability),
+                "calibration_fingerprint": calibration_fingerprint,
+                "intercept": float(intercept),
+                "reference_n": int(recalibration.get("reference_n", 0)),
+                "validation_n": int(recalibration.get("validation_n", 0)),
+                "brier_improvement": float(recalibration.get("brier_improvement", 0.0)),
+                "logloss_improvement": float(recalibration.get("logloss_improvement", 0.0)),
+                "source_session_date": session_date,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "automatic_apply": False,
+            },
+        })
+
+    existing_hashes = store.shadow_existing_feature_hashes(
+        [row["feature_hash"] for row in candidates]
+    )
+    new_predictions = [row for row in candidates if row["feature_hash"] not in existing_hashes]
+    created_items = []
+    if new_predictions:
+        bulk = store.save_shadow_predictions_bulk(new_predictions)
+        for item, row in zip(bulk.get("items", []), new_predictions):
+            created_items.append({
+                "symbol": row["symbol"],
+                "prediction_id": item["id"],
+                "probability_up": row["probability_up"],
+                "feature_hash": row["feature_hash"],
+                "source_session_date": row["metadata"]["source_session_date"],
+                "calibration_fingerprint": calibration_fingerprint,
+            })
+
+    for row in candidates:
+        if row["feature_hash"] in existing_hashes:
+            skipped.append({
+                "symbol": row["symbol"],
+                "reason": "ALREADY_CAPTURED",
+                "feature_hash": row["feature_hash"],
+            })
+
+    return {
+        "status": "COMPLETED",
+        "model_version": model_version,
+        "calibration_fingerprint": calibration_fingerprint,
+        "created": created_items,
+        "created_count": len(created_items),
+        "candidate_count": len(candidates),
+        "skipped": skipped,
+    }
+
+
 def _create_learning_shadow_predictions(store: Store, learning_results: list[dict[str, Any]]) -> dict[str, Any]:
     candidates = []
     skipped = []
@@ -468,6 +603,19 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     stage_end("recalibration", stage_started, status=str(recalibration.get("status")))
 
     stage_started = datetime.now(timezone.utc)
+    recalibration_shadow = _create_recalibration_shadow_predictions(
+        store,
+        learning,
+        recalibration,
+    )
+    stage_end(
+        "recalibration_shadow",
+        stage_started,
+        created=int(recalibration_shadow.get("created_count", 0)),
+        status=str(recalibration_shadow.get("status")),
+    )
+
+    stage_started = datetime.now(timezone.utc)
     audit = build_audit_state(store)
     stage_end("audit", stage_started, shadow_open= (audit.get("shadow") or {}).get("open"))
     return {
@@ -488,6 +636,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "recalibration": {
             "candidate": recalibration,
             "persisted": persisted_recalibration,
+            "shadow_challenger": recalibration_shadow,
             "automatic_apply": False,
         },
         "audit": audit,
