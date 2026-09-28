@@ -521,7 +521,7 @@ async def _argentina_e2e_self_test() -> None:
     if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
         rava_t0 = time.perf_counter()
         try:
-            rava_result = await asyncio.to_thread(rava_public_historical_daily, "GGAL", 10)
+            rava_result = await asyncio.to_thread(rava_public_historical_daily, "GGAL", 400)
             results["rava_history"] = {
                 "ok": bool(rava_result.rows),
                 "rows": len(rava_result.rows),
@@ -530,6 +530,36 @@ async def _argentina_e2e_self_test() -> None:
                 "error": rava_result.error,
                 "last_event_time": rava_result.rows[-1].get("event_time") if rava_result.rows else None,
             }
+
+            byma_rows = (results.get("byma_history") or {}).get("rows") or []
+            rava_rows = rava_result.rows or []
+            byma_by_session = {
+                str(row.get("event_time") or "")[:10]: float(row.get("value"))
+                for row in byma_rows
+                if row.get("event_time") and row.get("value") is not None
+            }
+            rava_by_session = {
+                str(row.get("event_time") or "")[:10]: float(row.get("value"))
+                for row in rava_rows
+                if row.get("event_time") and row.get("value") is not None
+            }
+            overlap = sorted(set(byma_by_session) & set(rava_by_session))
+            latest_overlap = overlap[-1] if overlap else None
+            spread = None
+            if latest_overlap is not None:
+                a = byma_by_session[latest_overlap]
+                b = rava_by_session[latest_overlap]
+                median = (a + b) / 2.0
+                spread = abs(a - b) / median if median > 0 else None
+            results["rava_byma_agreement"] = {
+                "status": "OK" if spread is not None and spread <= 0.0025 else (
+                    "NO_OVERLAP" if spread is None else "DISCREPANCY"
+                ),
+                "overlap_sessions": len(overlap),
+                "latest_overlap_session": latest_overlap,
+                "relative_spread": spread,
+                "threshold": 0.0025,
+            }
         except Exception as exc:
             results["rava_history"] = {
                 "ok": False,
@@ -537,6 +567,13 @@ async def _argentina_e2e_self_test() -> None:
                 "source": "RavaPublic/GGAL",
                 "latency_ms": round((time.perf_counter() - rava_t0) * 1000, 2),
                 "error": f"{type(exc).__name__}: {exc}",
+            }
+            results["rava_byma_agreement"] = {
+                "status": "SOURCE_ERROR",
+                "overlap_sessions": 0,
+                "latest_overlap_session": None,
+                "relative_spread": None,
+                "threshold": 0.0025,
             }
 
     timeout = httpx.Timeout(20.0, connect=3.0)
