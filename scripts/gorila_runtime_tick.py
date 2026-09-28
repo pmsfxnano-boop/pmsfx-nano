@@ -1,28 +1,3 @@
-from __future__ import annotations
-
-import hashlib
-import json
-import os
-import uuid
-
-import psycopg
-from datetime import datetime, timezone
-from typing import Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from gorila_argentum.audit import build_audit_state
-from gorila_argentum.calibration import build_recalibration_candidate
-from gorila_argentum.config import settings
-from gorila_argentum.learning import run_learning_cycle
-from gorila_argentum.ingest import run_batch
-from gorila_argentum.promotion import evaluate_live_promotion
-from gorila_argentum.storage import Store
-from gorila_argentum.canonical_data import canonical_daily_series
-from gorila_argentum.shadow import compute_shadow_outcome
-from gorila_argentum.evidence import persist_manifest, persist_v2_evidence
-from quant.db import connection as quant_connection, record_model_registry
-
-
 def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
     created = 0
     settled = 0
@@ -133,6 +108,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
         except Exception as exc:
             errors.append({"stage": "forecast_outcomes_query", "error": f"{type(exc).__name__}: {exc}"})
 
+    settlements = []
     for shadow in open_rows:
         feature_hash = str(shadow.get("feature_hash") or "")
         if not feature_hash.startswith("pmsfx-forecast:"):
@@ -163,11 +139,16 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                 float(shadow["entry_price"]),
                 observed_price,
             )
-            store.settle_shadow_prediction(
-                shadow["id"],
-                outcome,
-                observed_at,
-                metadata={
+            settlements.append({
+                "prediction_id": shadow["id"],
+                "observed_at": observed_at,
+                "observed_price": float(outcome["observed_price"]),
+                "realized_direction": outcome["realized_direction"],
+                "return_pct": outcome.get("return_pct"),
+                "correct": outcome.get("correct"),
+                "brier": outcome.get("brier"),
+                "logloss": outcome.get("logloss"),
+                "metadata": {
                     "resolution": "shared_quant_forecast_outcome",
                     "quant_forecast_id": forecast_id,
                     "upstream_realized_direction": outcome_row[3],
@@ -176,8 +157,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                     "upstream_brier_loss": outcome_row[6],
                     "observed_price_source": observed_price_source,
                 },
-            )
-            settled += 1
+            })
         except Exception as exc:
             pending += 1
             errors.append(
@@ -187,6 +167,16 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
+
+    if settlements:
+        try:
+            bulk = store.settle_shadow_predictions_bulk(settlements)
+            settled = int(bulk.get("settled", 0))
+        except Exception as exc:
+            errors.append({
+                "stage": "bulk_shadow_settlement",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
 
     return {
         "status": "COMPLETED" if not errors else "PARTIAL",
