@@ -104,7 +104,14 @@ def persist_manifest(store: Store, manifest: dict[str, Any], *, source: str = "r
     return {"run_id": run_id, "manifest_sha256": digest, "rows_saved": len(rows)}
 
 
-def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def latest_evidence(
+    store: Store,
+    symbol: str | None = None,
+    horizon_days: int | None = None,
+    limit: int = 100,
+    symbols: tuple[str, ...] | None = None,
+    horizons: tuple[int, ...] | None = None,
+) -> list[dict[str, Any]]:
     store.init()
     if not store.pg:
         return []
@@ -115,13 +122,28 @@ def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int |
     if horizon_days is not None:
         clauses.append("horizon_days=%s")
         params.append(int(horizon_days))
+    if symbols:
+        clauses.append("symbol = ANY(%s)")
+        params.append([str(item).upper() for item in symbols])
+    if horizons:
+        clauses.append("horizon_days = ANY(%s)")
+        params.append([int(item) for item in horizons])
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max(1, min(500, int(limit))))
+    select_prefix = "SELECT"
+    order_clause = "ORDER BY created_at DESC,symbol,horizon_days"
+    if symbols and horizons:
+        # The promotion gate needs one current row per symbol/horizon. DISTINCT
+        # ON lets PostgreSQL use the composite research-evidence index and avoid
+        # transferring hundreds of historical rows just to discard them in Python.
+        select_prefix = "SELECT DISTINCT ON (symbol,horizon_days)"
+        order_clause = "ORDER BY symbol,horizon_days,created_at DESC"
     with store.connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT run_id,created_at,model_id,symbol,horizon_days,dataset_sha256,
+                {select_prefix}
+                       run_id,created_at,model_id,symbol,horizon_days,dataset_sha256,
                        sample_count,oos_samples,outer_folds,accuracy,brier,baseline_brier,
                        brier_skill,brier_skill_ci_low,brier_skill_ci_high,logloss,rank_ic,
                        net_return_50bps,placebo_accuracy_p95,pbo,dsr,execution_delta_50bps,
@@ -129,7 +151,7 @@ def latest_evidence(store: Store, symbol: str | None = None, horizon_days: int |
                        validation_reasons,prediction_reasons,strategy_reasons,manifest_sha256,metrics
                 FROM research_evidence
                 {where}
-                ORDER BY created_at DESC,symbol,horizon_days
+                {order_clause}
                 LIMIT %s
                 """,
                 tuple(params),
