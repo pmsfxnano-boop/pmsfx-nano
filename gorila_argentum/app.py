@@ -497,9 +497,11 @@ async def _argentina_e2e_self_test() -> None:
         "bcra": "/api/gorila/bcra",
     }
     results = {}
+    byma_history_raw_rows: list[dict[str, Any]] = []
     history_t0 = time.perf_counter()
     try:
         history_result = await asyncio.to_thread(byma_historical_daily, "GGAL")
+        byma_history_raw_rows = list(history_result.rows)
         results["byma_history"] = {
             "ok": bool(history_result.rows),
             "rows": len(history_result.rows),
@@ -521,7 +523,11 @@ async def _argentina_e2e_self_test() -> None:
     if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
         rava_t0 = time.perf_counter()
         try:
-            rava_result = await asyncio.to_thread(rava_public_historical_daily, "GGAL", 400)
+            rava_result = await asyncio.to_thread(
+                rava_public_historical_daily,
+                "GGAL",
+                limit_rows=400,
+            )
             results["rava_history"] = {
                 "ok": bool(rava_result.rows),
                 "rows": len(rava_result.rows),
@@ -531,7 +537,7 @@ async def _argentina_e2e_self_test() -> None:
                 "last_event_time": rava_result.rows[-1].get("event_time") if rava_result.rows else None,
             }
 
-            byma_rows = (results.get("byma_history") or {}).get("rows") or []
+            byma_rows = byma_history_raw_rows
             rava_rows = rava_result.rows or []
             byma_by_session = {
                 str(row.get("event_time") or "")[:10]: float(row.get("value"))
