@@ -18,6 +18,9 @@
   ],
   "promotion": "BLOCKED",
   "transport_status": "EXTERNAL_BYTE_EXACT_ARTIFACT_PRESERVED",
-  "runtime_serving": "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED",
-  "source_artifact": "block_r_live/block_r_prospective_freeze/frozen_g2_h10_arrays.npz"
+  "runtime_serving": "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED_AND_SCORER_REPRODUCED",
+  "source_artifact": "block_r_live/block_r_prospective_freeze/frozen_g2_h10_arrays.npz",
+  "artifact_size_bytes": 6989,
+  "artifact_sha256_verified": true,
+  "verification_scope": "exact external NPZ bytes verified in research environment"
 }
