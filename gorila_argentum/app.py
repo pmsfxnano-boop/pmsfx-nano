@@ -336,7 +336,7 @@ async def _init_store_background() -> None:
             "updated_at": time.time(),
             "latency_ms": round((time.perf_counter()-started)*1000,2),
         })
-        print("GORILA_DB_INIT", _DB_STATE.copy(), flush=True)
+        print("GORILA_DB_STATE", _DB_STATE.copy(), flush=True)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -347,7 +347,7 @@ async def _init_store_background() -> None:
             "updated_at": time.time(),
             "latency_ms": round((time.perf_counter()-started)*1000,2),
         })
-        print("GORILA_DB_INIT_ERROR", _DB_STATE.copy(), flush=True)
+        print("GORILA_DB_STATE_ERROR", _DB_STATE.copy(), flush=True)
 
 def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
     store = Store(); store.init()
@@ -570,7 +570,7 @@ async def _macro_loop() -> None:
                 }
             )
             print(
-                "GORILA_MACRO_CYCLE",
+                "GORILA_MACRO_RESULT",
                 {
                     "status": result.get("status", "UNKNOWN"),
                     "latency_ms": latency_ms,
@@ -596,7 +596,7 @@ async def _macro_loop() -> None:
                 }
             )
             print(
-                "GORILA_MACRO_CYCLE_ERROR",
+                "GORILA_MACRO_RESULT_ERROR",
                 {
                     "error": f"{type(exc).__name__}: {exc}",
                     "latency_ms": latency_ms,
