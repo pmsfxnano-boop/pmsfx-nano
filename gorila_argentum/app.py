@@ -419,6 +419,7 @@ async def _argentina_signal_snapshot_loop() -> None:
 
 async def _autonomous_watchdog_loop() -> None:
     """Watchdog for the long-lived autonomous task without creating overlapping ticks."""
+    global _AUTONOMOUS_TASK
     while True:
         try:
             now = time.time()
@@ -439,7 +440,7 @@ async def _autonomous_watchdog_loop() -> None:
                     "watchdog_status": "RESTARTING",
                     "watchdog_updated_at": now,
                 })
-                globals()["_AUTONOMOUS_TASK"] = asyncio.create_task(
+                _AUTONOMOUS_TASK = asyncio.create_task(
                     _autonomous_loop(),
                     name="gorila-autonomous-runtime-loop-restarted",
                 )
