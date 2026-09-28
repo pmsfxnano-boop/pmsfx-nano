@@ -641,10 +641,14 @@ async def _argentina_e2e_self_test() -> None:
                     "json": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+    http_probe_names = tuple(paths.keys())
     summary = {
-        "all_http_200": all(v.get("status")==200 for name,v in results.items() if name != "byma_history"),
+        "all_http_200": all((results.get(name) or {}).get("status") == 200 for name in http_probe_names),
         "byma_history_ok": bool((results.get("byma_history") or {}).get("ok")),
         "rava_history_ok": bool((results.get("rava_history") or {}).get("ok")) if "rava_history" in results else None,
+        "history_sources_ok": bool((results.get("byma_history") or {}).get("ok")) and (
+            bool((results.get("rava_history") or {}).get("ok")) if "rava_history" in results else True
+        ),
         "results": results,
         "matrix_snapshot_status": _ARG_SIGNAL_STATE.get("status"),
         "snapshot_updated_symbols": _ARG_SIGNAL_STATE.get("updated_symbols"),
