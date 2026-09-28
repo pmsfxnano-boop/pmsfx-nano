@@ -874,7 +874,10 @@ async def _production_self_test() -> None:
         and g2_payload.get("status") == "REGISTERED"
         and g2_payload.get("model_id") == "G2_PIT_FIXED_C0.25_H10"
         and g2_payload.get("promotion") == "BLOCKED"
-        and g2_payload.get("runtime_serving") == "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED"
+        and g2_payload.get("runtime_serving") in {
+            "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED",
+            "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED_AND_SCORER_REPRODUCED",
+        }
         and g2_payload.get("research_only") is True
         and g2_payload.get("no_execution_authority") is True,
         "status": g2_payload.get("status"),
@@ -1107,6 +1110,57 @@ def gorila_g2_h10_status():
             "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED_AND_SCORER_REPRODUCED",
         ),
     }
+
+
+@app.get("/api/gorila/g2-h10/score")
+def gorila_g2_h10_score():
+    from gorila_argentum.g2_frozen_scorer import G2FrozenModel, load_g2_frozen_model_from_env, score_g2_h10
+
+    try:
+        manifest_path = Path(__file__).resolve().parents[1] / "research" / "g2_h10_frozen_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "status": "UNAVAILABLE",
+            "model_id": "G2_PIT_FIXED_C0.25_H10",
+            "reason": "G2_MANIFEST_UNAVAILABLE",
+            "error": f"{type(exc).__name__}: {exc}",
+            "research_only": True,
+            "no_execution_authority": True,
+        }
+
+    artifact_path = os.getenv("GORILA_G2_ARTIFACT_PATH") or manifest.get("source_artifact") or ""
+    if not artifact_path or not Path(artifact_path).exists():
+        return {
+            "status": "ARTIFACT_UNAVAILABLE",
+            "model_id": manifest.get("model_id", "G2_PIT_FIXED_C0.25_H10"),
+            "model_package_sha256": manifest.get("model_package_sha256"),
+            "artifact_path": artifact_path or None,
+            "runtime_serving": "DISABLED",
+            "research_only": True,
+            "no_execution_authority": True,
+        }
+
+    try:
+        model = load_g2_frozen_model_from_env()
+        store = Store()
+        store.init()
+        result = score_g2_h10(store, model)
+        return {
+            **result,
+            "research_only": True,
+            "no_execution_authority": True,
+            "runtime_serving": "DISABLED",
+        }
+    except Exception as exc:
+        return {
+            "status": "ERROR",
+            "model_id": manifest.get("model_id", "G2_PIT_FIXED_C0.25_H10"),
+            "error": f"{type(exc).__name__}: {exc}",
+            "runtime_serving": "DISABLED",
+            "research_only": True,
+            "no_execution_authority": True,
+        }
 
 
 @app.get("/api/gorila/control")
