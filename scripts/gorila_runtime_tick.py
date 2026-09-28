@@ -1,3 +1,28 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import uuid
+
+import psycopg
+from datetime import datetime, timezone
+from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from gorila_argentum.audit import build_audit_state
+from gorila_argentum.calibration import build_recalibration_candidate
+from gorila_argentum.config import settings
+from gorila_argentum.learning import run_learning_cycle
+from gorila_argentum.ingest import run_batch
+from gorila_argentum.promotion import evaluate_live_promotion
+from gorila_argentum.storage import Store
+from gorila_argentum.canonical_data import canonical_daily_series
+from gorila_argentum.shadow import compute_shadow_outcome
+from gorila_argentum.evidence import persist_manifest, persist_v2_evidence
+from quant.db import connection as quant_connection, record_model_registry
+
+
 def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
     created = 0
     settled = 0
@@ -64,11 +89,7 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
         [row["feature_hash"] for row in candidates]
     )
     new_predictions = [
-        {
-            key: value
-            for key, value in row.items()
-            if key not in {"forecast_id"}
-        }
+        {key: value for key, value in row.items() if key != "forecast_id"}
         for row in candidates
         if row["feature_hash"] not in existing_hashes
     ]
@@ -106,7 +127,10 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                             int(row[0]): row for row in cur.fetchall()
                         }
         except Exception as exc:
-            errors.append({"stage": "forecast_outcomes_query", "error": f"{type(exc).__name__}: {exc}"})
+            errors.append({
+                "stage": "forecast_outcomes_query",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
 
     settlements = []
     for shadow in open_rows:
@@ -160,18 +184,15 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
             })
         except Exception as exc:
             pending += 1
-            errors.append(
-                {
-                    "prediction_id": shadow.get("id"),
-                    "forecast_id": forecast_id,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
+            errors.append({
+                "prediction_id": shadow.get("id"),
+                "forecast_id": forecast_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
 
     if settlements:
         try:
-            bulk = store.settle_shadow_predictions_bulk(settlements)
-            settled = int(bulk.get("settled", 0))
+            settled = int(store.settle_shadow_predictions_bulk(settlements).get("settled", 0))
         except Exception as exc:
             errors.append({
                 "stage": "bulk_shadow_settlement",
@@ -188,7 +209,6 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
         "candidate_rows": len(candidates),
         "existing_feature_hashes": len(existing_hashes),
     }
-
 def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[str, Any]:
     saved = 0
     errors = []
@@ -294,9 +314,7 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
     existing_hashes = store.shadow_existing_feature_hashes(
         [row["feature_hash"] for row in candidates]
     )
-    new_predictions = [
-        row for row in candidates if row["feature_hash"] not in existing_hashes
-    ]
+    new_predictions = [row for row in candidates if row["feature_hash"] not in existing_hashes]
     created_items = []
     if new_predictions:
         bulk = store.save_shadow_predictions_bulk(new_predictions)
@@ -326,7 +344,6 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
         "candidate_count": len(candidates),
         "existing_feature_hashes": len(existing_hashes),
     }
-
 def run_tick(store: Store | None = None) -> dict[str, Any]:
     store = store or Store()
     store.init()
