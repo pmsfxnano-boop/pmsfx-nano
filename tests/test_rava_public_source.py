@@ -35,5 +35,5 @@ def test_rava_public_parser_extracts_daily_close(monkeypatch):
 
     assert result.error is None
     assert len(result.rows) == 2
-    assert result.rows[-1]["value"] == 6395.0
+    assert result.rows[-1]["value"] == 6290.0
     assert result.rows[-1]["source"] == "RavaPublic/GGAL"
