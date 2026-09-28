@@ -35,7 +35,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote, byma_live_panel
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_data_intraday, twelve_data_live_quote, byma_live_panel
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import persistence_summary
@@ -187,9 +187,7 @@ async def _argentina_live_loop() -> None:
         rows_to_store: list[dict[str, Any]] = []
         session = argentina_session_state()
         provider = "byma_open_access"
-        fallback_provider = "twelve_data" if settings.twelve_data_api_key else (
-            "yahoo_fallback" if os.getenv("GORILA_ALLOW_YAHOO_LIVE", "0").strip().lower() in {"1","true","yes"} else "none"
-        )
+        fallback_provider = "twelve_data" if settings.twelve_data_api_key else "none"
         if not session["open"]:
             _ARG_LIVE_STATE.update({
                 "status": "MARKET_CLOSED",
@@ -226,7 +224,7 @@ async def _argentina_live_loop() -> None:
                 if fallback_provider != "none":
                     for symbol in settings.core_symbols:
                         fallback = await asyncio.to_thread(
-                            twelve_data_live_quote if fallback_provider == "twelve_data" else yahoo_chart_intraday,
+                            twelve_data_live_quote,
                             symbol,
                             "1min",
                         )
