@@ -82,7 +82,12 @@ def _shadow_diagnostics(rows: list[dict], *, current_size: int = 30, reference_s
     }
 
 
-def build_control_state(store: Store | None = None) -> dict:
+def build_control_state(
+    store: Store | None = None,
+    *,
+    live_evidence: dict | None = None,
+    promotion_decision: dict | None = None,
+) -> dict:
     store = store or Store()
     store.init()
 
@@ -100,8 +105,8 @@ def build_control_state(store: Store | None = None) -> dict:
     rank = {"ALERT": 0, "WARN": 1}
     alerts.sort(key=lambda row: (rank.get(row.get("status"), 9), row.get("created_at", "")), reverse=False)
 
-    promotion_decision = store.latest_promotion_decision()
-    live_evidence = evaluate_live_promotion(store)
+    promotion_decision = promotion_decision if promotion_decision is not None else store.latest_promotion_decision()
+    live_evidence = live_evidence if live_evidence is not None else evaluate_live_promotion(store)
     historical_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     promotion = _promotion_status(promotion_decision or live_evidence)
     latest_learning = store.latest_learning(limit=5)
