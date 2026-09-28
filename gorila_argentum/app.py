@@ -35,7 +35,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_data_intraday, twelve_data_live_quote, byma_live_panel, byma_historical_daily
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_data_intraday, twelve_data_live_quote, byma_live_panel, byma_historical_daily, rava_public_historical_daily
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import persistence_summary
@@ -518,6 +518,27 @@ async def _argentina_e2e_self_test() -> None:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
+    if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
+        rava_t0 = time.perf_counter()
+        try:
+            rava_result = await asyncio.to_thread(rava_public_historical_daily, "GGAL", 10)
+            results["rava_history"] = {
+                "ok": bool(rava_result.rows),
+                "rows": len(rava_result.rows),
+                "source": rava_result.source,
+                "latency_ms": round(float(rava_result.latency_ms or 0), 2),
+                "error": rava_result.error,
+                "last_event_time": rava_result.rows[-1].get("event_time") if rava_result.rows else None,
+            }
+        except Exception as exc:
+            results["rava_history"] = {
+                "ok": False,
+                "rows": 0,
+                "source": "RavaPublic/GGAL",
+                "latency_ms": round((time.perf_counter() - rava_t0) * 1000, 2),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
     timeout = httpx.Timeout(20.0, connect=3.0)
     async with httpx.AsyncClient(base_url=base, timeout=timeout) as client:
         for name, path in paths.items():
@@ -543,6 +564,7 @@ async def _argentina_e2e_self_test() -> None:
     summary = {
         "all_http_200": all(v.get("status")==200 for name,v in results.items() if name != "byma_history"),
         "byma_history_ok": bool((results.get("byma_history") or {}).get("ok")),
+        "rava_history_ok": bool((results.get("rava_history") or {}).get("ok")) if "rava_history" in results else None,
         "results": results,
         "matrix_snapshot_status": _ARG_SIGNAL_STATE.get("status"),
         "snapshot_updated_symbols": _ARG_SIGNAL_STATE.get("updated_symbols"),
