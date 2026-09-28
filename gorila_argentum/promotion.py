@@ -126,8 +126,13 @@ def evaluate_live_promotion(
     """Evaluate fresh evidence with separate predictor and strategy gates."""
     from .evidence import latest_evidence
 
-    rows = latest_evidence(store, limit=500)
     required = {(s, int(h)) for s in symbols for h in horizons}
+    rows = latest_evidence(
+        store,
+        symbols=tuple(symbols),
+        horizons=tuple(int(h) for h in horizons),
+        limit=max(50, len(required) * 2),
+    )
     latest = {}
     for row in rows:
         key = (str(row.get("symbol","")).upper(), int(row.get("horizon_days",0)))
