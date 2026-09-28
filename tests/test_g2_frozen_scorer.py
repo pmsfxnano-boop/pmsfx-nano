@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import numpy as np
 
 from gorila_argentum.g2_frozen_scorer import G2FrozenModel, score_g2_h10
@@ -61,8 +63,9 @@ def test_g2_scorer_returns_deterministic_cross_section(monkeypatch):
             "YPFD": 0.0025,
         }[symbol]
         rows = []
+        start = date(2026, 1, 1)
         for i in range(130):
-            day = f"2026-01-{1 + i:02d}" if i < 28 else f"2026-02-{1 + i - 28:02d}"
+            day = (start + timedelta(days=i)).isoformat()
             rows.append((day, base * (1.0 + offset * i + 0.0002 * np.sin(i / 3.0))))
         return rows
 
