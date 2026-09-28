@@ -329,7 +329,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
 
     timings: dict[str, float] = {}
     stage_started = datetime.now(timezone.utc)
-    ingestion = run_batch()
+    ingestion = run_batch(include_macro=False)
     timings["ingestion_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
 
     stage_started = datetime.now(timezone.utc)
