@@ -1108,6 +1108,117 @@ class Store:
         conn.commit(); conn.close(); self.conn=None
         return {"id": run_id, "created_at": now, "status": result.get("status","UNKNOWN")}
 
+    def shadow_feedback_fingerprint_batch(
+        self,
+        *,
+        model_version: str,
+        symbols: tuple[str, ...],
+        horizon_seconds: int,
+    ) -> dict[str, dict[str, Any]]:
+        """Compute settled-feedback fingerprints for multiple symbols in one query."""
+        symbols = tuple(str(symbol).upper() for symbol in symbols)
+        if not symbols:
+            return {}
+        conn = self.connect()
+        if self.pg:
+            sql = """SELECT p.symbol,p.id,p.created_at,o.observed_at,o.correct,o.brier,o.logloss,o.return_pct
+                     FROM shadow_predictions p
+                     JOIN shadow_outcomes o ON o.prediction_id=p.id
+                     WHERE p.model_version=%s
+                       AND p.symbol = ANY(%s)
+                       AND p.horizon_seconds=%s
+                       AND p.status='SETTLED'
+                     ORDER BY p.symbol ASC,o.observed_at ASC,p.id ASC"""
+            with conn.cursor() as cur:
+                cur.execute(sql, (model_version, list(symbols), int(horizon_seconds)))
+                rows = cur.fetchall()
+        else:
+            placeholders = ",".join(["?"] * len(symbols))
+            sql = f"""SELECT p.symbol,p.id,p.created_at,o.observed_at,o.correct,o.brier,o.logloss,o.return_pct
+                      FROM shadow_predictions p
+                      JOIN shadow_outcomes o ON o.prediction_id=p.id
+                      WHERE p.model_version=?
+                        AND p.symbol IN ({placeholders})
+                        AND p.horizon_seconds=?
+                        AND p.status='SETTLED'
+                      ORDER BY p.symbol ASC,o.observed_at ASC,p.id ASC"""
+            rows = conn.execute(sql, (model_version, *symbols, int(horizon_seconds))).fetchall()
+        conn.close(); self.conn=None
+
+        grouped: dict[str, list[list[Any]]] = {symbol: [] for symbol in symbols}
+        for row in rows:
+            grouped[str(row[0]).upper()].append([
+                str(row[1]),
+                str(row[2]),
+                str(row[3]),
+                None if row[4] is None else int(row[4]),
+                None if row[5] is None else float(row[5]),
+                None if row[6] is None else float(row[6]),
+                None if row[7] is None else float(row[7]),
+            ])
+
+        out = {}
+        for symbol in symbols:
+            payload = grouped[symbol]
+            digest = hashlib.sha256(
+                json.dumps(payload, sort_keys=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            ).hexdigest()
+            out[symbol] = {
+                "hash": digest,
+                "sample_count": len(payload),
+                "last_observed_at": payload[-1][2] if payload else None,
+            }
+        return out
+
+    def latest_learning_batch(self, symbols: tuple[str, ...], limit_per_symbol: int = 1) -> dict[str, dict[str, Any]]:
+        """Fetch the latest learner run for several symbols in one indexed query."""
+        symbols = tuple(str(symbol).upper() for symbol in symbols)
+        if not symbols:
+            return {}
+        limit_per_symbol = max(1, min(10, int(limit_per_symbol)))
+        conn = self.connect()
+        if self.pg:
+            sql = """SELECT id,created_at,symbol,horizon_days,status,dataset_hash,samples,result
+                     FROM (
+                         SELECT id,created_at,symbol,horizon_days,status,dataset_hash,samples,result,
+                                ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY created_at DESC) AS rn
+                         FROM learning_runs
+                         WHERE symbol = ANY(%s)
+                     ) ranked
+                     WHERE rn <= %s
+                     ORDER BY symbol,created_at DESC"""
+            with conn.cursor() as cur:
+                cur.execute(sql, (list(symbols), limit_per_symbol))
+                rows = cur.fetchall()
+        else:
+            placeholders = ",".join(["?"] * len(symbols))
+            rows = conn.execute(
+                f"""SELECT id,created_at,symbol,horizon_days,status,dataset_hash,samples,result
+                    FROM learning_runs
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY symbol,created_at DESC""",
+                tuple(symbols),
+            ).fetchall()
+        conn.close(); self.conn=None
+
+        out: dict[str, dict[str, Any]] = {}
+        counts: dict[str, int] = {symbol: 0 for symbol in symbols}
+        for row in rows:
+            symbol = str(row[2]).upper()
+            if counts.get(symbol, 0) >= limit_per_symbol:
+                continue
+            item = dict(zip(
+                ["id","created_at","symbol","horizon_days","status","dataset_hash","samples","result"],
+                row,
+            ))
+            try:
+                item["result"] = json.loads(item["result"] or "{}")
+            except Exception:
+                pass
+            out[symbol] = item
+            counts[symbol] += 1
+        return out
+
     def latest_learning(self, symbol=None, limit=20):
         conn=self.connect()
         params=[]
