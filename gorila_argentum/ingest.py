@@ -4,6 +4,7 @@ from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data
 from .bcra_macro import bcra_macro_cycle
 from .storage import Store
 from .drift import rolling_drift
+from .canonical_data import reconcile_all, canonical_daily_series
 
 def run_batch():
     store=Store(); store.init()
@@ -33,9 +34,19 @@ def run_batch():
             store.upsert_health(r.source,"HEALTHY",rows=len(r.rows),latency_ms=r.latency_ms,success=True)
         else:
             store.upsert_health(r.source,"DEGRADED",last_error=r.error,rows=0,latency_ms=r.latency_ms,success=False)
+
+    # Raw vendor rows are never consumed directly by the model. Rebuild the
+    # deterministic daily canonical layer after every successful ingestion batch.
+    canonical_results = reconcile_all(
+        store,
+        settings.core_symbols,
+        field="close",
+        limit_sessions=2500,
+    )
+
     drift_results=[]
     for symbol in settings.core_symbols:
-        series = store.recent_series(symbol, "close", limit=180)
+        series = canonical_daily_series(store, symbol, "close", limit=180)
         close_values = [value for _, value in series]
         result = rolling_drift(close_values, current_size=30, reference_size=90)
         store.save_drift(symbol, "close", result, metadata={"trigger": "ingest", "rows_inserted": total})
@@ -63,4 +74,5 @@ def run_batch():
         })
     return {"sources":len(results),"rows_inserted":total,
             "results":[{"source":r.source,"rows":len(r.rows),"error":r.error,"latency_ms":round(r.latency_ms or 0,2)} for r in results],
+            "canonical_daily": canonical_results,
             "drift":drift_results}
