@@ -1,6 +1,7 @@
 import os
 
 from gorila_argentum.canonical_data import (
+    canonical_content_hash,
     canonical_daily_series,
     reconcile_daily_symbol,
 )
@@ -145,3 +146,34 @@ def test_session_normalization_is_timezone_aware(tmp_path, monkeypatch):
     )
     reconcile_daily_symbol(store, "GGAL")
     assert canonical_daily_series(store, "GGAL") == [("2026-09-25", 100.0)]
+
+
+def test_canonical_content_hash_changes_with_accepted_value(tmp_path, monkeypatch):
+    store = _store(
+        tmp_path,
+        monkeypatch,
+        [{
+            "symbol": "GGAL",
+            "field": "close",
+            "value": 100.0,
+            "event_time": "2026-09-25T03:00:00+00:00",
+            "received_time": "2026-09-28T12:00:00+00:00",
+            "source": "BYMADATA/GGAL/historical",
+        }],
+    )
+    reconcile_daily_symbol(store, "GGAL")
+    first = canonical_content_hash(store, "GGAL")
+    assert first
+
+    store.insert_observations([{
+        "symbol": "GGAL",
+        "field": "close",
+        "value": 101.0,
+        "event_time": "2026-09-25T04:00:00+00:00",
+        "received_time": "2026-09-28T12:01:00+00:00",
+        "source": "Rava/GGAL",
+    }])
+    reconcile_daily_symbol(store, "GGAL")
+    second = canonical_content_hash(store, "GGAL")
+    assert second
+    assert first != second
