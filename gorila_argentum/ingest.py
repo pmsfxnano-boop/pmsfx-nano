@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import time
+from datetime import datetime, timezone
 from .config import settings
 from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,byma_historical_daily
 from .bcra_macro import bcra_macro_cycle
@@ -12,21 +13,55 @@ _DAILY_HISTORY_REFRESH_SECONDS = max(
     900,
     int(os.getenv("GORILA_DAILY_HISTORY_REFRESH_SECONDS", "21600")),
 )
-_LAST_DAILY_HISTORY_REFRESH_AT = 0.0
 
-def _daily_history_due(*, force: bool = False) -> bool:
-    global _LAST_DAILY_HISTORY_REFRESH_AT
-    now = time.monotonic()
-    if force or (now - _LAST_DAILY_HISTORY_REFRESH_AT) >= _DAILY_HISTORY_REFRESH_SECONDS:
-        _LAST_DAILY_HISTORY_REFRESH_AT = now
+def _daily_history_due(store: Store, *, force: bool = False) -> bool:
+    """Use durable source-health timestamps, not process-local state, for refresh scheduling."""
+    if force:
         return True
+    expected_sources = {f"BYMADATA/{symbol}/historical" for symbol in settings.core_symbols}
+    conn = store.connect()
+    try:
+        if store.pg:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT source,last_success_at
+                       FROM source_health
+                       WHERE source LIKE 'BYMADATA/%/historical'"""
+                )
+                rows = cur.fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT source,last_success_at
+                   FROM source_health
+                   WHERE source LIKE 'BYMADATA/%/historical'"""
+            ).fetchall()
+    finally:
+        conn.close()
+        store.conn = None
+
+    by_source = {str(source): last_success for source, last_success in rows}
+    if any(source not in by_source or not by_source[source] for source in expected_sources):
+        return True
+
+    now = datetime.now(timezone.utc)
+    for source in expected_sources:
+        try:
+            stamp = by_source[source]
+            dt = stamp if isinstance(stamp, datetime) else datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_seconds = max(0.0, (now - dt.astimezone(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return True
+        if age_seconds >= _DAILY_HISTORY_REFRESH_SECONDS:
+            return True
     return False
 
 def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
     store=Store(); store.init()
     macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status,bcra_macro_cycle] if include_macro else []
     results=[]
-    daily_history_refreshed = _daily_history_due(force=force_daily_history)
+    daily_history_refreshed = _daily_history_due(store, force=force_daily_history)
     if macro_funcs:
         with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
             futures=[ex.submit(fn) for fn in macro_funcs]
