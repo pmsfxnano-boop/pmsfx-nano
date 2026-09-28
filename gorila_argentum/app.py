@@ -1080,11 +1080,24 @@ def gorila_g2_h10_status():
             "research_only": True,
             "no_execution_authority": True,
         }
+    artifact_path = os.getenv(
+        "GORILA_G2_ARTIFACT_PATH",
+        manifest.get("source_artifact") or "",
+    )
+    artifact_present = bool(artifact_path and Path(artifact_path).exists())
     return {
         "status": "REGISTERED",
         **manifest,
+        "artifact_path": artifact_path or None,
+        "artifact_present": artifact_present,
+        "scorer_module": "gorila_argentum.g2_frozen_scorer",
+        "scorer_integration": "RESEARCH_ONLY_IMPLEMENTED",
         "research_only": True,
         "no_execution_authority": True,
+        "runtime_serving": manifest.get(
+            "runtime_serving",
+            "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED_AND_SCORER_REPRODUCED",
+        ),
     }
 
 
