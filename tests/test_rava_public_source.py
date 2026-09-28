@@ -37,3 +37,33 @@ def test_rava_public_parser_extracts_daily_close(monkeypatch):
     assert len(result.rows) == 2
     assert result.rows[-1]["value"] == 6290.0
     assert result.rows[-1]["source"] == "RavaPublic/GGAL"
+
+
+def test_rava_public_parser_keeps_newest_rows_when_source_is_descending(monkeypatch):
+    html = """
+    <table>
+      <tr><th>Fecha</th><th>A</th><th>B</th><th>C</th><th>Cierre</th></tr>
+      <tr><td>25/09/2026</td><td>0</td><td>0</td><td>0</td><td>6.290,00</td></tr>
+      <tr><td>24/09/2026</td><td>0</td><td>0</td><td>0</td><td>6.395,00</td></tr>
+      <tr><td>23/09/2026</td><td>0</td><td>0</td><td>0</td><td>6.500,00</td></tr>
+    </table>
+    """
+
+    class FakeResponse:
+        text = html
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def get(self, url):
+            return FakeResponse()
+
+    monkeypatch.setattr("gorila_argentum.sources._client", lambda: FakeClient())
+    result = rava_public_historical_daily("GGAL", limit_rows=2)
+
+    assert result.error is None
+    assert [row["value"] for row in result.rows] == [6395.0, 6290.0]
