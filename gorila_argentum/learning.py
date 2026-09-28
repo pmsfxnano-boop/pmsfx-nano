@@ -104,6 +104,12 @@ def run_learning_cycle(
         store.init()
 
     canonical_hash = canonical_content_hash(store, symbol, "close")
+    feedback_state = store.shadow_feedback_fingerprint(
+        model_version=LEARNER_ID,
+        symbol=symbol,
+        horizon_seconds=horizon_days * 24 * 3600,
+    )
+    feedback_hash = feedback_state["hash"]
     latest_runs = store.latest_learning(symbol=symbol, limit=1)
     previous = latest_runs[0] if latest_runs else None
     previous_result = (previous or {}).get("result") or {}
@@ -112,6 +118,7 @@ def run_learning_cycle(
         and previous.get("dataset_hash")
         and previous_result.get("canonical_content_hash") == canonical_hash
         and previous_result.get("learning_spec_hash") == LEARNING_SPEC_HASH
+        and previous_result.get("feedback_hash") == feedback_hash
     ):
         cached = dict(previous_result)
         cached.update({
@@ -123,6 +130,9 @@ def run_learning_cycle(
             "data_fabric": DATA_FABRIC,
             "canonical_content_hash": canonical_hash,
             "learning_spec_hash": LEARNING_SPEC_HASH,
+            "feedback_hash": feedback_hash,
+            "feedback_sample_count": feedback_state["sample_count"],
+            "feedback_last_observed_at": feedback_state["last_observed_at"],
             "reused": True,
             "reuse_reason": "CANONICAL_CONTENT_UNCHANGED",
             "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -149,6 +159,7 @@ def run_learning_cycle(
         previous
         and previous.get("dataset_hash") == dataset["dataset_hash"]
         and (previous.get("result") or {}).get("learning_spec_hash") == LEARNING_SPEC_HASH
+        and (previous.get("result") or {}).get("feedback_hash") == feedback_hash
     ):
         cached = dict(previous.get("result") or {})
         cached.update({
@@ -161,6 +172,9 @@ def run_learning_cycle(
             "dataset_hash": dataset["dataset_hash"],
             "canonical_content_hash": canonical_hash,
             "learning_spec_hash": LEARNING_SPEC_HASH,
+            "feedback_hash": feedback_hash,
+            "feedback_sample_count": feedback_state["sample_count"],
+            "feedback_last_observed_at": feedback_state["last_observed_at"],
             "reused": True,
             "reuse_reason": "DATASET_UNCHANGED",
             "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -253,6 +267,9 @@ def run_learning_cycle(
         "canonical_content_hash": canonical_hash,
         "learning_spec_hash": LEARNING_SPEC_HASH,
         "learning_spec": LEARNING_SPEC,
+        "feedback_hash": feedback_hash,
+        "feedback_sample_count": feedback_state["sample_count"],
+        "feedback_last_observed_at": feedback_state["last_observed_at"],
         "samples": dataset["samples"],
         "validation": validation,
         "latest_probability_up": latest_probability,
