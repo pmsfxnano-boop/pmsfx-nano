@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from gorila_argentum.storage import Store
+from gorila_argentum.canonical_data import canonical_daily_series
 from research.gorila_cross_sectional_predictor_v2 import (
     FEATURE_NAMES,
     HORIZON_DAYS,
@@ -37,13 +38,11 @@ def _feature(series: dict[str, dict[str, float]], symbol: str, dates: list[str],
 
 
 def _series_from_store(store: Store, limit: int = 2500) -> dict[str, dict[str, float]]:
+    """Read model inputs exclusively from the reconciled daily data fabric."""
     output: dict[str, dict[str, float]] = {}
     for symbol in SYMBOLS:
-        rows = store.recent_series(symbol, "close", limit=limit)
-        values = {}
-        for event_time, value in rows:
-            values[_date_key(event_time)] = float(value)
-        output[symbol] = values
+        rows = canonical_daily_series(store, symbol, "close", limit=limit)
+        output[symbol] = {str(session_date): float(value) for session_date, value in rows}
     return output
 
 
@@ -218,6 +217,7 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
     return {
         "status": "READY",
         "model": "fixed-pooled-logit-v1",
+        "data_fabric": "CANONICAL_DAILY_V1",
         "features": list(FEATURE_NAMES),
         "l2": L2,
         "horizon_days": HORIZON_DAYS,
