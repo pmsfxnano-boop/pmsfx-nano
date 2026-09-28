@@ -594,13 +594,25 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     stage_end("promotion", stage_started, status=str(decision.get("status")))
 
     stage_started = datetime.now(timezone.utc)
-    shadow_rows = store.latest_shadow(status="SETTLED", limit=500)
+    shadow_rows = store.latest_shadow(
+        status="SETTLED",
+        model_version="gorila-univariate-logit-candidate-v2",
+        limit=500,
+    )
     recalibration = build_recalibration_candidate(shadow_rows)
     persisted_recalibration = store.save_calibration_run(
         "shadow-probability-v0", recalibration
     )
 
-    stage_end("recalibration", stage_started, status=str(recalibration.get("status")))
+    stage_end(
+        "recalibration",
+        stage_started,
+        status=str(recalibration.get("status")),
+        samples=int(recalibration.get("samples", 0)),
+        required_samples=int(recalibration.get("required_samples", 0)),
+        brier_improvement=recalibration.get("brier_improvement"),
+        logloss_improvement=recalibration.get("logloss_improvement"),
+    )
 
     stage_started = datetime.now(timezone.utc)
     recalibration_shadow = _create_recalibration_shadow_predictions(
