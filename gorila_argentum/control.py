@@ -104,7 +104,7 @@ def build_control_state(store: Store | None = None) -> dict:
     live_evidence = evaluate_live_promotion(store)
     historical_evaluation = evaluate_promotion(CURRENT_BATCH10_EVIDENCE)
     promotion = _promotion_status(promotion_decision or live_evidence)
-    latest_learning = store.latest_learning(limit=1)
+    latest_learning = store.latest_learning(limit=5)
 
     storage_backend = "postgres" if store.pg else "sqlite-fallback"
     durability_ok = bool(store.pg)
@@ -196,6 +196,7 @@ def build_control_state(store: Store | None = None) -> dict:
             "warnings_or_alerts": alerts,
         },
         "learning": {
+            "runs": latest_learning,
             "latest_run": latest_learning[0] if latest_learning else None,
         },
         "model_diagnostics": shadow_diagnostics,
