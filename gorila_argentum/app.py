@@ -812,6 +812,29 @@ def gorila_market():
     return build_market_state()
 
 
+@app.get("/api/gorila/g2-h10/status")
+def gorila_g2_h10_status():
+    manifest_path = Path(__file__).resolve().parents[1] / "research" / "g2_h10_frozen_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "status": "UNAVAILABLE",
+            "model_id": "G2_PIT_FIXED_C0.25_H10",
+            "promotion": "BLOCKED",
+            "runtime_serving": "DISABLED",
+            "error": f"{type(exc).__name__}: {exc}",
+            "research_only": True,
+            "no_execution_authority": True,
+        }
+    return {
+        "status": "REGISTERED",
+        **manifest,
+        "research_only": True,
+        "no_execution_authority": True,
+    }
+
+
 @app.get("/api/gorila/control")
 def gorila_control_snapshot():
     store = Store()
