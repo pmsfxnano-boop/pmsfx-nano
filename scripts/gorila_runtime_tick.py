@@ -30,10 +30,6 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
     errors = []
     forecast_rows = []
 
-    # PMSF-X is already the live/validated market-data engine in the shared
-    # Postgres. Importing its forecasts into Gorila's shadow ledger preserves
-    # the actual forecast timestamps and lets the shadow layer evaluate the
-    # same decisions without executing trades.
     try:
         with quant_connection() as conn:
             if conn is None:
@@ -63,36 +59,47 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
-    imported_ids: set[int] = set()
+    candidates = []
     for row in forecast_rows:
         forecast_id = int(row[0])
-        feature_hash = f"pmsfx-forecast:{forecast_id}"
-        if store.shadow_exists_by_feature_hash(feature_hash):
-            imported_ids.add(forecast_id)
-            continue
-        created_at = row[1].isoformat() if hasattr(row[1], "isoformat") else str(row[1])
-        result = store.save_shadow_prediction(
-            symbol=str(row[2]).upper(),
-            model_version="pmsfx-x-upstream-shadow-v1",
-            probability_up=float(row[6]),
-            horizon_seconds=int(row[8]),
-            regime="PMSF_X_LIVE",
-            entry_price=float(row[9]),
-            feature_hash=feature_hash,
-            metadata={
-                "source": "shared_quant_postgres",
-                "quant_forecast_id": forecast_id,
-                "upstream_model_id": row[3],
-                "upstream_status": row[4],
-                "upstream_direction": row[5],
-                "upstream_confidence": row[7],
-                "historical_backfill": True,
-            },
-            created_at=created_at,
+        candidates.append(
+            {
+                "symbol": str(row[2]).upper(),
+                "model_version": "pmsfx-x-upstream-shadow-v1",
+                "probability_up": float(row[6]),
+                "horizon_seconds": int(row[8]),
+                "regime": "PMSF_X_LIVE",
+                "entry_price": float(row[9]),
+                "feature_hash": f"pmsfx-forecast:{forecast_id}",
+                "created_at": row[1].isoformat() if hasattr(row[1], "isoformat") else str(row[1]),
+                "metadata": {
+                    "source": "shared_quant_postgres",
+                    "quant_forecast_id": forecast_id,
+                    "upstream_model_id": row[3],
+                    "upstream_status": row[4],
+                    "upstream_direction": row[5],
+                    "upstream_confidence": row[7],
+                    "historical_backfill": True,
+                },
+                "forecast_id": forecast_id,
+            }
         )
-        imported_ids.add(forecast_id)
-        if not result.get("existing"):
-            created += 1
+
+    existing_hashes = store.shadow_existing_feature_hashes(
+        [row["feature_hash"] for row in candidates]
+    )
+    new_predictions = [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in {"forecast_id"}
+        }
+        for row in candidates
+        if row["feature_hash"] not in existing_hashes
+    ]
+    if new_predictions:
+        bulk = store.save_shadow_predictions_bulk(new_predictions)
+        created = int(bulk.get("created", 0))
 
     open_rows = [
         row for row in store.latest_shadow(status="OPEN", limit=500)
@@ -123,8 +130,8 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
                         outcomes_by_forecast = {
                             int(row[0]): row for row in cur.fetchall()
                         }
-        except Exception:
-            outcomes_by_forecast = {}
+        except Exception as exc:
+            errors.append({"stage": "forecast_outcomes_query", "error": f"{type(exc).__name__}: {exc}"})
 
     for shadow in open_rows:
         feature_hash = str(shadow.get("feature_hash") or "")
@@ -136,7 +143,6 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
             continue
 
         outcome_row = outcomes_by_forecast.get(forecast_id)
-
         if not outcome_row or outcome_row[1] is None or outcome_row[0] is None:
             pending += 1
             continue
@@ -189,8 +195,9 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
         "pending": pending,
         "errors": errors[:20],
         "source_forecasts_seen": len(forecast_rows),
+        "candidate_rows": len(candidates),
+        "existing_feature_hashes": len(existing_hashes),
     }
-
 
 def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[str, Any]:
     saved = 0
