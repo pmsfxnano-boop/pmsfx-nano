@@ -1,6 +1,10 @@
 from __future__ import annotations
-import time, httpx
+import re
+import time
+import httpx
+from html.parser import HTMLParser
 from datetime import datetime, timezone
+
 from zoneinfo import ZoneInfo
 from .config import settings
 
@@ -10,6 +14,100 @@ def iso(dt): return dt.astimezone(timezone.utc).isoformat()
 class SourceResult:
     def __init__(self, source, rows=None, error=None, latency_ms=None):
         self.source=source; self.rows=rows or []; self.error=error; self.latency_ms=latency_ms
+
+class _RavaProfileTableParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+        self._in_td = False
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "tr":
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell = []
+            self._in_td = True
+
+    def handle_data(self, data):
+        if self._in_td and self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in {"td", "th"} and self._row is not None and self._cell is not None:
+            value = " ".join("".join(self._cell).split())
+            self._row.append(value)
+            self._cell = None
+            self._in_td = False
+        elif tag == "tr" and self._row is not None:
+            if self._row:
+                self.rows.append(self._row)
+            self._row = None
+
+
+def _parse_rava_number(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return None
+    text = text.replace(".", "").replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def rava_public_historical_daily(symbol: str, limit_rows: int = 120):
+    source = f"RavaPublic/{symbol}"
+    t0 = time.perf_counter()
+    received = now()
+    try:
+        url = f"https://www.rava.com/perfil/{symbol}"
+        with _client() as client:
+            response = client.get(url)
+            response.raise_for_status()
+            html = response.text
+
+        parser = _RavaProfileTableParser()
+        parser.feed(html)
+        date_pattern = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+        rows = []
+        for cells in parser.rows:
+            if len(cells) < 5 or not date_pattern.match(cells[0]):
+                continue
+            close = _parse_rava_number(cells[4])
+            if close is None or close <= 0:
+                continue
+            day, month, year = cells[0].split("/")
+            local_stamp = f"{year}-{month}-{day}T23:59:59-03:00"
+            rows.append(
+                {
+                    "symbol": str(symbol).upper(),
+                    "field": "close",
+                    "value": close,
+                    "event_time": local_stamp,
+                    "received_time": iso(received),
+                    "source": source,
+                    "latency_ms": (time.perf_counter() - t0) * 1000,
+                    "metadata": {
+                        "provider": "Rava",
+                        "transport": "public_profile_html",
+                        "url": url,
+                    },
+                }
+            )
+        rows = rows[-max(1, int(limit_rows)):]
+        if not rows:
+            raise RuntimeError("RAVA_PUBLIC_HISTORICAL_ROWS_NOT_FOUND")
+        return SourceResult(source, rows, latency_ms=(time.perf_counter() - t0) * 1000)
+    except Exception as e:
+        return SourceResult(
+            source,
+            error=f"{type(e).__name__}: {e}",
+            latency_ms=(time.perf_counter() - t0) * 1000,
+        )
 
 def _client():
     return httpx.Client(timeout=settings.http_timeout_s, headers={"User-Agent":"Gorila-Argentum/0.1"})
