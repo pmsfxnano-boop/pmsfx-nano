@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, sqlite3, os, uuid
+import hashlib, json, sqlite3, os, uuid
 from datetime import datetime, timezone, timedelta
 import threading
 from .shadow import compute_shadow_outcome
@@ -923,6 +923,55 @@ class Store:
             "settled": int(bulk.get("settled", 0)),
             "items": bulk.get("items", []),
             "query_symbols": len(grouped),
+        }
+
+    def shadow_feedback_fingerprint(
+        self,
+        *,
+        model_version: str,
+        symbol: str,
+        horizon_seconds: int,
+    ) -> dict[str, Any]:
+        """Fingerprint settled feedback so learning reacts to new outcomes."""
+        conn = self.connect()
+        params = (model_version, str(symbol).upper(), int(horizon_seconds))
+        sql = """SELECT p.id,p.created_at,o.observed_at,o.correct,o.brier,o.logloss,o.return_pct
+                 FROM shadow_predictions p
+                 JOIN shadow_outcomes o ON o.prediction_id=p.id
+                 WHERE p.model_version=%s
+                   AND p.symbol=%s
+                   AND p.horizon_seconds=%s
+                   AND p.status='SETTLED'
+                 ORDER BY o.observed_at ASC,p.id ASC"""
+        if self.pg:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+        else:
+            sql = sql.replace("%s", "?")
+            rows = conn.execute(sql, params).fetchall()
+        conn.close()
+        self.conn = None
+
+        payload = [
+            [
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                None if row[3] is None else int(row[3]),
+                None if row[4] is None else float(row[4]),
+                None if row[5] is None else float(row[5]),
+                None if row[6] is None else float(row[6]),
+            ]
+            for row in rows
+        ]
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        ).hexdigest()
+        return {
+            "hash": digest,
+            "sample_count": len(payload),
+            "last_observed_at": payload[-1][2] if payload else None,
         }
 
     def latest_shadow(self, symbol=None, status=None, limit=100):
