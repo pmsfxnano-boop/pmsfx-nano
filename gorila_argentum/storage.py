@@ -548,6 +548,88 @@ class Store:
         self.conn = None
         return bool(row)
 
+    def shadow_existing_feature_hashes(self, feature_hashes):
+        hashes = sorted({str(value) for value in (feature_hashes or []) if str(value)})
+        if not hashes:
+            return set()
+        conn = self.connect()
+        try:
+            if self.pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT feature_hash FROM shadow_predictions WHERE feature_hash = ANY(%s)",
+                        (hashes,),
+                    )
+                    rows = cur.fetchall()
+            else:
+                placeholders = ",".join(["?"] * len(hashes))
+                rows = conn.execute(
+                    f"SELECT feature_hash FROM shadow_predictions WHERE feature_hash IN ({placeholders})",
+                    tuple(hashes),
+                ).fetchall()
+            return {str(row[0]) for row in rows}
+        finally:
+            conn.close()
+            self.conn = None
+
+    def save_shadow_predictions_bulk(self, predictions):
+        if not predictions:
+            return {"created": 0, "items": []}
+        now = utc_now()
+        values = []
+        items = []
+        for prediction in predictions:
+            prediction_id = uuid.uuid4().hex
+            created_at = prediction.get("created_at") or now
+            prob = float(prediction["probability_up"])
+            values.append((
+                prediction_id,
+                created_at,
+                str(prediction["symbol"]).upper(),
+                str(prediction["model_version"]),
+                prob,
+                "UP" if prob >= 0.5 else "DOWN",
+                int(prediction["horizon_seconds"]),
+                str(prediction.get("regime") or "UNKNOWN"),
+                float(prediction["entry_price"]),
+                str(prediction.get("feature_hash") or ""),
+                "OPEN",
+                None,
+                json.dumps(prediction.get("metadata") or {}),
+            ))
+            items.append({
+                "id": prediction_id,
+                "created_at": _as_iso(created_at),
+                "status": "OPEN",
+                "existing": False,
+                "feature_hash": str(prediction.get("feature_hash") or ""),
+            })
+
+        conn = self.connect()
+        try:
+            if self.pg:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """INSERT INTO shadow_predictions(
+                           id,created_at,symbol,model_version,probability_up,direction,
+                           horizon_seconds,regime,entry_price,feature_hash,status,settled_at,metadata)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        values,
+                    )
+            else:
+                conn.executemany(
+                    """INSERT INTO shadow_predictions(
+                       id,created_at,symbol,model_version,probability_up,direction,
+                       horizon_seconds,regime,entry_price,feature_hash,status,settled_at,metadata)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            conn.commit()
+            return {"created": len(items), "items": items}
+        finally:
+            conn.close()
+            self.conn = None
+
     def save_shadow_prediction(
         self,
         symbol,
