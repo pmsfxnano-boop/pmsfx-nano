@@ -374,9 +374,11 @@ async def _argentina_signal_snapshot_loop() -> None:
 
 async def _autonomous_loop() -> None:
     await asyncio.sleep(_AUTONOMOUS_START_DELAY_SECONDS)
+    print("GORILA_AUTONOMOUS_LOOP_ENTERED", {"interval_seconds": _AUTONOMOUS_INTERVAL_SECONDS}, flush=True)
     while True:
         started = time.perf_counter()
         try:
+            print("GORILA_AUTONOMOUS_TICK_STARTED", flush=True)
             result = await asyncio.to_thread(
                 run_autonomous_tick,
                 kind="autonomous",
@@ -414,6 +416,15 @@ async def _autonomous_loop() -> None:
                     },
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
+            )
+            print(
+                "GORILA_AUTONOMOUS_CYCLE_ERROR",
+                {
+                    "status": "ERROR",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+                flush=True,
             )
         retry_seconds = 15 if _AUTONOMOUS_STATE.get("status") in {"SKIPPED_ALREADY_RUNNING", "SKIPPED_ALREADY_CLAIMED"} else _AUTONOMOUS_INTERVAL_SECONDS
         await asyncio.sleep(retry_seconds)
