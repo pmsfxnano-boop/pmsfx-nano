@@ -31,11 +31,13 @@ def test_learning_dataset_uses_canonical_fabric(monkeypatch):
     assert result["status"] == "READY"
     assert result["samples"] > 100
     assert result["dataset_hash"]
+    assert result["canonical_content_hash"] == "canonical-hash-test"
 
 
 def test_candidate_result_contains_reproducibility_identity(monkeypatch):
     series = _synthetic_series()
     monkeypatch.setattr(learning, "canonical_daily_series", lambda *args, **kwargs: series)
+    monkeypatch.setattr(learning, "canonical_content_hash", lambda *args, **kwargs: "canonical-hash-test")
 
     class FakeStore:
         def save_learning_run(self, symbol, horizon_days, result):
