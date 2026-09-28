@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 import gorila_argentum.learning as learning
+import scripts.gorila_runtime_tick as runtime_tick
 
 
 def _synthetic_series(n=180):
@@ -40,6 +41,9 @@ def test_candidate_result_contains_reproducibility_identity(monkeypatch):
     monkeypatch.setattr(learning, "canonical_content_hash", lambda *args, **kwargs: "canonical-hash-test")
 
     class FakeStore:
+        def latest_learning(self, symbol=None, limit=20):
+            return []
+
         def save_learning_run(self, symbol, horizon_days, result):
             self.saved = result
             return {"id": "test"}
@@ -125,15 +129,15 @@ def test_learning_shadow_creation_deduplicates_and_batches():
     class Canonical:
         pass
 
-    original = learning.canonical_daily_series
+    original = runtime_tick.canonical_daily_series
     try:
-        learning.canonical_daily_series = lambda store, symbol, field, limit: [("2026-09-25", 100.0)]
+        runtime_tick.canonical_daily_series = lambda store, symbol, field, limit: [("2026-09-25", 100.0)]
         result = _create_learning_shadow_predictions(
             store,
             [{**base, "symbol": "GGAL"}],
         )
     finally:
-        learning.canonical_daily_series = original
+        runtime_tick.canonical_daily_series = original
 
     assert result["created_count"] == 1
     assert len(store.saved) == 1
