@@ -236,7 +236,7 @@ def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[s
 
 
 def _create_learning_shadow_predictions(store: Store, learning_results: list[dict[str, Any]]) -> dict[str, Any]:
-    created = []
+    candidates = []
     skipped = []
     for result in learning_results:
         symbol = str(result.get("symbol") or "").strip().upper()
@@ -245,8 +245,6 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
         if not symbol:
             skipped.append({"symbol": None, "reason": "NO_SYMBOL"})
             continue
-        # Rejected/insufficient candidates stay in research storage only. They
-        # must never enter the shadow ledger as though they were validated.
         if status != "CANDIDATE_ELIGIBLE":
             skipped.append({"symbol": symbol, "reason": "CANDIDATE_NOT_ELIGIBLE", "status": status})
             continue
@@ -268,27 +266,22 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
         feature_hash = hashlib.sha256(
             f"{symbol}|{event_time}|{entry_price}|{probability}|{dataset_hash}|{model_hash}".encode()
         ).hexdigest()
-
-        latest = store.latest_shadow(symbol=symbol, limit=1)
-        if latest and latest[0].get("feature_hash") == feature_hash:
-            skipped.append({"symbol": symbol, "reason": "ALREADY_CAPTURED", "feature_hash": feature_hash})
-            continue
-
-        shadow = store.save_shadow_prediction(
-            symbol=symbol,
-            model_version=result.get("learner_id", "gorila-learning-5d-v2"),
-            probability_up=float(probability),
-            horizon_seconds=5 * 24 * 3600,
-            regime="LEARNING_5D",
-            entry_price=float(entry_price),
-            feature_hash=feature_hash,
-            metadata={
+        candidates.append({
+            "symbol": symbol,
+            "model_version": result.get("learner_id", "gorila-learning-5d-v2"),
+            "probability_up": float(probability),
+            "horizon_seconds": 5 * 24 * 3600,
+            "regime": "LEARNING_5D",
+            "entry_price": float(entry_price),
+            "feature_hash": feature_hash,
+            "metadata": {
                 "source": "autonomous_learning_cycle",
                 "learner_id": result.get("learner_id"),
                 "trainer_version": result.get("trainer_version"),
                 "data_fabric": result.get("data_fabric"),
                 "feature_names": result.get("feature_names"),
                 "dataset_hash": dataset_hash,
+                "canonical_content_hash": result.get("canonical_content_hash"),
                 "model_hash": model_hash,
                 "learning_status": status,
                 "validation": result.get("validation"),
@@ -296,20 +289,43 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
                 "source_session_date": event_time,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             },
-        )
-        created.append(
-            {
-                "symbol": symbol,
-                "prediction_id": shadow["id"],
-                "probability_up": float(probability),
-                "horizon_seconds": 5 * 24 * 3600,
-                "feature_hash": feature_hash,
-                "source_session_date": event_time,
-                "model_hash": model_hash,
-            }
-        )
-    return {"created": created, "created_count": len(created), "skipped": skipped}
+        })
 
+    existing_hashes = store.shadow_existing_feature_hashes(
+        [row["feature_hash"] for row in candidates]
+    )
+    new_predictions = [
+        row for row in candidates if row["feature_hash"] not in existing_hashes
+    ]
+    created_items = []
+    if new_predictions:
+        bulk = store.save_shadow_predictions_bulk(new_predictions)
+        for item, row in zip(bulk.get("items", []), new_predictions):
+            created_items.append({
+                "symbol": row["symbol"],
+                "prediction_id": item["id"],
+                "probability_up": row["probability_up"],
+                "horizon_seconds": row["horizon_seconds"],
+                "feature_hash": row["feature_hash"],
+                "source_session_date": row["metadata"]["source_session_date"],
+                "model_hash": row["metadata"]["model_hash"],
+            })
+
+    for row in candidates:
+        if row["feature_hash"] in existing_hashes:
+            skipped.append({
+                "symbol": row["symbol"],
+                "reason": "ALREADY_CAPTURED",
+                "feature_hash": row["feature_hash"],
+            })
+
+    return {
+        "created": created_items,
+        "created_count": len(created_items),
+        "skipped": skipped,
+        "candidate_count": len(candidates),
+        "existing_feature_hashes": len(existing_hashes),
+    }
 
 def run_tick(store: Store | None = None) -> dict[str, Any]:
     store = store or Store()
