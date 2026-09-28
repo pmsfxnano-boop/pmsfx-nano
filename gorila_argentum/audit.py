@@ -14,8 +14,6 @@ def build_audit_state(store: Store | None = None) -> dict:
     # evaluation from the hot autonomous path.
     promotion = control["promotion_gate"]["live_evidence"]
     shadow = store.shadow_summary()
-    learning = store.latest_learning(limit=5)
-
     return {
         "service": "gorila-argentum",
         "mode": control["runtime"]["mode"],
@@ -28,8 +26,8 @@ def build_audit_state(store: Store | None = None) -> dict:
         },
         "shadow": shadow,
         "learning": {
-            "runs": len(learning),
-            "latest": learning[0] if learning else None,
+            "runs": len(control["learning"]["runs"]),
+            "latest": control["learning"]["latest_run"],
         },
         "recalibration": {
             "latest": control["recalibration"],
