@@ -98,6 +98,7 @@ def rava_public_historical_daily(symbol: str, limit_rows: int = 400):
                     },
                 }
             )
+        rows.sort(key=lambda row: str(row.get("event_time") or ""))
         rows = rows[-max(1, int(limit_rows)):]
         if not rows:
             raise RuntimeError("RAVA_PUBLIC_HISTORICAL_ROWS_NOT_FOUND")
