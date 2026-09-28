@@ -35,7 +35,7 @@ from .signal_engine import CORE_SYMBOLS as SIGNAL_SYMBOLS, build_matrix, build_s
 from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
-from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote
+from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, yahoo_chart_intraday, twelve_data_intraday, twelve_data_live_quote, byma_live_panel
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import persistence_summary
@@ -173,8 +173,10 @@ def _run_macro_ingest() -> dict[str, Any]:
 async def _argentina_live_loop() -> None:
     """Maintain a bounded intraday cache without blocking the API process.
 
-    Priority: configured Twelve Data intraday feed. Yahoo is opt-in only because
-    repeated anonymous polling was observed to return HTTP 429 from Render.
+    Priority: BYMADATA Open Access (unauthenticated public BYMA feed). It returns
+    the whole leading-equity panel in one request, so the loop avoids six separate
+    vendor calls and respects the public endpoint's rate-limit guidance. Twelve Data
+    remains a secondary fallback when explicitly configured. Yahoo is opt-in only.
     When BYMA is closed the loop does not hit any vendor and reports CLOSED.
     """
     await asyncio.sleep(5)
@@ -184,7 +186,8 @@ async def _argentina_live_loop() -> None:
         updated = 0
         rows_to_store: list[dict[str, Any]] = []
         session = argentina_session_state()
-        provider = "twelve_data" if settings.twelve_data_api_key else (
+        provider = "byma_open_access"
+        fallback_provider = "twelve_data" if settings.twelve_data_api_key else (
             "yahoo_fallback" if os.getenv("GORILA_ALLOW_YAHOO_LIVE", "0").strip().lower() in {"1","true","yes"} else "none"
         )
         if not session["open"]:
@@ -195,46 +198,53 @@ async def _argentina_live_loop() -> None:
                 "updated_symbols": 0,
                 "errors": [],
                 "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
-                "provider": provider,
-                "symbols": list(settings.core_symbols),
-            })
-            await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
-            continue
-        if provider == "none":
-            _ARG_LIVE_STATE.update({
-                "status": "NO_PROFESSIONAL_FEED",
-                "updated_at": time.time(),
-                "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
-                "updated_symbols": 0,
-                "errors": [{"symbol":"*","error":"TWELVE_DATA_API_KEY_MISSING_AND_YAHOO_FALLBACK_DISABLED"}],
-                "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
-                "provider": provider,
+                "provider": provider if not errors else (provider if updated else fallback_provider),
                 "symbols": list(settings.core_symbols),
             })
             await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
             continue
         try:
-            for symbol in settings.core_symbols:
-                result = await asyncio.to_thread(
-                    twelve_data_live_quote if provider == "twelve_data" else yahoo_chart_intraday,
-                    symbol,
-                    "1min",
-                )
-                if not result.rows:
-                    errors.append({"symbol": symbol, "error": result.error or "NO_ROWS"})
-                    continue
-                latest = max(result.rows, key=lambda row: str(row.get("event_time") or ""))
-                _ARG_LIVE_CACHE[symbol] = {
-                    "symbol": symbol,
-                    "last": float(latest["value"]),
-                    "quote_timestamp": str(latest.get("event_time")),
-                    "received_at": str(latest.get("received_time")),
-                    "source": result.source,
-                    "latency_ms": round(float(result.latency_ms or 0), 2),
-                    "updated_epoch": time.time(),
-                }
-                rows_to_store.append(latest)
-                updated += 1
+            result = await asyncio.to_thread(byma_live_panel)
+            if result.rows:
+                for latest in result.rows:
+                    symbol = str(latest.get("symbol") or "").upper()
+                    if symbol not in settings.core_symbols:
+                        continue
+                    _ARG_LIVE_CACHE[symbol] = {
+                        "symbol": symbol,
+                        "last": float(latest["value"]),
+                        "quote_timestamp": str(latest.get("event_time")),
+                        "received_at": str(latest.get("received_time")),
+                        "source": result.source,
+                        "latency_ms": round(float(result.latency_ms or 0), 2),
+                        "updated_epoch": time.time(),
+                    }
+                    rows_to_store.append(latest)
+                    updated += 1
+            if not result.rows:
+                errors.append({"symbol":"*","error": result.error or "BYMA_NO_ROWS"})
+                if fallback_provider != "none":
+                    for symbol in settings.core_symbols:
+                        fallback = await asyncio.to_thread(
+                            twelve_data_live_quote if fallback_provider == "twelve_data" else yahoo_chart_intraday,
+                            symbol,
+                            "1min",
+                        )
+                        if not fallback.rows:
+                            errors.append({"symbol":symbol,"error":fallback.error or "FALLBACK_NO_ROWS"})
+                            continue
+                        latest = max(fallback.rows, key=lambda row: str(row.get("event_time") or ""))
+                        _ARG_LIVE_CACHE[symbol] = {
+                            "symbol": symbol,
+                            "last": float(latest["value"]),
+                            "quote_timestamp": str(latest.get("event_time")),
+                            "received_at": str(latest.get("received_time")),
+                            "source": fallback.source,
+                            "latency_ms": round(float(fallback.latency_ms or 0), 2),
+                            "updated_epoch": time.time(),
+                        }
+                        rows_to_store.append(latest)
+                        updated += 1
             if rows_to_store:
                 try:
                     await asyncio.to_thread(Store().insert_observations, rows_to_store)
