@@ -7,7 +7,7 @@ from typing import Any
 
 from .prediction import fit_logistic, predict
 from .storage import Store
-from .canonical_data import canonical_daily_series
+from .canonical_data import canonical_content_hash, canonical_daily_series
 
 LEARNER_ID = "gorila-univariate-logit-candidate-v2"
 TRAINER_VERSION = "2026-09-28"
@@ -86,6 +86,30 @@ def run_learning_cycle(
     if initialize_store:
         store.init()
 
+    canonical_hash = canonical_content_hash(store, symbol, "close")
+    latest_runs = store.latest_learning(symbol=symbol, limit=1)
+    previous = latest_runs[0] if latest_runs else None
+    previous_result = (previous or {}).get("result") or {}
+    if (
+        previous
+        and previous.get("dataset_hash")
+        and previous_result.get("canonical_content_hash") == canonical_hash
+    ):
+        cached = dict(previous_result)
+        cached.update({
+            "status": cached.get("status") or "CANDIDATE_REJECTED",
+            "symbol": symbol,
+            "horizon_days": horizon_days,
+            "learner_id": LEARNER_ID,
+            "trainer_version": TRAINER_VERSION,
+            "data_fabric": DATA_FABRIC,
+            "canonical_content_hash": canonical_hash,
+            "reused": True,
+            "reuse_reason": "CANONICAL_CONTENT_UNCHANGED",
+            "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        })
+        return cached
+
     dataset = build_training_dataset(store, symbol, horizon_days=horizon_days)
     if dataset["status"] != "READY":
         result = {
@@ -101,8 +125,6 @@ def run_learning_cycle(
         store.save_learning_run(symbol, horizon_days, result)
         return result
 
-    latest_runs = store.latest_learning(symbol=symbol, limit=1)
-    previous = latest_runs[0] if latest_runs else None
     if previous and previous.get("dataset_hash") == dataset["dataset_hash"]:
         cached = dict(previous.get("result") or {})
         cached.update({
@@ -113,6 +135,7 @@ def run_learning_cycle(
             "trainer_version": TRAINER_VERSION,
             "data_fabric": DATA_FABRIC,
             "dataset_hash": dataset["dataset_hash"],
+            "canonical_content_hash": canonical_hash,
             "reused": True,
             "reuse_reason": "DATASET_UNCHANGED",
             "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -201,6 +224,7 @@ def run_learning_cycle(
         "data_fabric": DATA_FABRIC,
         "feature_names": list(FEATURE_NAMES),
         "dataset_hash": dataset["dataset_hash"],
+        "canonical_content_hash": canonical_hash,
         "samples": dataset["samples"],
         "validation": validation,
         "latest_probability_up": latest_probability,
