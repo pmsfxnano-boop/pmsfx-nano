@@ -36,6 +36,7 @@ from .cross_sectional_live import score_universe as score_cross_sectional
 from .state import build_market_state
 from .storage import Store
 from .sources import argentina_datos_fx, argentina_datos_risk, bcra_fx, twelve_data_intraday, twelve_data_live_quote, byma_live_panel, byma_historical_daily
+from .canonical_data import reconcile_all
 from .bcra_macro import bcra_macro_cycle, build_bcra_trader_snapshot
 from scripts.gorila_runtime_tick import run_tick as run_runtime_tick, run_autonomous_tick
 from quant.db import persistence_summary
@@ -132,6 +133,15 @@ def _run_macro_ingest() -> dict[str, Any]:
         for future in futures:
             results.append(future.result())
 
+    # Daily equity history is ingested separately and serialized because the
+    # public BYMADATA endpoint should not be hammered in parallel. These raw
+    # rows then pass through the canonical reconciliation gate before the
+    # cross-sectional research model can read them.
+    for index, symbol in enumerate(settings.core_symbols):
+        if index:
+            time.sleep(1.05)
+        results.append(byma_historical_daily(symbol))
+
     rows_inserted = 0
     for result in results:
         if result.rows:
@@ -154,6 +164,13 @@ def _run_macro_ingest() -> dict[str, Any]:
                 success=False,
             )
 
+    canonical_daily = reconcile_all(
+        store,
+        settings.core_symbols,
+        field="close",
+        limit_sessions=2500,
+    )
+
     payload = {
         "status": "COMPLETED" if all(r.rows for r in results) else "DEGRADED",
         "rows_inserted": rows_inserted,
@@ -166,6 +183,7 @@ def _run_macro_ingest() -> dict[str, Any]:
             }
             for r in results
         ],
+        "canonical_daily": canonical_daily,
     }
     return payload
 
@@ -436,6 +454,7 @@ async def _macro_loop() -> None:
                     "latency_ms": latency_ms,
                     "rows_inserted": result.get("rows_inserted", 0),
                     "results": result.get("results", []),
+                    "canonical_daily": result.get("canonical_daily", []),
                 },
                 flush=True,
             )
