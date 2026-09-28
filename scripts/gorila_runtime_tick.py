@@ -17,6 +17,7 @@ from gorila_argentum.learning import run_learning_cycle
 from gorila_argentum.ingest import run_batch
 from gorila_argentum.promotion import evaluate_live_promotion
 from gorila_argentum.storage import Store
+from gorila_argentum.canonical_data import canonical_daily_series
 from gorila_argentum.shadow import compute_shadow_outcome
 from gorila_argentum.evidence import persist_manifest, persist_v2_evidence
 from quant.db import connection as quant_connection
@@ -195,21 +196,34 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
     created = []
     skipped = []
     for result in learning_results:
-        probability = result.get("latest_probability_up")
         symbol = str(result.get("symbol") or "").strip().upper()
-        if probability is None or not symbol:
-            skipped.append({"symbol": symbol or None, "reason": "NO_LATEST_PROBABILITY"})
+        status = str(result.get("status") or "")
+        probability = result.get("latest_probability_up")
+        if not symbol:
+            skipped.append({"symbol": None, "reason": "NO_SYMBOL"})
+            continue
+        # Rejected/insufficient candidates stay in research storage only. They
+        # must never enter the shadow ledger as though they were validated.
+        if status != "CANDIDATE_ELIGIBLE":
+            skipped.append({"symbol": symbol, "reason": "CANDIDATE_NOT_ELIGIBLE", "status": status})
+            continue
+        if probability is None:
+            skipped.append({"symbol": symbol, "reason": "NO_LATEST_PROBABILITY"})
+            continue
+        if result.get("data_fabric") != "CANONICAL_DAILY_V1":
+            skipped.append({"symbol": symbol, "reason": "NON_CANONICAL_DATA_FABRIC"})
             continue
 
-        series = store.recent_series(symbol, "close", limit=1)
+        series = canonical_daily_series(store, symbol, "close", limit=1)
         if not series:
-            skipped.append({"symbol": symbol, "reason": "NO_ENTRY_PRICE"})
+            skipped.append({"symbol": symbol, "reason": "NO_CANONICAL_ENTRY_PRICE"})
             continue
 
         event_time, entry_price = series[-1]
         dataset_hash = result.get("dataset_hash") or ""
+        model_hash = result.get("model_hash") or ""
         feature_hash = hashlib.sha256(
-            f"{symbol}|{event_time}|{entry_price}|{probability}|{dataset_hash}".encode()
+            f"{symbol}|{event_time}|{entry_price}|{probability}|{dataset_hash}|{model_hash}".encode()
         ).hexdigest()
 
         latest = store.latest_shadow(symbol=symbol, limit=1)
@@ -219,7 +233,7 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
 
         shadow = store.save_shadow_prediction(
             symbol=symbol,
-            model_version="gorila-learning-5d-v1",
+            model_version=result.get("learner_id", "gorila-learning-5d-v2"),
             probability_up=float(probability),
             horizon_seconds=5 * 24 * 3600,
             regime="LEARNING_5D",
@@ -227,9 +241,16 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
             feature_hash=feature_hash,
             metadata={
                 "source": "autonomous_learning_cycle",
+                "learner_id": result.get("learner_id"),
+                "trainer_version": result.get("trainer_version"),
+                "data_fabric": result.get("data_fabric"),
+                "feature_names": result.get("feature_names"),
                 "dataset_hash": dataset_hash,
-                "learning_status": result.get("status"),
-                "source_event_time": event_time,
+                "model_hash": model_hash,
+                "learning_status": status,
+                "validation": result.get("validation"),
+                "candidate_policy": result.get("candidate_policy"),
+                "source_session_date": event_time,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -240,7 +261,8 @@ def _create_learning_shadow_predictions(store: Store, learning_results: list[dic
                 "probability_up": float(probability),
                 "horizon_seconds": 5 * 24 * 3600,
                 "feature_hash": feature_hash,
-                "source_event_time": event_time,
+                "source_session_date": event_time,
+                "model_hash": model_hash,
             }
         )
     return {"created": created, "created_count": len(created), "skipped": skipped}
