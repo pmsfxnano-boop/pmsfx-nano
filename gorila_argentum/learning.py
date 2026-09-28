@@ -7,7 +7,7 @@ from typing import Any
 
 from .prediction import fit_logistic, predict
 from .storage import Store
-from .canonical_data import canonical_content_hash, canonical_daily_series
+from .canonical_data import canonical_content_hash, canonical_content_hash_batch, canonical_daily_series
 
 LEARNER_ID = "gorila-univariate-logit-candidate-v2"
 TRAINER_VERSION = "2026-09-28"
@@ -90,6 +90,34 @@ def build_training_dataset(store: Store, symbol: str, horizon_days: int = 5, lim
     }
 
 
+def build_learning_context(
+    store: Store,
+    symbols: tuple[str, ...],
+    *,
+    horizon_days: int = 5,
+) -> dict[str, dict[str, Any]]:
+    """Prepare all learner cache keys with three indexed/batched reads."""
+    symbols = tuple(str(symbol).upper() for symbol in symbols)
+    canonical_hashes = canonical_content_hash_batch(store, symbols, "close")
+    feedback = store.shadow_feedback_fingerprint_batch(
+        model_version=LEARNER_ID,
+        symbols=symbols,
+        horizon_seconds=int(horizon_days * 24 * 3600),
+    )
+    latest = store.latest_learning_batch(symbols, limit_per_symbol=1)
+    return {
+        symbol: {
+            "canonical_content_hash": canonical_hashes.get(symbol, ""),
+            "feedback_state": feedback.get(
+                symbol,
+                {"hash": hashlib.sha256(b"").hexdigest(), "sample_count": 0, "last_observed_at": None},
+            ),
+            "previous": latest.get(symbol),
+        }
+        for symbol in symbols
+    }
+
+
 def run_learning_cycle(
     symbol: str,
     *,
@@ -98,20 +126,24 @@ def run_learning_cycle(
     test_size: int = 20,
     store: Store | None = None,
     initialize_store: bool = True,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     store = store or Store()
     if initialize_store:
         store.init()
 
-    canonical_hash = canonical_content_hash(store, symbol, "close")
-    feedback_state = store.shadow_feedback_fingerprint(
+    state = context or {}
+    canonical_hash = state.get("canonical_content_hash") or canonical_content_hash(store, symbol, "close")
+    feedback_state = state.get("feedback_state") or store.shadow_feedback_fingerprint(
         model_version=LEARNER_ID,
         symbol=symbol,
         horizon_seconds=horizon_days * 24 * 3600,
     )
     feedback_hash = feedback_state["hash"]
-    latest_runs = store.latest_learning(symbol=symbol, limit=1)
-    previous = latest_runs[0] if latest_runs else None
+    previous = state.get("previous")
+    if context is None and previous is None:
+        latest_runs = store.latest_learning(symbol=symbol, limit=1)
+        previous = latest_runs[0] if latest_runs else None
     previous_result = (previous or {}).get("result") or {}
     if (
         previous
