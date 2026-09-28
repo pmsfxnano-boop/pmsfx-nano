@@ -92,6 +92,9 @@ def run_learning_cycle(
             "status": "INSUFFICIENT_DATA",
             "symbol": symbol,
             "horizon_days": horizon_days,
+            "learner_id": LEARNER_ID,
+            "trainer_version": TRAINER_VERSION,
+            "data_fabric": DATA_FABRIC,
             "dataset_hash": dataset["dataset_hash"],
             "samples": dataset["samples"],
         }
@@ -108,6 +111,9 @@ def run_learning_cycle(
             "status": "VALIDATION_INSUFFICIENT",
             "symbol": symbol,
             "horizon_days": horizon_days,
+            "learner_id": LEARNER_ID,
+            "trainer_version": TRAINER_VERSION,
+            "data_fabric": DATA_FABRIC,
             "dataset_hash": dataset["dataset_hash"],
             "samples": dataset["samples"],
             "validation": validation,
@@ -117,12 +123,16 @@ def run_learning_cycle(
 
     model = fit_logistic(X, y)
 
-    latest_values = [float(v) for _, v in store.recent_series(symbol, "close", limit=25)]
+    latest_series = canonical_daily_series(store, symbol, "close", limit=25)
+    latest_values = [float(v) for _, v in latest_series]
     if len(latest_values) < 21 or any(v <= 0 for v in latest_values[-21:]):
         result = {
             "status": "LATEST_STATE_INSUFFICIENT",
             "symbol": symbol,
             "horizon_days": horizon_days,
+            "learner_id": LEARNER_ID,
+            "trainer_version": TRAINER_VERSION,
+            "data_fabric": DATA_FABRIC,
             "dataset_hash": dataset["dataset_hash"],
             "samples": dataset["samples"],
             "validation": validation,
