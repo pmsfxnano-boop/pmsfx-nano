@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS shadow_predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_symbol_time ON shadow_predictions(symbol,created_at);
 CREATE INDEX IF NOT EXISTS idx_shadow_status_time ON shadow_predictions(status,created_at);
+CREATE INDEX IF NOT EXISTS idx_shadow_feedback_lookup
+ ON shadow_predictions(model_version,symbol,horizon_seconds,status,created_at);
 CREATE TABLE IF NOT EXISTS shadow_outcomes (
  id TEXT PRIMARY KEY,
  prediction_id TEXT NOT NULL,
