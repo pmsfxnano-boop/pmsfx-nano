@@ -203,6 +203,8 @@ def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[s
     saved = 0
     errors = []
     for result in learning_results:
+        if result.get("reused"):
+            continue
         validation = result.get("validation") or {}
         model_hash = str(result.get("model_hash") or "")
         learner_id = str(result.get("learner_id") or "unknown")
@@ -325,7 +327,12 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     if not store.pg:
         raise RuntimeError("durable_storage_required")
 
+    timings: dict[str, float] = {}
+    stage_started = datetime.now(timezone.utc)
     ingestion = run_batch()
+    timings["ingestion_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+
+    stage_started = datetime.now(timezone.utc)
     learning = []
     symbols = tuple(settings.core_symbols)
     max_workers = min(3, max(1, len(symbols)))
@@ -354,13 +361,27 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     learning.sort(key=lambda row: str(row.get("symbol") or ""))
 
     learning_registry = _persist_learning_registry(learning)
-    shadow_capture = _create_learning_shadow_predictions(store, learning)
-    pmsfx_shadow = _sync_pmsfx_shadow_ledger(store)
+    timings["learning_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
 
+    stage_started = datetime.now(timezone.utc)
+    learning_registry = _persist_learning_registry(learning)
+    timings["learning_registry_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+
+    stage_started = datetime.now(timezone.utc)
+    shadow_capture = _create_learning_shadow_predictions(store, learning)
+    timings["learning_shadow_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+
+    stage_started = datetime.now(timezone.utc)
+    pmsfx_shadow = _sync_pmsfx_shadow_ledger(store)
+    timings["pmsfx_shadow_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+
+    stage_started = datetime.now(timezone.utc)
     settlement = store.settle_due_shadow_from_observations(
         max_lateness_seconds=3600,
         limit=100,
     )
+
+    timings["settlement_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
 
     manifest_path = os.getenv("GORILA_EVIDENCE_MANIFEST_PATH", "research/evidence_manifest.json")
     evidence_sync = {"status": "NOT_FOUND", "path": manifest_path}
@@ -389,20 +410,29 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     except Exception as exc:
         v2_evidence_sync = {"status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}
 
+    stage_started = datetime.now(timezone.utc)
     decision = evaluate_live_promotion(store)
     persisted_promotion = store.save_promotion_decision(
         "gorila-quantitative-v1", "V1", decision
     )
 
+    timings["promotion_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+
+    stage_started = datetime.now(timezone.utc)
     shadow_rows = store.latest_shadow(status="SETTLED", limit=500)
     recalibration = build_recalibration_candidate(shadow_rows)
     persisted_recalibration = store.save_calibration_run(
         "shadow-probability-v0", recalibration
     )
 
+    timings["recalibration_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+
+    stage_started = datetime.now(timezone.utc)
     audit = build_audit_state(store)
+    timings["audit_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
     return {
         "status": "COMPLETED",
+        "timings": timings,
         "ingestion": ingestion,
         "learning": learning,
         "learning_registry": learning_registry,
