@@ -22,79 +22,181 @@ _DAILY_HISTORY_REFRESH_SECONDS = max(
     int(os.getenv("GORILA_DAILY_HISTORY_REFRESH_SECONDS", "21600")),
 )
 
-def _daily_history_due(store: Store, *, force: bool = False) -> bool:
-    """Use durable source-health timestamps, not process-local state, for refresh scheduling."""
+_DAILY_HISTORY_REFRESH_SECONDS = max(
+    900,
+    int(os.getenv("GORILA_DAILY_HISTORY_REFRESH_SECONDS", "21600")),
+)
+_RAVA_HISTORY_REFRESH_SECONDS = max(
+    3600,
+    int(os.getenv("GORILA_RAVA_HISTORY_REFRESH_SECONDS", "86400")),
+)
+_RAVA_RETRY_SECONDS = max(
+    300,
+    int(os.getenv("GORILA_RAVA_RETRY_SECONDS", "3600")),
+)
+
+
+def _source_due(
+    store: Store,
+    sources: set[str],
+    *,
+    success_interval_seconds: int,
+    retry_interval_seconds: int | None = None,
+    force: bool = False,
+) -> bool:
     if force:
         return True
-    expected_sources = {f"BYMADATA/{symbol}/historical" for symbol in settings.core_symbols}
-    if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
-        expected_sources |= {f"RavaPublic/{symbol}" for symbol in settings.core_symbols}
+
     conn = store.connect()
     try:
         if store.pg:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT source,last_success_at
+                    """SELECT source,last_success_at,last_attempt_at
                        FROM source_health
-                       WHERE source LIKE 'BYMADATA/%/historical'"""
+                       WHERE source = ANY(%s)""",
+                    (sorted(sources),),
                 )
                 rows = cur.fetchall()
         else:
+            placeholders = ",".join(["?"] * len(sources))
             rows = conn.execute(
-                """SELECT source,last_success_at
-                   FROM source_health
-                   WHERE source LIKE 'BYMADATA/%/historical'"""
+                f"""SELECT source,last_success_at,last_attempt_at
+                    FROM source_health
+                    WHERE source IN ({placeholders})""",
+                tuple(sorted(sources)),
             ).fetchall()
     finally:
         conn.close()
         store.conn = None
 
-    by_source = {str(source): last_success for source, last_success in rows}
-    if any(source not in by_source or not by_source[source] for source in expected_sources):
-        return True
-
+    by_source = {
+        str(source): {
+            "last_success_at": last_success,
+            "last_attempt_at": last_attempt,
+        }
+        for source, last_success, last_attempt in rows
+    }
     now = datetime.now(timezone.utc)
-    for source in expected_sources:
+
+    for source in sources:
+        state = by_source.get(source)
+        if not state:
+            return True
+
+        success_stamp = state["last_success_at"]
+        attempt_stamp = state["last_attempt_at"]
+        if success_stamp:
+            try:
+                dt = (
+                    success_stamp
+                    if isinstance(success_stamp, datetime)
+                    else datetime.fromisoformat(str(success_stamp).replace("Z", "+00:00"))
+                )
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_seconds = max(
+                    0.0,
+                    (now - dt.astimezone(timezone.utc)).total_seconds(),
+                )
+            except (TypeError, ValueError, OverflowError):
+                return True
+            if age_seconds >= success_interval_seconds:
+                return True
+            continue
+
+        # A source that has been attempted but has not succeeded must not
+        # force the entire equity-history pipeline to hammer the provider on
+        # every five-minute autonomous cycle.
+        if retry_interval_seconds is None or not attempt_stamp:
+            return True
         try:
-            stamp = by_source[source]
-            dt = stamp if isinstance(stamp, datetime) else datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            dt = (
+                attempt_stamp
+                if isinstance(attempt_stamp, datetime)
+                else datetime.fromisoformat(str(attempt_stamp).replace("Z", "+00:00"))
+            )
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            age_seconds = max(0.0, (now - dt.astimezone(timezone.utc)).total_seconds())
+            age_seconds = max(
+                0.0,
+                (now - dt.astimezone(timezone.utc)).total_seconds(),
+            )
         except (TypeError, ValueError, OverflowError):
             return True
-        if age_seconds >= _DAILY_HISTORY_REFRESH_SECONDS:
+        if age_seconds >= retry_interval_seconds:
             return True
+
     return False
+
+
+def _daily_history_refresh_plan(store: Store, *, force: bool = False) -> dict[str, bool]:
+    byma_sources = {f"BYMADATA/{symbol}/historical" for symbol in settings.core_symbols}
+    rava_enabled = os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+    rava_sources = {f"RavaPublic/{symbol}" for symbol in settings.core_symbols}
+
+    return {
+        "byma": _source_due(
+            store,
+            byma_sources,
+            success_interval_seconds=_DAILY_HISTORY_REFRESH_SECONDS,
+            retry_interval_seconds=900,
+            force=force,
+        ),
+        "rava": (
+            _source_due(
+                store,
+                rava_sources,
+                success_interval_seconds=_RAVA_HISTORY_REFRESH_SECONDS,
+                retry_interval_seconds=_RAVA_RETRY_SECONDS,
+                force=force,
+            )
+            if rava_enabled
+            else False
+        ),
+    }
+
 
 def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
     store=Store(); store.init()
     macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status,bcra_macro_cycle] if include_macro else []
     results=[]
-    daily_history_refreshed = _daily_history_due(store, force=force_daily_history)
+    refresh_plan = _daily_history_refresh_plan(store, force=force_daily_history)
+    byma_due = bool(refresh_plan["byma"])
+    rava_due = bool(refresh_plan["rava"])
+    daily_history_refreshed = byma_due or rava_due
     if macro_funcs:
         with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
             futures=[ex.submit(fn) for fn in macro_funcs]
             for fut in as_completed(futures):
                 results.append(fut.result())
 
-    if daily_history_refreshed:
+    if byma_due:
         # Public BYMADATA history is deliberately throttled. Repeatedly asking
-        # for the same ~1y series every 5 minutes is unnecessary and increases
+        # for the same ~1y series every five minutes is unnecessary and increases
         # latency/rate-limit risk without adding information.
         for idx, symbol in enumerate(settings.core_symbols):
             if idx:
                 time.sleep(1.05)
             results.append(byma_historical_daily(symbol))
 
-        if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
-            for symbol in settings.core_symbols:
-                time.sleep(0.75)
-                results.append(rava_public_historical_daily(symbol))
-
         if settings.twelve_data_api_key:
             for symbol in settings.symbols:
                 results.append(twelve_data_daily(symbol))
+
+    if rava_due:
+        # Rava is independent from BYMADATA. A failure on Rava must not cause
+        # the autonomous runtime to redownload BYMADATA on every five-minute tick.
+        rava_tasks = []
+        workers = max(1, min(2, int(os.getenv("GORILA_RAVA_WORKERS", "2"))))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {
+                ex.submit(rava_public_historical_daily, symbol): symbol
+                for symbol in settings.core_symbols
+            }
+            for fut in as_completed(futures):
+                rava_tasks.append(fut.result())
+        results.extend(rava_tasks)
     total=0
     for r in results:
         if r.rows:
@@ -156,6 +258,9 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
     return {"sources":len(results),"rows_inserted":total,
             "daily_history_refreshed": daily_history_refreshed,
             "daily_history_refresh_interval_seconds": _DAILY_HISTORY_REFRESH_SECONDS,
+            "rava_history_refresh_interval_seconds": _RAVA_HISTORY_REFRESH_SECONDS,
+            "rava_retry_interval_seconds": _RAVA_RETRY_SECONDS,
+            "refresh_plan": refresh_plan,
             "macro_ingestion_included": bool(include_macro),
             "rava_public_enabled": os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"},
             "results":[{"source":r.source,"rows":len(r.rows),"error":r.error,"latency_ms":round(r.latency_ms or 0,2)} for r in results],
