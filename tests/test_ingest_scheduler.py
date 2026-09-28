@@ -92,3 +92,20 @@ def test_due_sources_are_independent(tmp_path, monkeypatch):
         retry_interval_seconds=3600,
     )
     assert due == {stale}
+
+
+def test_optional_twelve_data_source_uses_independent_backoff(tmp_path, monkeypatch):
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "scheduler3.sqlite3"))
+    from gorila_argentum.storage import Store
+
+    store = Store()
+    store.init()
+    source = "TwelveData/GGAL"
+    store.upsert_health(source, "DEGRADED", last_error="rate_limit", rows=0, success=False)
+
+    assert _source_due(
+        store,
+        {source},
+        success_interval_seconds=86400,
+        retry_interval_seconds=3600,
+    ) is False
