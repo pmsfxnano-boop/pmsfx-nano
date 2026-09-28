@@ -152,14 +152,55 @@ def test_learning_shadow_creation_deduplicates_and_batches():
     assert store.saved[0]["feature_hash"] != "existing-hash"
 
 
-def test_shadow_feedback_fingerprint_changes_when_outcome_changes():
+def test_shadow_feedback_fingerprint_changes_after_settlement(tmp_path, monkeypatch):
     from gorila_argentum.storage import Store
 
-    class FakeStore(Store):
-        def __init__(self):
-            pass
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "feedback.sqlite3"))
 
-    # The persistence implementation is integration-tested at the schema/SQL
-    # level; this regression test locks the learner contract instead of
-    # reproducing the database driver here.
-    assert "shadow_feedback_fingerprint" in Store.shadow_feedback_fingerprint.__name__
+    store = Store()
+    store.init()
+
+    first = store.shadow_feedback_fingerprint(
+        model_version="learner-test",
+        symbol="GGAL",
+        horizon_seconds=5 * 24 * 3600,
+    )
+    prediction = store.save_shadow_prediction(
+        symbol="GGAL",
+        model_version="learner-test",
+        probability_up=0.6,
+        horizon_seconds=5 * 24 * 3600,
+        regime="TEST",
+        entry_price=100.0,
+        feature_hash="feedback-test-1",
+        created_at="2026-09-20T12:00:00+00:00",
+    )
+    second = store.shadow_feedback_fingerprint(
+        model_version="learner-test",
+        symbol="GGAL",
+        horizon_seconds=5 * 24 * 3600,
+    )
+    assert first["hash"] == second["hash"]
+    assert second["sample_count"] == 0
+
+    store.settle_shadow_prediction(
+        prediction["id"],
+        {
+            "observed_price": 101.0,
+            "realized_direction": "UP",
+            "return_pct": 1.0,
+            "correct": True,
+            "brier": 0.16,
+            "logloss": 0.51,
+        },
+        "2026-09-25T12:00:00+00:00",
+    )
+    third = store.shadow_feedback_fingerprint(
+        model_version="learner-test",
+        symbol="GGAL",
+        horizon_seconds=5 * 24 * 3600,
+    )
+    assert third["hash"] != second["hash"]
+    assert third["sample_count"] == 1
+    assert third["last_observed_at"]
