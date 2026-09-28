@@ -359,8 +359,6 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
                 }
             learning.append(result)
     learning.sort(key=lambda row: str(row.get("symbol") or ""))
-
-    learning_registry = _persist_learning_registry(learning)
     timings["learning_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
 
     stage_started = datetime.now(timezone.utc)
