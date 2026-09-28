@@ -20,7 +20,7 @@ from gorila_argentum.storage import Store
 from gorila_argentum.canonical_data import canonical_daily_series
 from gorila_argentum.shadow import compute_shadow_outcome
 from gorila_argentum.evidence import persist_manifest, persist_v2_evidence
-from quant.db import connection as quant_connection
+from quant.db import connection as quant_connection, record_model_registry
 
 
 def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
@@ -192,6 +192,50 @@ def _sync_pmsfx_shadow_ledger(store: Store, limit: int = 250) -> dict[str, Any]:
     }
 
 
+def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[str, Any]:
+    saved = 0
+    errors = []
+    for result in learning_results:
+        validation = result.get("validation") or {}
+        model_hash = str(result.get("model_hash") or "")
+        learner_id = str(result.get("learner_id") or "unknown")
+        try:
+            record_model_registry({
+                "registered_at": result.get("generated_at") or datetime.now(timezone.utc),
+                "model_id": learner_id,
+                "version": model_hash[:32] if model_hash else str(result.get("trainer_version") or "unknown"),
+                "status": str(result.get("status") or "UNKNOWN"),
+                "dataset_version": result.get("dataset_hash"),
+                "features_version": hashlib.sha256(
+                    json.dumps(result.get("feature_names") or [], sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+                "validation_type": "purged_walk_forward",
+                "accuracy": validation.get("accuracy"),
+                "brier": validation.get("brier"),
+                "brier_skill": validation.get("brier_skill"),
+                "calibration_status": "NOT_CALIBRATED",
+                "regime": {"data_fabric": result.get("data_fabric")},
+                "cpcv_status": "NOT_RUN",
+                "pbo_status": "NOT_RUN",
+                "dsr_status": "NOT_RUN",
+                "selection_rule": "candidate_gate_only_no_auto_promotion",
+                "metadata": {
+                    "trainer_version": result.get("trainer_version"),
+                    "samples": result.get("samples"),
+                    "horizon_days": result.get("horizon_days"),
+                    "candidate_policy": result.get("candidate_policy"),
+                    "model_hash": model_hash,
+                },
+            })
+            saved += 1
+        except Exception as exc:
+            errors.append({
+                "symbol": result.get("symbol"),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return {"status": "COMPLETED" if not errors else "PARTIAL", "saved": saved, "errors": errors[:20]}
+
+
 def _create_learning_shadow_predictions(store: Store, learning_results: list[dict[str, Any]]) -> dict[str, Any]:
     created = []
     skipped = []
@@ -302,6 +346,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
             learning.append(result)
     learning.sort(key=lambda row: str(row.get("symbol") or ""))
 
+    learning_registry = _persist_learning_registry(learning)
     shadow_capture = _create_learning_shadow_predictions(store, learning)
     pmsfx_shadow = _sync_pmsfx_shadow_ledger(store)
 
@@ -353,6 +398,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "status": "COMPLETED",
         "ingestion": ingestion,
         "learning": learning,
+        "learning_registry": learning_registry,
         "shadow_capture": shadow_capture,
         "pmsfx_shadow": pmsfx_shadow,
         "settlement": settlement,
