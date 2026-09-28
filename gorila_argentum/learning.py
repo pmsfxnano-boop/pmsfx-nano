@@ -144,7 +144,11 @@ def run_learning_cycle(
         store.save_learning_run(symbol, horizon_days, result)
         return result
 
-    if previous and previous.get("dataset_hash") == dataset["dataset_hash"]:
+    if (
+        previous
+        and previous.get("dataset_hash") == dataset["dataset_hash"]
+        and (previous.get("result") or {}).get("learning_spec_hash") == LEARNING_SPEC_HASH
+    ):
         cached = dict(previous.get("result") or {})
         cached.update({
             "status": cached.get("status") or "CANDIDATE_REJECTED",
