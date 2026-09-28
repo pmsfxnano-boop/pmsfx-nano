@@ -27,6 +27,10 @@ class Settings:
     argentina_datos_fx_url: str = os.getenv("ARGENTINA_DATOS_FX_URL","https://api.argentinadatos.com/v1/cotizaciones/dolares").strip()
     argentina_datos_risk_url: str = os.getenv("ARGENTINA_DATOS_RISK_URL","https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais").strip()
     byma_url: str = os.getenv("BYMA_MARKET_DATA_URL","").strip()
+    byma_open_access_base_url: str = os.getenv("BYMA_OPEN_ACCESS_BASE_URL","https://open.bymadata.com.ar/vanoms-be-core/rest/api/bymadata/free").strip()
+    byma_open_access_url: str = os.getenv("BYMA_OPEN_ACCESS_URL","https://open.bymadata.com.ar/").strip()
+    byma_verify_ssl: bool = os.getenv("BYMA_VERIFY_SSL","0").strip().lower() in {"1","true","yes"}
+    byma_history_days: int = int(os.getenv("BYMA_HISTORY_DAYS","400"))
     core_symbols: Tuple[str,...] = ("GGAL","BMA","YPFD","PAMP","TGSU2","CEPU")
 
 settings = Settings()

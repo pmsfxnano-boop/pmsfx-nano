@@ -170,10 +170,163 @@ def twelve_data_live_quote(symbol, interval=None):
     except Exception as e:
         return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
 
+def _byma_client():
+    """Create an HTTP client for BYMADATA Open Access.
+
+    BYMA's public endpoint is unauthenticated. Some environments reject the
+    server certificate chain, so verification is controlled explicitly by
+    BYMA_VERIFY_SSL and defaults to false for this public, credential-free feed.
+    """
+    verify_ssl = str(getattr(settings, "byma_verify_ssl", False)).strip().lower() in {"1", "true", "yes"}
+    return httpx.Client(
+        timeout=settings.http_timeout_s,
+        verify=verify_ssl,
+        headers={"User-Agent": "Gorila-Argentum/1.0", "Accept": "application/json"},
+    )
+
+
+def _byma_symbol(symbol: str) -> str:
+    return f"{str(symbol).strip().upper()} 24HS"
+
+
+def byma_historical_daily(symbol: str):
+    """Fetch recent daily OHLCV for a BYMA-listed instrument from BYMADATA.
+
+    Endpoint: /chart/historical-series/history
+    The public endpoint expects the 24HS settlement suffix for equities.
+    """
+    source=f"BYMADATA/{symbol}/historical"
+    t0=time.perf_counter()
+    received=now()
+    from datetime import timedelta
+    start=received - timedelta(days=max(90, int(getattr(settings, "byma_history_days", 400))))
+    end=received + timedelta(days=1)
+    params={
+        "symbol": _byma_symbol(symbol),
+        "resolution": "D",
+        "from": str(int(start.timestamp())),
+        "to": str(int(end.timestamp())),
+    }
+    url=f"{settings.byma_open_access_base_url.rstrip('/')}/chart/historical-series/history"
+    try:
+        with _byma_client() as c:
+            response=c.get(url, params=params)
+            response.raise_for_status()
+            payload=response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("BYMA_HISTORICAL_INVALID_PAYLOAD")
+        status=str(payload.get("s") or "").lower()
+        if status not in {"ok", "no_data"}:
+            raise RuntimeError(f"BYMA_HISTORICAL_STATUS_{status or 'UNKNOWN'}")
+        ts=payload.get("t") or []
+        opens=payload.get("o") or []
+        highs=payload.get("h") or []
+        lows=payload.get("l") or []
+        closes=payload.get("c") or []
+        volumes=payload.get("v") or []
+        n=min(len(ts), len(closes))
+        rows=[]
+        for idx in range(n):
+            if closes[idx] is None:
+                continue
+            stamp=datetime.fromtimestamp(float(ts[idx]), timezone.utc).isoformat()
+            metadata={
+                "provider":"BYMA",
+                "endpoint":"bymadata_free/chart/historical-series/history",
+                "resolution":"D",
+                "symbol_query":params["symbol"],
+            }
+            if idx < len(opens): metadata["open"]=opens[idx]
+            if idx < len(highs): metadata["high"]=highs[idx]
+            if idx < len(lows): metadata["low"]=lows[idx]
+            if idx < len(volumes): metadata["volume"]=volumes[idx]
+            rows.append({
+                "symbol":symbol,
+                "field":"close",
+                "value":float(closes[idx]),
+                "event_time":stamp,
+                "received_time":iso(received),
+                "source":source,
+                "latency_ms":(time.perf_counter()-t0)*1000,
+                "metadata":metadata,
+            })
+        if not rows:
+            raise RuntimeError("BYMA_HISTORICAL_NO_ROWS")
+        return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+    except Exception as e:
+        return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
+
+
+def byma_live_panel():
+    """Fetch the BYMADATA leading-equity panel in one request.
+
+    Returns one latest observation per core ticker and respects the public feed's
+    settlement convention. The caller should rate-limit repeated requests.
+    """
+    source="BYMADATA/leading-equity"
+    t0=time.perf_counter()
+    received=now()
+    url=f"{settings.byma_open_access_base_url.rstrip('/')}/leading-equity"
+    try:
+        with _byma_client() as c:
+            response=c.post(url, json={"T1": True, "page_size": 100})
+            response.raise_for_status()
+            payload=response.json()
+        data=(payload.get("data") if isinstance(payload, dict) else None) or []
+        core=set(settings.core_symbols)
+        local_now=received.astimezone(ZoneInfo("America/Argentina/Buenos_Aires"))
+        rows=[]
+        for item in data:
+            symbol=str(item.get("symbol") or "").upper()
+            if symbol not in core:
+                continue
+            price=item.get("trade")
+            if price is None or float(price) <= 0:
+                price=item.get("closingPrice") or item.get("settlementPrice")
+            if price is None or float(price) <= 0:
+                continue
+            trade_hour=str(item.get("tradeHour") or "").strip()
+            try:
+                hh,mm,ss=[int(x) for x in trade_hour.split(":")]
+                event_local=datetime(local_now.year,local_now.month,local_now.day,hh,mm,ss,tzinfo=local_now.tzinfo)
+                event_time=event_local.astimezone(timezone.utc).isoformat()
+            except Exception:
+                event_time=iso(received)
+            rows.append({
+                "symbol":symbol,
+                "field":"close_1m",
+                "value":float(price),
+                "event_time":event_time,
+                "received_time":iso(received),
+                "source":source,
+                "latency_ms":(time.perf_counter()-t0)*1000,
+                "metadata":{
+                    "provider":"BYMA",
+                    "endpoint":"bymadata_free/leading-equity",
+                    "settlement":"24HS",
+                    "trade_hour":trade_hour,
+                    "closing_price":item.get("closingPrice"),
+                    "previous_closing_price":item.get("previousClosingPrice"),
+                    "volume":item.get("volume"),
+                    "vwap":item.get("vwap"),
+                },
+            })
+        if not rows:
+            raise RuntimeError("BYMA_LIVE_NO_CORE_ROWS")
+        return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
+    except Exception as e:
+        return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
+
 def byma_status():
-    if not settings.byma_url:
-        return SourceResult("BYMA/MarketData",error="BYMA_MARKET_DATA_URL_NOT_CONFIGURED")
-    return SourceResult("BYMA/MarketData",error="BYMA_ADAPTER_ENDPOINT_CONFIG_REQUIRED")
+    source="BYMADATA/OpenAccess"
+    t0=time.perf_counter()
+    try:
+        with _byma_client() as c:
+            response=c.get(settings.byma_open_access_url)
+            response.raise_for_status()
+        return SourceResult(source,rows=[{"symbol":"BYMA_STATUS","field":"status","value":1.0,"event_time":iso(now()),"received_time":iso(now()),"source":source,"latency_ms":(time.perf_counter()-t0)*1000,"metadata":{"provider":"BYMA","endpoint":"open.bymadata.com.ar"}}],latency_ms=(time.perf_counter()-t0)*1000)
+    except Exception as e:
+        return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
 
 def yahoo_chart_daily(symbol):
     source=f"YahooChart/{symbol}.BA"; t0=time.perf_counter(); received=now()

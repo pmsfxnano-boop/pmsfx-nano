@@ -1,15 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import settings
-from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,yahoo_chart_daily
+from .sources import argentina_datos_fx,argentina_datos_risk,bcra_fx,twelve_data_daily,byma_status,byma_historical_daily
 from .bcra_macro import bcra_macro_cycle
 from .storage import Store
 from .drift import rolling_drift
 
 def run_batch():
     store=Store(); store.init()
-    # Macro sources are independent and can run concurrently. Yahoo historical
-    # pulls are deliberately serialized because the provider rate-limits parallel
-    # chart requests and a 429 here starves the cross-sectional daily panel.
+    # Macro sources are independent and can run concurrently. BYMADATA historical
+    # calls are serialized to respect the public feed rate-limit guidance and to
+    # keep the daily research snapshot deterministic.
     macro_funcs=[argentina_datos_fx,argentina_datos_risk,bcra_fx,byma_status,bcra_macro_cycle]
     results=[]
     with ThreadPoolExecutor(max_workers=min(settings.batch_workers,len(macro_funcs))) as ex:
@@ -17,8 +17,11 @@ def run_batch():
         for fut in as_completed(futures):
             results.append(fut.result())
 
-    for symbol in settings.core_symbols:
-        results.append(yahoo_chart_daily(symbol))
+    for idx, symbol in enumerate(settings.core_symbols):
+        if idx:
+            import time
+            time.sleep(1.05)
+        results.append(byma_historical_daily(symbol))
 
     if settings.twelve_data_api_key:
         for symbol in settings.symbols:
