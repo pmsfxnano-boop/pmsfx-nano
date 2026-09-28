@@ -27,6 +27,8 @@ def _daily_history_due(store: Store, *, force: bool = False) -> bool:
     if force:
         return True
     expected_sources = {f"BYMADATA/{symbol}/historical" for symbol in settings.core_symbols}
+    if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
+        expected_sources |= {f"RavaPublic/{symbol}" for symbol in settings.core_symbols}
     conn = store.connect()
     try:
         if store.pg:
