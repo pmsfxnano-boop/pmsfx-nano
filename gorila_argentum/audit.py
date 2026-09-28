@@ -9,7 +9,10 @@ def build_audit_state(store: Store | None = None) -> dict:
     store = store or Store()
     store.init()
     control = build_control_state(store)
-    promotion = evaluate_live_promotion(store)
+    # Reuse the control-state evidence already fetched during this tick. This
+    # removes a duplicate research-evidence query and repeated promotion
+    # evaluation from the hot autonomous path.
+    promotion = control["promotion_gate"]["live_evidence"]
     shadow = store.shadow_summary()
     learning = store.latest_learning(limit=5)
 
