@@ -29,6 +29,14 @@ _RAVA_RETRY_SECONDS = max(
     300,
     int(os.getenv("GORILA_RAVA_RETRY_SECONDS", "3600")),
 )
+_TWELVE_DATA_HISTORY_REFRESH_SECONDS = max(
+    3600,
+    int(os.getenv("GORILA_TWELVE_DATA_HISTORY_REFRESH_SECONDS", "86400")),
+)
+_TWELVE_DATA_RETRY_SECONDS = max(
+    900,
+    int(os.getenv("GORILA_TWELVE_DATA_RETRY_SECONDS", "3600")),
+)
 
 
 def _due_sources(
@@ -294,6 +302,8 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
             "daily_history_refresh_interval_seconds": _DAILY_HISTORY_REFRESH_SECONDS,
             "rava_history_refresh_interval_seconds": _RAVA_HISTORY_REFRESH_SECONDS,
             "rava_retry_interval_seconds": _RAVA_RETRY_SECONDS,
+            "twelve_data_history_refresh_interval_seconds": _TWELVE_DATA_HISTORY_REFRESH_SECONDS,
+            "twelve_data_retry_interval_seconds": _TWELVE_DATA_RETRY_SECONDS,
             "refresh_plan": refresh_plan,
             "macro_ingestion_included": bool(include_macro),
             "rava_public_enabled": os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"},
