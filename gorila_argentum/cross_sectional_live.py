@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from datetime import datetime, timezone
@@ -44,6 +45,17 @@ def _series_from_store(store: Store, limit: int = 2500) -> dict[str, dict[str, f
         rows = canonical_daily_series(store, symbol, "close", limit=limit)
         output[symbol] = {str(session_date): float(value) for session_date, value in rows}
     return output
+
+
+def _dataset_identity(series: dict[str, dict[str, float]], common_dates: list[str]) -> str:
+    payload = [
+        [symbol, date, float(series[symbol][date])]
+        for date in common_dates
+        for symbol in SYMBOLS
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
 
 
 def _evidence() -> dict[str, Any]:
@@ -177,6 +189,24 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
         }
 
     evidence = _evidence()
+    live_dataset_sha256 = _dataset_identity(series, common_dates)
+    evidence_dataset_sha256 = (evidence.get("dataset") or {}).get("dataset_sha256")
+    evidence_predictor = evidence.get("predictor") or {}
+    evidence_model_identity_matches = (
+        evidence_predictor.get("model") == "fixed-pooled-logit-v1"
+        and tuple(evidence_predictor.get("features") or ()) == tuple(FEATURE_NAMES)
+        and float(evidence_predictor.get("l2", L2)) == float(L2)
+        and int(evidence_predictor.get("horizon_days", HORIZON_DAYS)) == int(HORIZON_DAYS)
+    )
+    evidence_dataset_identity_matches = bool(
+        evidence_dataset_sha256 and evidence_dataset_sha256 == live_dataset_sha256
+    )
+    evidence_bound_to_live = bool(
+        evidence.get("validation_status") == "VALIDATED_RESEARCH"
+        and evidence_model_identity_matches
+        and evidence_dataset_identity_matches
+        and evidence.get("point_in_time") is True
+    )
     generated_at = evidence.get("generated_at")
     evidence_age_hours = None
     if generated_at:
@@ -208,8 +238,9 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
                 "percentile": percentile,
                 "direction": direction,
                 "horizon_days": HORIZON_DAYS,
-                "validated_research": evidence.get("validation_status") == "VALIDATED_RESEARCH",
+                "validated_research": evidence_bound_to_live,
                 "evidence_age_hours": evidence_age_hours,
+                "evidence_binding": "BOUND_TO_LIVE_CANONICAL_DATASET" if evidence_bound_to_live else "NOT_BOUND_TO_LIVE_DATASET",
             }
         )
 
@@ -228,6 +259,7 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
         "training_rows": len(rows),
         "training_anchors": max(0, training_anchors - skipped_anchors),
         "skipped_anchors": skipped_anchors,
+        "live_dataset_sha256": live_dataset_sha256,
         "latest_dates": latest_dates,
         "coverage": {
             "required_symbols": list(SYMBOLS),
@@ -241,6 +273,11 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
             "trading_validation_status": evidence.get("trading_validation_status"),
             "generated_at": generated_at,
             "age_hours": evidence_age_hours,
+            "bound_to_live_dataset": evidence_bound_to_live,
+            "model_identity_matches": evidence_model_identity_matches,
+            "dataset_identity_matches": evidence_dataset_identity_matches,
+            "evidence_dataset_sha256": evidence_dataset_sha256,
+            "live_dataset_sha256": live_dataset_sha256,
         },
         "research_only": True,
         "no_execution_authority": True,
