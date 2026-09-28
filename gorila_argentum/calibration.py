@@ -72,7 +72,7 @@ def evaluate_probabilities(probabilities: list[float], labels: list[float]) -> d
 def build_recalibration_candidate(
     rows: list[dict[str, Any]],
     *,
-    reference_size: int = 90,
+    reference_size: int = 80,
     validation_size: int = 30,
     min_brier_improvement: float = 0.005,
     max_abs_validation_gap: float = 0.05,
