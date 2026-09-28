@@ -77,6 +77,11 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
                 time.sleep(1.05)
             results.append(byma_historical_daily(symbol))
 
+        if os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"}:
+            for symbol in settings.core_symbols:
+                time.sleep(0.75)
+                results.append(rava_public_historical_daily(symbol))
+
         if settings.twelve_data_api_key:
             for symbol in settings.symbols:
                 results.append(twelve_data_daily(symbol))
@@ -142,6 +147,7 @@ def run_batch(*, force_daily_history: bool = False, include_macro: bool = True):
             "daily_history_refreshed": daily_history_refreshed,
             "daily_history_refresh_interval_seconds": _DAILY_HISTORY_REFRESH_SECONDS,
             "macro_ingestion_included": bool(include_macro),
+            "rava_public_enabled": os.getenv("GORILA_RAVA_PUBLIC_ENABLED", "true").strip().lower() in {"1", "true", "yes"},
             "results":[{"source":r.source,"rows":len(r.rows),"error":r.error,"latency_ms":round(r.latency_ms or 0,2)} for r in results],
             "canonical_daily": canonical_results,
             "drift":drift_results}
