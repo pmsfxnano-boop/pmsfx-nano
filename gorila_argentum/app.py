@@ -744,7 +744,8 @@ async def _argentina_e2e_self_test() -> None:
         "snapshot_updated_symbols": _ARG_SIGNAL_STATE.get("updated_symbols"),
         "snapshot_errors": _ARG_SIGNAL_STATE.get("errors"),
     }
-    print("GORILA_ARG_E2E_SELFTEST", json.dumps(summary, sort_keys=True, default=str), flush=True)
+    summary["ok"] = bool(summary["all_http_200"] and summary["history_sources_ok"] and summary["matrix_snapshot_status"] == "HEALTHY")
+    print("GORILA_ARG_E2E_RESULT", json.dumps(summary, sort_keys=True, default=str), flush=True)
 
 async def _production_self_test() -> None:
     enabled = os.getenv("GORILA_SELF_TEST", "true").strip().lower() in {"1", "true", "yes"}
