@@ -796,6 +796,8 @@ async def _production_self_test() -> None:
             "cross_contract",
             "terminal_contract",
             "control_contract",
+            "autonomous_contract",
+            "g2_h10_contract",
         )
     )
     results["all_ok"] = results["all_http_ok"] and results["all_contracts_ok"]
@@ -805,7 +807,7 @@ async def _production_self_test() -> None:
     summary = {
         "http_status": {
             name: results[name].get("status_code")
-            for name in ("health", "market", "cross_sectional", "terminal", "control")
+            for name in ("health", "market", "cross_sectional", "terminal", "control", "g2_h10")
         },
         "contracts": {
             "health": results["health_contract"],
