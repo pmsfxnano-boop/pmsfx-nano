@@ -46,3 +46,36 @@ def test_recalibration_candidate_reduces_calibration_error():
     assert result["automatic_apply"] is False
     assert result["apply_gate"] == "PROMOTION_AND_DURABILITY_REQUIRED"
     assert isclose(result["baseline"]["brier"], 0.34, rel_tol=0.05)
+
+
+def test_recalibration_candidate_activates_at_110_settled_samples():
+    rows = []
+    for i in range(110):
+        rows.append({
+            "status": "SETTLED",
+            "observed_at": f"2026-05-{(i % 28) + 1:02d}T12:00:00+00:00",
+            "probability_up": 0.70,
+            "realized_direction": "DOWN",
+        })
+    result = build_recalibration_candidate(rows)
+    assert result["samples"] == 110
+    assert result["required_samples"] == 110 if "required_samples" in result else True
+    assert result["reference_n"] == 80
+    assert result["validation_n"] == 30
+    assert result["status"] == "CANDIDATE_READY"
+    assert result["automatic_apply"] is False
+
+
+def test_recalibration_candidate_blocks_at_109_samples():
+    rows = []
+    for i in range(109):
+        rows.append({
+            "status": "SETTLED",
+            "observed_at": f"2026-06-{(i % 28) + 1:02d}T12:00:00+00:00",
+            "probability_up": 0.70,
+            "realized_direction": "DOWN",
+        })
+    result = build_recalibration_candidate(rows)
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["required_samples"] == 110
+    assert result["automatic_apply"] is False
