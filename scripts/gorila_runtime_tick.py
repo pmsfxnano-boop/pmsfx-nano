@@ -328,11 +328,30 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         raise RuntimeError("durable_storage_required")
 
     timings: dict[str, float] = {}
-    stage_started = datetime.now(timezone.utc)
-    ingestion = run_batch(include_macro=False)
-    timings["ingestion_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
 
-    stage_started = datetime.now(timezone.utc)
+    def stage_begin(name: str):
+        print("GORILA_AUTONOMOUS_STAGE_START", {"stage": name}, flush=True)
+        return datetime.now(timezone.utc)
+
+    def stage_end(name: str, started: datetime, **meta):
+        elapsed = round((datetime.now(timezone.utc) - started).total_seconds(), 3)
+        timings[f"{name}_s"] = elapsed
+        print(
+            "GORILA_AUTONOMOUS_STAGE_DONE",
+            {"stage": name, "elapsed_s": elapsed, **meta},
+            flush=True,
+        )
+
+    stage_started = stage_begin("ingestion")
+    ingestion = run_batch(include_macro=False)
+    stage_end(
+        "ingestion",
+        stage_started,
+        daily_history_refreshed=bool(ingestion.get("daily_history_refreshed")),
+        rows_inserted=int(ingestion.get("rows_inserted", 0)),
+    )
+
+    stage_started = stage_begin("learning")
     learning = []
     symbols = tuple(settings.core_symbols)
     max_workers = min(3, max(1, len(symbols)))
@@ -359,19 +378,19 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
                 }
             learning.append(result)
     learning.sort(key=lambda row: str(row.get("symbol") or ""))
-    timings["learning_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("learning", stage_started, candidates=len(learning), reused=sum(1 for row in learning if row.get("reused")))
 
     stage_started = datetime.now(timezone.utc)
     learning_registry = _persist_learning_registry(learning)
-    timings["learning_registry_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("learning_registry", stage_started, saved=int(learning_registry.get("saved", 0)), errors=len(learning_registry.get("errors", [])))
 
     stage_started = datetime.now(timezone.utc)
     shadow_capture = _create_learning_shadow_predictions(store, learning)
-    timings["learning_shadow_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("learning_shadow", stage_started, created=int(shadow_capture.get("created_count", 0)))
 
     stage_started = datetime.now(timezone.utc)
     pmsfx_shadow = _sync_pmsfx_shadow_ledger(store)
-    timings["pmsfx_shadow_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("pmsfx_shadow", stage_started, created=int(pmsfx_shadow.get("created", 0)), settled=int(pmsfx_shadow.get("settled", 0)))
 
     stage_started = datetime.now(timezone.utc)
     settlement = store.settle_due_shadow_from_observations(
@@ -379,7 +398,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         limit=100,
     )
 
-    timings["settlement_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("settlement", stage_started, settled=int(settlement.get("settled", 0)))
 
     manifest_path = os.getenv("GORILA_EVIDENCE_MANIFEST_PATH", "research/evidence_manifest.json")
     evidence_sync = {"status": "NOT_FOUND", "path": manifest_path}
@@ -414,7 +433,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "gorila-quantitative-v1", "V1", decision
     )
 
-    timings["promotion_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("promotion", stage_started, status=str(decision.get("status")))
 
     stage_started = datetime.now(timezone.utc)
     shadow_rows = store.latest_shadow(status="SETTLED", limit=500)
@@ -423,11 +442,11 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
         "shadow-probability-v0", recalibration
     )
 
-    timings["recalibration_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("recalibration", stage_started, status=str(recalibration.get("status")))
 
     stage_started = datetime.now(timezone.utc)
     audit = build_audit_state(store)
-    timings["audit_s"] = round((datetime.now(timezone.utc) - stage_started).total_seconds(), 3)
+    stage_end("audit", stage_started, shadow_open= (audit.get("shadow") or {}).get("open"))
     return {
         "status": "COMPLETED",
         "timings": timings,
