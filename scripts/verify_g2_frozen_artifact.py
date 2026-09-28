@@ -16,6 +16,64 @@ EXPECTED_HORIZON = 10
 EXPECTED_C = 0.25
 
 
+def _validate_package_arrays(package) -> dict:
+    required = {
+        "symbols",
+        "feature_names",
+        "reg_names",
+        "reg_mu",
+        "reg_sd",
+        "scaler_mean",
+        "scaler_scale",
+        "coef",
+        "intercept",
+        "Sigma",
+        "beta",
+        "train_idx",
+        "pair_i",
+        "pair_j",
+        "H",
+        "C",
+    }
+    missing = sorted(required - set(package.files))
+    if missing:
+        raise ValueError(f"missing arrays: {missing}")
+
+    symbols = package["symbols"].tolist()
+    feature_names = package["feature_names"].tolist()
+    if symbols != EXPECTED_SYMBOLS:
+        raise ValueError(f"symbol order mismatch: {symbols}")
+    if len(feature_names) != EXPECTED_FEATURE_COUNT:
+        raise ValueError(f"feature_count mismatch: {len(feature_names)}")
+    if package["scaler_mean"].shape != (EXPECTED_EXPANDED_FEATURE_COUNT,):
+        raise ValueError(f"scaler_mean shape mismatch: {package['scaler_mean'].shape}")
+    if package["scaler_scale"].shape != (EXPECTED_EXPANDED_FEATURE_COUNT,):
+        raise ValueError(f"scaler_scale shape mismatch: {package['scaler_scale'].shape}")
+    if package["coef"].shape != (1, EXPECTED_EXPANDED_FEATURE_COUNT):
+        raise ValueError(f"coef shape mismatch: {package['coef'].shape}")
+    if package["Sigma"].shape != (6, 6):
+        raise ValueError(f"Sigma shape mismatch: {package['Sigma'].shape}")
+    if package["pair_i"].shape != (15,) or package["pair_j"].shape != (15,):
+        raise ValueError("pair index shape mismatch")
+    if int(package["H"][0]) != EXPECTED_HORIZON:
+        raise ValueError(f"H mismatch: {package['H']}")
+    if abs(float(package["C"][0]) - EXPECTED_C) > 1e-15:
+        raise ValueError(f"C mismatch: {package['C']}")
+    for name in ("coef", "scaler_mean", "scaler_scale", "Sigma"):
+        if not np.isfinite(package[name]).all():
+            raise ValueError(f"{name} contains non-finite values")
+    if not np.all(package["scaler_scale"] > 0):
+        raise ValueError("scaler_scale must be strictly positive")
+
+    return {
+        "symbols": EXPECTED_SYMBOLS,
+        "feature_count": EXPECTED_FEATURE_COUNT,
+        "expanded_feature_count": EXPECTED_EXPANDED_FEATURE_COUNT,
+        "horizon": EXPECTED_HORIZON,
+        "C": EXPECTED_C,
+    }
+
+
 def verify(path: Path) -> dict:
     raw = path.read_bytes()
     sha256 = hashlib.sha256(raw).hexdigest()
@@ -23,72 +81,16 @@ def verify(path: Path) -> dict:
         raise ValueError(f"SHA256 mismatch: {sha256} != {EXPECTED_SHA256}")
 
     with np.load(path, allow_pickle=False) as package:
-        required = {
-            "symbols",
-            "feature_names",
-            "reg_names",
-            "reg_mu",
-            "reg_sd",
-            "scaler_mean",
-            "scaler_scale",
-            "coef",
-            "intercept",
-            "Sigma",
-            "beta",
-            "train_idx",
-            "pair_i",
-            "pair_j",
-            "H",
-            "C",
-        }
-        missing = sorted(required - set(package.files))
-        if missing:
-            raise ValueError(f"missing arrays: {missing}")
-
-        symbols = package["symbols"].tolist()
-        feature_names = package["feature_names"].tolist()
-        if symbols != EXPECTED_SYMBOLS:
-            raise ValueError(f"symbol order mismatch: {symbols}")
-        if len(feature_names) != EXPECTED_FEATURE_COUNT:
-            raise ValueError(f"feature_count mismatch: {len(feature_names)}")
-        if package["scaler_mean"].shape != (EXPECTED_EXPANDED_FEATURE_COUNT,):
-            raise ValueError(f"scaler_mean shape mismatch: {package['scaler_mean'].shape}")
-        if package["scaler_scale"].shape != (EXPECTED_EXPANDED_FEATURE_COUNT,):
-            raise ValueError(f"scaler_scale shape mismatch: {package['scaler_scale'].shape}")
-        if package["coef"].shape != (1, EXPECTED_EXPANDED_FEATURE_COUNT):
-            raise ValueError(f"coef shape mismatch: {package['coef'].shape}")
-        if package["Sigma"].shape != (6, 6):
-            raise ValueError(f"Sigma shape mismatch: {package['Sigma'].shape}")
-        if package["pair_i"].shape != (15,) or package["pair_j"].shape != (15,):
-            raise ValueError("pair index shape mismatch")
-        if int(package["H"][0]) != EXPECTED_HORIZON:
-            raise ValueError(f"H mismatch: {package['H']}")
-        if abs(float(package["C"][0]) - EXPECTED_C) > 1e-15:
-            raise ValueError(f"C mismatch: {package['C']}")
-        if not np.isfinite(package["coef"]).all():
-            raise ValueError("coef contains non-finite values")
-        if not np.isfinite(package["scaler_mean"]).all():
-            raise ValueError("scaler_mean contains non-finite values")
-        if not np.isfinite(package["scaler_scale"]).all():
-            raise ValueError("scaler_scale contains non-finite values")
-        if not np.all(package["scaler_scale"] > 0):
-            raise ValueError("scaler_scale must be strictly positive")
-        if not np.isfinite(package["Sigma"]).all():
-            raise ValueError("Sigma contains non-finite values")
+        identity = _validate_package_arrays(package)
 
     return {
         "status": "VERIFIED",
         "sha256": sha256,
         "bytes": len(raw),
         "snapshot_sha256": EXPECTED_SNAPSHOT_SHA256,
-        "symbols": EXPECTED_SYMBOLS,
-        "feature_count": EXPECTED_FEATURE_COUNT,
-        "expanded_feature_count": EXPECTED_EXPANDED_FEATURE_COUNT,
-        "horizon": EXPECTED_HORIZON,
-        "C": EXPECTED_C,
+        **identity,
         "runtime_serving": "DISABLED_PENDING_SCIENTIFIC_SCORER_INTEGRATION",
     }
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
