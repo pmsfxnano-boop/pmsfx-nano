@@ -650,7 +650,7 @@ async def _production_self_test() -> None:
         results["health"] = await probe("health", "/api/gorila/health")
         results["market"] = await probe("market", "/api/gorila/market")
         results["cross_sectional"] = await probe("cross_sectional", "/api/gorila/cross-sectional")
-        results["terminal"] = await probe("terminal", "/api/gorila/terminal/AAPL")
+        results["terminal"] = await probe("terminal", "/api/gorila/terminal/GGAL")
         results["control"] = await probe("control", "/api/gorila/control")
 
     health_payload = results["health"].get("payload") or {}
@@ -691,7 +691,7 @@ async def _production_self_test() -> None:
     results["terminal_contract"] = {
         "ok": results["terminal"]["ok"]
         and terminal_payload.get("service") == "gorila-argentum"
-        and terminal_payload.get("symbol") == "AAPL"
+        and terminal_payload.get("symbol") == "GGAL"
         and "quote" in terminal_payload
         and "forecast" in terminal_payload
         and "macro" in terminal_payload
