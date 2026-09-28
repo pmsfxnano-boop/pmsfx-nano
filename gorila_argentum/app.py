@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 
 import httpx
 from concurrent.futures import ThreadPoolExecutor
@@ -646,8 +647,12 @@ async def _argentina_e2e_self_test() -> None:
         "all_http_200": all((results.get(name) or {}).get("status") == 200 for name in http_probe_names),
         "byma_history_ok": bool((results.get("byma_history") or {}).get("ok")),
         "rava_history_ok": bool((results.get("rava_history") or {}).get("ok")) if "rava_history" in results else None,
-        "history_sources_ok": bool((results.get("byma_history") or {}).get("ok")) and (
-            bool((results.get("rava_history") or {}).get("ok")) if "rava_history" in results else True
+        "history_sources_ok": bool((results.get("byma_history") or {}).get("ok"))
+        and (bool((results.get("rava_history") or {}).get("ok")) if "rava_history" in results else True)
+        and (
+            (results.get("rava_byma_agreement") or {}).get("status") == "OK"
+            if "rava_history" in results
+            else True
         ),
         "results": results,
         "matrix_snapshot_status": _ARG_SIGNAL_STATE.get("status"),
@@ -693,12 +698,14 @@ async def _production_self_test() -> None:
         results["cross_sectional"] = await probe("cross_sectional", "/api/gorila/cross-sectional")
         results["terminal"] = await probe("terminal", "/api/gorila/terminal/GGAL")
         results["control"] = await probe("control", "/api/gorila/control")
+        results["g2_h10"] = await probe("g2_h10", "/api/gorila/g2-h10/status")
 
     health_payload = results["health"].get("payload") or {}
     market_payload = results["market"].get("payload") or {}
     cross_payload = results["cross_sectional"].get("payload") or {}
     terminal_payload = results["terminal"].get("payload") or {}
     control_payload = results["control"].get("payload") or {}
+    g2_payload = results["g2_h10"].get("payload") or {}
     forecast = terminal_payload.get("forecast") or {}
     runtime_items = (control_payload.get("runtime") or {}).get("items") or []
 
@@ -753,11 +760,33 @@ async def _production_self_test() -> None:
         "latest_runtime_kind": latest.get("kind"),
         "latest_runtime_status": latest.get("status"),
     }
+
+    autonomous = (health_payload.get("autonomous_runtime") or {})
+    results["autonomous_contract"] = {
+        "ok": results["health"]["ok"]
+        and autonomous.get("status") == "COMPLETED"
+        and autonomous.get("interval_seconds", 0) >= 300
+        and bool(autonomous.get("last_result")),
+        "status": autonomous.get("status"),
+        "interval_seconds": autonomous.get("interval_seconds"),
+    }
+    results["g2_h10_contract"] = {
+        "ok": results["g2_h10"]["ok"]
+        and g2_payload.get("status") == "REGISTERED"
+        and g2_payload.get("model_id") == "G2_PIT_FIXED_C0.25_H10"
+        and g2_payload.get("promotion") == "BLOCKED"
+        and g2_payload.get("runtime_serving") == "DISABLED_UNTIL_EXACT_PACKAGE_VERIFIED"
+        and g2_payload.get("research_only") is True
+        and g2_payload.get("no_execution_authority") is True,
+        "status": g2_payload.get("status"),
+        "model_id": g2_payload.get("model_id"),
+        "runtime_serving": g2_payload.get("runtime_serving"),
+    }
     # Route-level HTTP pass is separate from scientific readiness. The cross-sectional
     # endpoint may legitimately return INSUFFICIENT_DATA; that is not an HTTP failure.
     results["all_http_ok"] = all(
         bool(results[name].get("ok"))
-        for name in ("health", "market", "cross_sectional", "terminal", "control")
+        for name in ("health", "market", "cross_sectional", "terminal", "control", "g2_h10")
     )
     results["all_contracts_ok"] = all(
         bool(results[name].get("ok"))
@@ -784,6 +813,8 @@ async def _production_self_test() -> None:
             "cross_sectional": results["cross_contract"],
             "terminal": results["terminal_contract"],
             "control": results["control_contract"],
+            "autonomous": results["autonomous_contract"],
+            "g2_h10": results["g2_h10_contract"],
         },
         "all_http_ok": results["all_http_ok"],
         "all_contracts_ok": results["all_contracts_ok"],
@@ -872,7 +903,6 @@ async def gorila_runtime_shutdown() -> None:
     _ARG_LIVE_TASK = None
     _ARG_SIGNAL_TASK = None
     _ARG_E2E_TASK = None
-    _PRODUCTION_E2E_TASK = None
     _PRODUCTION_E2E_TASK = None
 
 
