@@ -101,6 +101,24 @@ def run_learning_cycle(
         store.save_learning_run(symbol, horizon_days, result)
         return result
 
+    latest_runs = store.latest_learning(symbol=symbol, limit=1)
+    previous = latest_runs[0] if latest_runs else None
+    if previous and previous.get("dataset_hash") == dataset["dataset_hash"]:
+        cached = dict(previous.get("result") or {})
+        cached.update({
+            "status": cached.get("status") or "CANDIDATE_REJECTED",
+            "symbol": symbol,
+            "horizon_days": horizon_days,
+            "learner_id": LEARNER_ID,
+            "trainer_version": TRAINER_VERSION,
+            "data_fabric": DATA_FABRIC,
+            "dataset_hash": dataset["dataset_hash"],
+            "reused": True,
+            "reuse_reason": "DATASET_UNCHANGED",
+            "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        })
+        return cached
+
     X = [row["features"] for row in dataset["rows"]]
     y = [row["label"] for row in dataset["rows"]]
     validation = purged_walk_forward(
