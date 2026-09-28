@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from gorila_argentum.audit import build_audit_state
 from gorila_argentum.calibration import apply_logit_intercept, build_recalibration_candidate
 from gorila_argentum.config import settings
-from gorila_argentum.learning import run_learning_cycle
+from gorila_argentum.learning import build_learning_context, run_learning_cycle
 from gorila_argentum.ingest import run_batch
 from gorila_argentum.promotion import evaluate_live_promotion
 from gorila_argentum.storage import Store
@@ -512,6 +512,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
     stage_started = stage_begin("learning")
     learning = []
     symbols = tuple(settings.core_symbols)
+    learning_context = build_learning_context(store, symbols, horizon_days=5)
     max_workers = min(3, max(1, len(symbols)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -521,6 +522,7 @@ def run_tick(store: Store | None = None) -> dict[str, Any]:
                 horizon_days=5,
                 store=Store(),
                 initialize_store=False,
+                context=learning_context.get(symbol, {}),
             ): symbol
             for symbol in symbols
         }
