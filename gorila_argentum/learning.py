@@ -13,6 +13,23 @@ LEARNER_ID = "gorila-univariate-logit-candidate-v2"
 TRAINER_VERSION = "2026-09-28"
 DATA_FABRIC = "CANONICAL_DAILY_V1"
 FEATURE_NAMES = ("r1", "r3", "r5", "vol5", "vol20", "z20")
+LEARNING_SPEC = {
+    "learner_id": LEARNER_ID,
+    "trainer_version": TRAINER_VERSION,
+    "feature_names": list(FEATURE_NAMES),
+    "feature_horizon_days": 5,
+    "default_train_size": 80,
+    "default_test_size": 20,
+    "gate": {
+        "min_accuracy": 0.55,
+        "min_brier_skill": 0.0,
+        "min_oos_n": 40,
+        "min_folds": 2,
+    },
+}
+LEARNING_SPEC_HASH = hashlib.sha256(
+    json.dumps(LEARNING_SPEC, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 from .validation import purged_walk_forward
 
@@ -94,6 +111,7 @@ def run_learning_cycle(
         previous
         and previous.get("dataset_hash")
         and previous_result.get("canonical_content_hash") == canonical_hash
+        and previous_result.get("learning_spec_hash") == LEARNING_SPEC_HASH
     ):
         cached = dict(previous_result)
         cached.update({
@@ -104,6 +122,7 @@ def run_learning_cycle(
             "trainer_version": TRAINER_VERSION,
             "data_fabric": DATA_FABRIC,
             "canonical_content_hash": canonical_hash,
+            "learning_spec_hash": LEARNING_SPEC_HASH,
             "reused": True,
             "reuse_reason": "CANONICAL_CONTENT_UNCHANGED",
             "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -136,6 +155,7 @@ def run_learning_cycle(
             "data_fabric": DATA_FABRIC,
             "dataset_hash": dataset["dataset_hash"],
             "canonical_content_hash": canonical_hash,
+            "learning_spec_hash": LEARNING_SPEC_HASH,
             "reused": True,
             "reuse_reason": "DATASET_UNCHANGED",
             "generated_at": cached.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -225,6 +245,8 @@ def run_learning_cycle(
         "feature_names": list(FEATURE_NAMES),
         "dataset_hash": dataset["dataset_hash"],
         "canonical_content_hash": canonical_hash,
+        "learning_spec_hash": LEARNING_SPEC_HASH,
+        "learning_spec": LEARNING_SPEC,
         "samples": dataset["samples"],
         "validation": validation,
         "latest_probability_up": latest_probability,
