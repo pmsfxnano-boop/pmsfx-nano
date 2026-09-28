@@ -59,7 +59,7 @@ def _parse_rava_number(value: str) -> float | None:
         return None
 
 
-def rava_public_historical_daily(symbol: str, limit_rows: int = 120):
+def rava_public_historical_daily(symbol: str, limit_rows: int = 400):
     source = f"RavaPublic/{symbol}"
     t0 = time.perf_counter()
     received = now()
