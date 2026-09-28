@@ -445,6 +445,59 @@ def canonical_content_hash(
     ).hexdigest()
 
 
+def canonical_content_hash_batch(
+    store: Store,
+    symbols: tuple[str, ...],
+    field: str = "close",
+) -> dict[str, str]:
+    """Hash accepted canonical content for multiple symbols in one database query."""
+    symbols = tuple(str(symbol).upper() for symbol in symbols)
+    if not symbols:
+        return {}
+    ensure_canonical_schema(store)
+    conn = store.connect()
+    if store.pg:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT symbol,session_date,value,source,status,max_relative_spread
+                   FROM canonical_daily
+                   WHERE symbol = ANY(%s)
+                     AND field=%s
+                     AND status LIKE 'ACCEPTED%%'
+                   ORDER BY symbol,session_date ASC""",
+                (list(symbols), field),
+            )
+            rows = cur.fetchall()
+    else:
+        placeholders = ",".join(["?"] * len(symbols))
+        rows = conn.execute(
+            f"""SELECT symbol,session_date,value,source,status,max_relative_spread
+                FROM canonical_daily
+                WHERE symbol IN ({placeholders})
+                  AND field=?
+                  AND status LIKE 'ACCEPTED%'
+                ORDER BY symbol,session_date ASC""",
+            (*symbols, field),
+        ).fetchall()
+    conn.close(); store.conn=None
+
+    grouped = {symbol: [] for symbol in symbols}
+    for row in rows:
+        grouped[str(row[0]).upper()].append([
+            str(row[1]),
+            float(row[2]),
+            str(row[3]),
+            str(row[4]),
+            None if row[5] is None else float(row[5]),
+        ])
+    return {
+        symbol: hashlib.sha256(
+            json.dumps(payload, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        ).hexdigest()
+        for symbol, payload in grouped.items()
+    }
+
+
 def canonical_daily_series(store: Store, symbol: str, field: str = "close", limit: int = 2500) -> list[tuple[str, float]]:
     ensure_canonical_schema(store)
     limit = max(1, int(limit))
