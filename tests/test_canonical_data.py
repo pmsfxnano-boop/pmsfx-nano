@@ -177,3 +177,31 @@ def test_canonical_content_hash_changes_with_accepted_value(tmp_path, monkeypatc
     second = canonical_content_hash(store, "GGAL")
     assert second
     assert first != second
+
+
+def test_rava_public_source_is_admitted_to_rava_family(tmp_path, monkeypatch):
+    store = _store(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "symbol": "GGAL",
+                "field": "close",
+                "value": 100.0,
+                "event_time": "2026-09-25T03:00:00+00:00",
+                "received_time": "2026-09-28T12:00:00+00:00",
+                "source": "BYMADATA/GGAL/historical",
+            },
+            {
+                "symbol": "GGAL",
+                "field": "close",
+                "value": 100.1,
+                "event_time": "2026-09-25T04:00:00+00:00",
+                "received_time": "2026-09-28T12:00:01+00:00",
+                "source": "RavaPublic/GGAL",
+            },
+        ],
+    )
+    result = reconcile_daily_symbol(store, "GGAL")
+    assert result["accepted"] == 1
+    assert result["quarantined"] == 0
