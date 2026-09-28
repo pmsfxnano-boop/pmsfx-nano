@@ -7,16 +7,30 @@ from typing import Any
 
 from .prediction import fit_logistic, predict
 from .storage import Store
+from .canonical_data import canonical_daily_series
+
+LEARNER_ID = "gorila-univariate-logit-candidate-v2"
+TRAINER_VERSION = "2026-09-28"
+DATA_FABRIC = "CANONICAL_DAILY_V1"
+FEATURE_NAMES = ("r1", "r3", "r5", "vol5", "vol20", "z20")
+
 from .validation import purged_walk_forward
 
 
 def build_training_dataset(store: Store, symbol: str, horizon_days: int = 5, limit: int = 5000):
-    series = store.recent_series(symbol, "close", limit=limit)
+    # The learner consumes only the model-facing canonical fabric. Raw
+    # observations are intentionally unavailable to the training path.
+    series = canonical_daily_series(store, symbol, "close", limit=limit)
     if len(series) < 140 + horizon_days:
-        return {"status": "INSUFFICIENT_DATA", "samples": 0, "dataset_hash": None}
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "samples": 0,
+            "dataset_hash": None,
+            "data_fabric": DATA_FABRIC,
+        }
 
     values = [float(v) for _, v in series]
-    times = [t for t, _ in series]
+    times = [str(t) for t, _ in series]
     rows = []
     for i in range(20, len(values) - horizon_days):
         past = values[: i + 1]
@@ -53,6 +67,8 @@ def build_training_dataset(store: Store, symbol: str, horizon_days: int = 5, lim
         "status": "READY" if len(rows) >= 100 else "INSUFFICIENT_DATA",
         "samples": len(rows),
         "dataset_hash": hashlib.sha256(canonical).hexdigest(),
+        "data_fabric": DATA_FABRIC,
+        "feature_names": list(FEATURE_NAMES),
         "rows": rows,
     }
 
@@ -137,15 +153,39 @@ def run_learning_cycle(
         and validation["brier_skill"] is not None
         and validation["brier_skill"] >= 0.0
     )
+    model_canonical = json.dumps(
+        model_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    model_hash = hashlib.sha256(model_canonical).hexdigest()
+    candidate_pass = candidate_pass and (
+        int(validation.get("oos_n", 0)) >= 40
+        and len(validation.get("folds", [])) >= 2
+    )
     result = {
         "status": "CANDIDATE_ELIGIBLE" if candidate_pass else "CANDIDATE_REJECTED",
         "symbol": symbol,
         "horizon_days": horizon_days,
+        "learner_id": LEARNER_ID,
+        "trainer_version": TRAINER_VERSION,
+        "data_fabric": DATA_FABRIC,
+        "feature_names": list(FEATURE_NAMES),
         "dataset_hash": dataset["dataset_hash"],
         "samples": dataset["samples"],
         "validation": validation,
         "latest_probability_up": latest_probability,
         "model": model_payload,
+        "model_hash": model_hash,
+        "candidate_policy": {
+            "min_accuracy": 0.55,
+            "min_brier_skill": 0.0,
+            "min_oos_n": 40,
+            "min_folds": 2,
+            "automatic_promotion": False,
+            "serving_model_mutation": False,
+        },
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "promotion": "BLOCKED",
     }
