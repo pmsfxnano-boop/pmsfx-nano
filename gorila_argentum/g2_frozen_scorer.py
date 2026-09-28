@@ -47,8 +47,10 @@ def _shift(values: np.ndarray, periods: int) -> np.ndarray:
 
 
 def _rolling_std(values: np.ndarray, window: int) -> np.ndarray:
+    # Match pandas.Series.rolling(window).std() exactly: the first valid
+    # window ends at index window-1 and uses sample standard deviation (ddof=1).
     out = np.full(values.shape, np.nan, dtype=np.float64)
-    for t in range(window, len(values)):
+    for t in range(window - 1, len(values)):
         sample = values[t - window + 1 : t + 1]
         if np.isfinite(sample).all():
             out[t] = float(np.std(sample, ddof=1))
