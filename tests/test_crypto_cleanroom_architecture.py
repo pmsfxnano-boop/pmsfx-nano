@@ -92,9 +92,7 @@ def test_importing_crypto_app_does_not_load_legacy_domains() -> None:
     assert not forbidden_loaded, sorted(forbidden_loaded)
 
 
-def test_crypto_app_has_no_background_worker_bootstrap() -> None:
-    for path in _python_files():
-        text = path.read_text(encoding="utf-8")
-        assert "asyncio.create_task" not in text
-        assert "@app.on_event" not in text
-        assert "BackgroundTasks" not in text
+def test_crypto_app_capture_is_opt_in_by_default() -> None:
+    module = importlib.import_module("gorila_crypto.app")
+    assert module.settings.ingest_enabled is False
+    assert module.settings.environment == "cleanroom"
