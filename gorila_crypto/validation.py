@@ -919,6 +919,7 @@ def persist_validation_report(
                     "realized_signed_return_bps": row.label.realized_signed_return_bps,
                     "net_return_bps": signed - cost,
                 }
+            )
             lineage_rows.append(
                 {
                     "run_id": run_id,
