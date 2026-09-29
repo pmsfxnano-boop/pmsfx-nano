@@ -863,6 +863,9 @@ def run_walk_forward_validation(
         else 0.0
     )
     economic_positive = aggregate_economic.net_mean_bps > 0.0
+    explicit_friction_pass = (
+        policy.round_trip_cost_bps + policy.round_trip_slippage_bps
+    ) > 0.0
     placebo_pass = placebo_p <= 0.05
     stress_pass = all(result.net_mean_bps > 0.0 for result in stress_results.values()) if stress_results else False
     group_sample_pass = all(
@@ -879,6 +882,7 @@ def run_walk_forward_validation(
         and len(oos_labels) >= config.test_rows
         and baseline_beat
         and economic_positive
+        and explicit_friction_pass
         and placebo_pass
         and stress_pass
         and group_sample_pass
@@ -978,7 +982,13 @@ def persist_validation_report(
         "placebo_p_value": report.placebo_p_value,
         "placebo_iterations": report.placebo_iterations,
         "promotion_eligible": report.promotion_eligible,
-        "config": asdict(config),
+        "config": {
+            "walk_forward": asdict(config),
+            "economic_policy": asdict(policy),
+            "feature_names": list(
+                dataset[0].snapshot.feature_values.keys()
+            ) if dataset else [],
+        },
         "aggregate_metrics": {
             "probabilistic": asdict(aggregate) if aggregate else {},
             "economic": asdict(aggregate_economic) if aggregate_economic else {},
