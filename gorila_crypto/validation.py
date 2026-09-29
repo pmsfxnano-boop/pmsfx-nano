@@ -16,7 +16,12 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
-from .forecast import DetectionFeatureSnapshot, ForecastTargetSpec, _log_return_bps
+from .forecast import (
+    DetectionFeatureSnapshot,
+    ForecastTargetSpec,
+    _log_return_bps,
+    build_detection_features,
+)
 from .lead_lag import LeadLagConfig, PricePoint, build_price_points, detect_leader_impulses
 
 
@@ -66,8 +71,8 @@ class WalkForwardConfig:
             raise ValueError("min_train_rows must be positive")
         if self.test_rows < 1:
             raise ValueError("test_rows must be positive")
-        if self.step_rows < 1:
-            raise ValueError("step_rows must be positive")
+        if self.step_rows < self.test_rows:
+            raise ValueError("step_rows must be >= test_rows to avoid overlapping OOS windows")
         if self.purge_ms < 0 or self.embargo_ms < 0:
             raise ValueError("purge/embargo must be non-negative")
         if self.ridge_alpha < 0:
@@ -234,8 +239,6 @@ def build_forecast_dataset(
         if trigger.event_id in seen_trigger_ids:
             continue
         seen_trigger_ids.add(trigger.event_id)
-        from .forecast import build_detection_features
-
         try:
             snapshot = build_detection_features(
                 target,
@@ -485,15 +488,17 @@ def economic_metrics(
     gross_values: list[float] = []
     traded = 0
     for row, probability in zip(rows, probabilities):
-        action = 1 if probability >= policy.probability_threshold else -1
+        if abs(probability - 0.5) < 1e-15:
+            action = 0
+        else:
+            action = 1 if probability >= policy.probability_threshold else -1
+        if action == 0:
+            gross_values.append(0.0)
+            net_values.append(0.0)
+            continue
         signed = float(row.label.realized_signed_return_bps) * action
         signed *= 1.0 - return_haircut
         gross_values.append(signed)
-        if abs(probability - 0.5) < 1e-15:
-            action = 0
-        if action == 0:
-            net_values.append(0.0)
-            continue
         traded += 1
         cost = policy.round_trip_cost_bps * cost_multiplier
         slippage = policy.round_trip_slippage_bps * slippage_multiplier
