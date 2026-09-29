@@ -97,11 +97,13 @@ class KrakenStreamConfig:
 
 def subscription_messages(config: KrakenStreamConfig) -> tuple[dict[str, Any], ...]:
     symbols = [_provider_symbol(symbol) for symbol in config.symbols]
-    messages: list[dict[str, Any]] = [{
-        "method": "subscribe",
-        "params": {"channel": "instrument", "symbol": symbols, "snapshot": True},
-        "req_id": 0,
-    }]
+    messages: list[dict[str, Any]] = []
+    if "bookTicker" in config.streams or "depth" in config.streams:
+        messages.append({
+            "method": "subscribe",
+            "params": {"channel": "instrument", "symbol": symbols, "snapshot": True},
+            "req_id": 0,
+        })
     if "trade" in config.streams:
         messages.append(
             {
