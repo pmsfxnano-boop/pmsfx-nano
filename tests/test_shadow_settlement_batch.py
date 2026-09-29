@@ -38,6 +38,7 @@ def test_shadow_settlement_batches_observation_reads(monkeypatch, tmp_path):
 
     assert result["attempted"] == 1
     assert result["settled"] == 1
-    row = store.get_shadow_prediction(prediction["id"])
+    rows = store.latest_shadow(status="SETTLED", limit=10)
+    row = next(item for item in rows if item["id"] == prediction["id"])
     assert row["status"] == "SETTLED"
     assert row["observed_at"] == (created_at + timedelta(seconds=10)).isoformat()
