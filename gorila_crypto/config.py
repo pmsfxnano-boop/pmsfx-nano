@@ -28,6 +28,7 @@ def _symbols(value: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class CryptoSettings:
+    provider: str
     symbols: tuple[str, ...]
     streams: tuple[str, ...]
     depth_speed: str
@@ -45,6 +46,9 @@ class CryptoSettings:
 
 
     def validate(self) -> None:
+        providers = {"binance", "kraken"}
+        if self.provider not in providers:
+            raise ValueError(f"unsupported crypto provider: {self.provider}")
         supported = {"trade", "aggTrade", "bookTicker", "depth"}
         if not self.symbols:
             raise ValueError("Crypto settings require at least one symbol")
@@ -62,6 +66,7 @@ class CryptoSettings:
             raise ValueError("quality row limit must be >= 1000")
 
 settings = CryptoSettings(
+    provider=os.getenv("GORILA_CRYPTO_PROVIDER", "binance").strip().lower(),
     symbols=_symbols(os.getenv("GORILA_CRYPTO_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT")),
     streams=_csv_items(os.getenv("GORILA_CRYPTO_STREAMS", "trade,bookTicker")),
     depth_speed=os.getenv("GORILA_CRYPTO_DEPTH_SPEED", "100ms"),
