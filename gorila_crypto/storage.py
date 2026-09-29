@@ -21,8 +21,11 @@ if not CRYPTO_DB_SCHEMA.replace("_", "").isalnum():
     raise ValueError("invalid_crypto_database_schema")
 
 CRYPTO_SQLITE_PATH = os.getenv("GORILA_CRYPTO_SQLITE_PATH", "/tmp/gorila_crypto.sqlite3").strip()
-CRYPTO_DATABASE_URL = os.getenv("GORILA_CRYPTO_DATABASE_URL", "").strip()
-CRYPTO_SCHEMA_VERSION = 2
+CRYPTO_DATABASE_URL = (
+    os.getenv("GORILA_CRYPTO_DATABASE_URL", "").strip()
+    or os.getenv("DATABASE_URL", "").strip()
+)
+CRYPTO_SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crypto_events (
@@ -339,10 +342,16 @@ class CryptoStore:
         *,
         database_url: str | None = None,
         sqlite_path: str | None = None,
+        require_durable: bool = False,
     ) -> None:
         self.database_url = (
             database_url if database_url is not None else CRYPTO_DATABASE_URL
         ).strip()
+        self.require_durable = bool(require_durable)
+        if self.require_durable and not self.database_url:
+            raise RuntimeError(
+                "durable_storage_required: GORILA_CRYPTO_DATABASE_URL or DATABASE_URL is required"
+            )
         self.sqlite_path = (
             sqlite_path if sqlite_path is not None else CRYPTO_SQLITE_PATH
         ).strip() or "/tmp/gorila_crypto.sqlite3"
@@ -359,6 +368,10 @@ class CryptoStore:
     @property
     def backend(self) -> str:
         return "postgres" if self._pg else "sqlite"
+
+    @property
+    def durable(self) -> bool:
+        return self._pg
 
     def connect(self):
         if self._pg:
