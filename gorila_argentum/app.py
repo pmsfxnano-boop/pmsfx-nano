@@ -399,6 +399,7 @@ def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
         "engine_source": "argentina_local_snapshot",
         "evaluation": {},
         "engine_freshness": {"age_seconds": None, "stale": True},
+        "market_session_open": bool(argentina_session_state().get("open")),
     }
     live = _ARG_LIVE_CACHE.get(symbol)
     if live is not None:
