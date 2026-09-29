@@ -8,6 +8,9 @@ def test_audit_reuses_control_promotion_and_learning(monkeypatch):
         "runtime": {
             "mode": "RESEARCH",
             "storage": "postgres",
+            "storage_durable": True,
+            "circuit_breaker": "NORMAL",
+            "promotion_operational_gate": "PASS",
         },
         "promotion_gate": {
             "live_evidence": {
