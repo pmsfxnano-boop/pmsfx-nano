@@ -330,7 +330,6 @@ def bootstrap_order_book(
     if not (int(first_post_snapshot["U"]) <= snapshot_id + 1 <= int(first_post_snapshot["u"])):
         raise BinanceAdapterError("snapshot does not bridge the first buffered post-snapshot depth event")
 
-    first_bridge = bridging[0]
     book = OrderBook(symbol=symbol.upper(), last_update_id=snapshot_id)
     for row in bids:
         if len(row) != 2:
@@ -347,14 +346,10 @@ def bootstrap_order_book(
         if quantity > 0:
             book.asks[price] = quantity
 
-    ordered = [
-        event for event in filtered
-        if int(event["u"]) >= int(first_bridge["u"])
-    ]
-    if ordered:
-        apply_book_delta(book, ordered[0])
-        for event in ordered[1:]:
-            apply_book_delta(book, event)
+    ordered = filtered
+    apply_book_delta(book, ordered[0])
+    for event in ordered[1:]:
+        apply_book_delta(book, event)
     return book, ordered
 
 
