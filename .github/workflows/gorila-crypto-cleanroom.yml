@@ -47,15 +47,23 @@ jobs:
           python -m pip install -r requirements-gorila.txt pytest
       - name: Compile cleanroom modules
         run: python -m compileall -q gorila_core gorila_crypto
-      - name: Run foundational cleanroom tests
-        run: >-
-          pytest -q
-          tests/test_crypto_cleanroom_architecture.py
-          tests/test_crypto_storage_isolation.py
-          tests/test_binance_adapter.py
-          tests/test_crypto_event_replay.py
-          tests/test_crypto_replay_manifest.py
-          tests/test_crypto_lead_lag.py
+      - name: Architecture tests
+        run: pytest -q tests/test_crypto_cleanroom_architecture.py
+
+      - name: Storage isolation tests
+        run: pytest -q tests/test_crypto_storage_isolation.py
+
+      - name: Binance adapter tests
+        run: pytest -q tests/test_binance_adapter.py
+
+      - name: Event replay tests
+        run: pytest -q tests/test_crypto_event_replay.py
+
+      - name: Replay manifest tests
+        run: pytest -q tests/test_crypto_replay_manifest.py
+
+      - name: Lead lag tests
+        run: pytest -q tests/test_crypto_lead_lag.py
 
       - name: Run A7 forecast contract tests
         run: pytest -q tests/test_crypto_forecast.py
