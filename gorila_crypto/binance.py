@@ -246,6 +246,7 @@ def normalize_market_message(
     received_ns: int | None = None,
     received_time: datetime | None = None,
 ) -> NormalizedMarketEvent | None:
+    stream_name = str(message.get("stream") or "").lower()
     data = unwrap_message(message)
     if data is None:
         return None
@@ -254,7 +255,7 @@ def normalize_market_message(
         return normalize_trade(data, received_ns=received_ns, received_time=received_time)
     if event_type == "depthUpdate":
         return normalize_depth(data, received_ns=received_ns, received_time=received_time)
-    if event_type == "bookTicker":
+    if event_type == "bookTicker" or stream_name.endswith("@bookticker"):
         return normalize_book_ticker(data, received_ns=received_ns, received_time=received_time)
     return None
 
