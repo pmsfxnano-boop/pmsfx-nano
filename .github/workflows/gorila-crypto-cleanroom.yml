@@ -53,8 +53,41 @@ jobs:
       - name: Storage isolation tests
         run: pytest -q tests/test_crypto_storage_isolation.py
 
-      - name: Binance adapter tests
-        run: pytest -q tests/test_binance_adapter.py
+      - name: Binance 1 test_stream_names_are_deterministic_and_lowercase
+        run: pytest -q tests/test_binance_adapter.py::test_stream_names_are_deterministic_and_lowercase
+
+      - name: Binance 2 test_trade_normalization_preserves_event_and_trade_time
+        run: pytest -q tests/test_binance_adapter.py::test_trade_normalization_preserves_event_and_trade_time
+
+      - name: Binance 3 test_combined_message_is_unwrapped_and_book_ticker_is_not_falsely_dated
+        run: pytest -q tests/test_binance_adapter.py::test_combined_message_is_unwrapped_and_book_ticker_is_not_falsely_dated
+
+      - name: Binance 4 test_subscription_ack_is_not_market_event
+        run: pytest -q tests/test_binance_adapter.py::test_subscription_ack_is_not_market_event
+
+      - name: Binance 5 test_depth_update_applies_levels_and_removes_zero_quantity
+        run: pytest -q tests/test_binance_adapter.py::test_depth_update_applies_levels_and_removes_zero_quantity
+
+      - name: Binance 6 test_stale_depth_update_is_ignored
+        run: pytest -q tests/test_binance_adapter.py::test_stale_depth_update_is_ignored
+
+      - name: Binance 7 test_depth_gap_is_hard_failure
+        run: pytest -q tests/test_binance_adapter.py::test_depth_gap_is_hard_failure
+
+      - name: Binance 8 test_depth_bootstrap_accepts_only_the_first_bridging_event
+        run: pytest -q tests/test_binance_adapter.py::test_depth_bootstrap_accepts_only_the_first_bridging_event
+
+      - name: Binance 9 test_depth_bootstrap_rejects_a_missing_bridge_instead_of_skipping
+        run: pytest -q tests/test_binance_adapter.py::test_depth_bootstrap_rejects_a_missing_bridge_instead_of_skipping
+
+      - name: Binance 10 test_invalid_depth_shape_is_rejected
+        run: pytest -q tests/test_binance_adapter.py::test_invalid_depth_shape_is_rejected
+
+      - name: Binance 11 test_order_book_coordinator_resyncs_after_sequence_gap
+        run: pytest -q tests/test_binance_adapter.py::test_order_book_coordinator_resyncs_after_sequence_gap
+
+      - name: Binance 12 test_order_book_coordinator_requires_a_new_snapshot_after_gap
+        run: pytest -q tests/test_binance_adapter.py::test_order_book_coordinator_requires_a_new_snapshot_after_gap
 
       - name: Event replay tests
         run: pytest -q tests/test_crypto_event_replay.py
