@@ -711,6 +711,63 @@ def temporal_stability_metrics(
     )
 
 
+class QualityGateBlocked(RuntimeError):
+    """Raised when OOS validation is attempted before data quality passes."""
+
+
+def require_quality_gate(
+    quality_report: Mapping[str, object],
+    *,
+    minimum_rows: int,
+) -> None:
+    """Hard-stop OOS until the exact replay slice has passed data quality."""
+    if minimum_rows < 1:
+        raise ValueError("minimum_rows must be positive")
+    status = str(quality_report.get("status") or "")
+    rows = int(quality_report.get("rows") or 0)
+    if status != "PASS":
+        reasons = quality_report.get("reasons") or ()
+        raise QualityGateBlocked(
+            f"quality_gate_status={status or 'UNKNOWN'} reasons={tuple(reasons)}"
+        )
+    if rows < minimum_rows:
+        raise QualityGateBlocked(
+            f"quality_gate_rows={rows} below required minimum={minimum_rows}"
+        )
+
+
+def run_quality_gated_walk_forward(
+    dataset: Sequence[ForecastDatasetRow],
+    feature_names: Sequence[str],
+    config: WalkForwardConfig,
+    policy: EconomicPolicySpec,
+    *,
+    quality_report: Mapping[str, object],
+    minimum_quality_rows: int,
+    model_id: str = "crypto-ridge-logit-wf",
+    model_version: str = "1",
+    placebo_block_size: int = 20,
+    placebo_iterations: int = 500,
+    stress_scenarios: Sequence[StressScenario] = (),
+) -> ValidationReport:
+    """Run PIT/OOS evaluation only after a passed quality gate."""
+    require_quality_gate(
+        quality_report,
+        minimum_rows=minimum_quality_rows,
+    )
+    return run_walk_forward_validation(
+        dataset,
+        feature_names,
+        config,
+        policy,
+        model_id=model_id,
+        model_version=model_version,
+        placebo_block_size=placebo_block_size,
+        placebo_iterations=placebo_iterations,
+        stress_scenarios=stress_scenarios,
+    )
+
+
 def run_walk_forward_validation(
     dataset: Sequence[ForecastDatasetRow],
     feature_names: Sequence[str],
