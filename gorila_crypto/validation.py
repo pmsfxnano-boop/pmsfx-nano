@@ -719,6 +719,7 @@ def require_quality_gate(
     quality_report: Mapping[str, object],
     *,
     minimum_rows: int,
+    expected_replay_fingerprint: str | None = None,
 ) -> None:
     """Hard-stop OOS until the exact replay slice has passed data quality."""
     if minimum_rows < 1:
@@ -734,6 +735,13 @@ def require_quality_gate(
         raise QualityGateBlocked(
             f"quality_gate_rows={rows} below required minimum={minimum_rows}"
         )
+    if expected_replay_fingerprint is not None:
+        actual_fingerprint = str(quality_report.get("replay_fingerprint") or "")
+        if actual_fingerprint != expected_replay_fingerprint:
+            raise QualityGateBlocked(
+                "quality_gate_replay_fingerprint_mismatch:"
+                f"expected={expected_replay_fingerprint} actual={actual_fingerprint}"
+            )
 
 
 def run_quality_gated_walk_forward(
@@ -744,6 +752,7 @@ def run_quality_gated_walk_forward(
     *,
     quality_report: Mapping[str, object],
     minimum_quality_rows: int,
+    replay_fingerprint: str,
     model_id: str = "crypto-ridge-logit-wf",
     model_version: str = "1",
     placebo_block_size: int = 20,
@@ -754,6 +763,7 @@ def run_quality_gated_walk_forward(
     require_quality_gate(
         quality_report,
         minimum_rows=minimum_quality_rows,
+        expected_replay_fingerprint=replay_fingerprint,
     )
     return run_walk_forward_validation(
         dataset,
