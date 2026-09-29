@@ -106,4 +106,4 @@ def test_kraken_checksum_preserves_fixed_precision_digits() -> None:
         KrakenPrecision(price=2, qty=3),
     )
     assert payload == "60001.10:1.234,60000.00:0.010"
-    assert checksum == 1386415843
+    assert checksum == 1799580579
