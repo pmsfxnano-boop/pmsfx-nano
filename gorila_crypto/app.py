@@ -32,10 +32,29 @@ _runtime_thread: threading.Thread | None = None
 _quality_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
 _stop_event = threading.Event()
+_capture_block_reason: str | None = None
 
 
 def _new_store() -> CryptoStore:
     return CryptoStore(require_durable=settings.ingest_enabled)
+
+
+def _safe_store_stats() -> dict[str, Any] | None:
+    if not settings.ingest_enabled:
+        return None
+    try:
+        return _new_store().prospective_stats()
+    except RuntimeError as exc:
+        return None
+
+
+def _storage_backend_status() -> str:
+    if not settings.ingest_enabled:
+        return "NOT_REQUIRED"
+    try:
+        return _new_store().backend
+    except RuntimeError:
+        return "BLOCKED_NO_DURABLE_STORAGE"
 
 
 def _heartbeat_loop() -> None:
@@ -101,34 +120,53 @@ def _quality_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread, _heartbeat_thread
+    global _runtime, _runtime_thread, _quality_thread, _heartbeat_thread, _capture_block_reason
     _stop_event.clear()
+    _capture_block_reason = None
 
     if settings.ingest_enabled:
-        store = _new_store()
-        adapter = build_market_adapter()
-        _runtime = ProspectiveCryptoIngestor(store, adapter)
-        _runtime_thread = threading.Thread(
-            target=_runtime.run,
-            name="gorila-crypto-ingest",
-            daemon=True,
-        )
-        _runtime_thread.start()
-
-        _heartbeat_thread = threading.Thread(
-            target=_heartbeat_loop,
-            name="gorila-crypto-heartbeat",
-            daemon=True,
-        )
-        _heartbeat_thread.start()
-
-        if settings.quality_monitor_enabled:
-            _quality_thread = threading.Thread(
-                target=_quality_loop,
-                name="gorila-crypto-quality",
+        try:
+            store = _new_store()
+        except RuntimeError as exc:
+            _capture_block_reason = str(exc)
+            print(
+                "GORILA_CAPTURE_BLOCKED "
+                + json.dumps(
+                    {
+                        "reason": _capture_block_reason,
+                        "provider": settings.provider,
+                        "provider": settings.provider,
+        "symbols": list(settings.symbols),
+        "capture_block_reason": _capture_block_reason,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+        else:
+            adapter = build_market_adapter()
+            _runtime = ProspectiveCryptoIngestor(store, adapter)
+            _runtime_thread = threading.Thread(
+                target=_runtime.run,
+                name="gorila-crypto-ingest",
                 daemon=True,
             )
-            _quality_thread.start()
+            _runtime_thread.start()
+
+            _heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop,
+                name="gorila-crypto-heartbeat",
+                daemon=True,
+            )
+            _heartbeat_thread.start()
+
+            if settings.quality_monitor_enabled:
+                _quality_thread = threading.Thread(
+                    target=_quality_loop,
+                    name="gorila-crypto-quality",
+                    daemon=True,
+                )
+                _quality_thread.start()
 
     yield
 
@@ -155,13 +193,17 @@ app = FastAPI(
 
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
-    stats = _new_store().prospective_stats() if settings.ingest_enabled else None
+    stats = _safe_store_stats()
     if stats is not None:
         print("GORILA_PROSPECTIVE_STATS " + json.dumps(stats, sort_keys=True, default=str), flush=True)
     return {
         "service": "gorila-crypto",
         "domain": "crypto",
-        "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "READY",
+        "status": (
+            "CAPTURE_BLOCKED_NO_DURABLE_STORAGE"
+            if _capture_block_reason
+            else "CAPTURE_ENABLED" if settings.ingest_enabled else "READY"
+        ),
         "runtime_isolated": True,
         "prospective_capture": settings.ingest_enabled,
         "symbols": list(settings.symbols),
@@ -183,9 +225,15 @@ def health() -> dict[str, Any]:
     return {
         "service": "gorila-crypto",
         "domain": "crypto",
-        "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "READY",
+        "status": (
+            "CAPTURE_BLOCKED_NO_DURABLE_STORAGE"
+            if _capture_block_reason
+            else "CAPTURE_ENABLED" if settings.ingest_enabled else "READY"
+        ),
         "runtime_isolated": True,
-        "prospective_capture": settings.ingest_enabled,
+        "provider": settings.provider,
+        "prospective_capture": settings.ingest_enabled and not _capture_block_reason,
+        "capture_block_reason": _capture_block_reason,
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
         "quality_monitor_alive": bool(_quality_thread and _quality_thread.is_alive()),
         "heartbeat_alive": bool(_heartbeat_thread and _heartbeat_thread.is_alive()),
@@ -200,12 +248,23 @@ def health() -> dict[str, Any]:
             "live_max_age_seconds": LIVE_MAX_AGE_SECONDS,
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
         },
-        "ledger": _new_store().prospective_stats(),
+        "ledger": _safe_store_stats(),
+        "storage_backend": _storage_backend_status(),
     }
 
 
 @app.get("/api/crypto/prospective/status")
 def prospective_status() -> dict[str, Any]:
+    if _capture_block_reason:
+        return {
+            "status": "CAPTURE_BLOCKED_NO_DURABLE_STORAGE",
+            "worker_alive": False,
+            "ledger": None,
+            "source_health": [],
+            "capture_block_reason": _capture_block_reason,
+            "automatic_promotion": False,
+            "execution": False,
+        }
     store = _new_store()
     health_rows = store.health()
     stats = store.prospective_stats()
@@ -235,5 +294,5 @@ def config_snapshot() -> dict[str, Any]:
         "quality_min_duration_seconds": settings.quality_min_duration_seconds,
         "quality_max_p99_transport_latency_ms": settings.quality_max_p99_transport_latency_ms,
         "durable_storage_required_when_ingesting": settings.ingest_enabled,
-        "storage_backend": _new_store().backend,
+        "storage_backend": _storage_backend_status(),
     }
