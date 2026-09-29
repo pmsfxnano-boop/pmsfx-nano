@@ -1230,6 +1230,184 @@ class CryptoStore:
         finally:
             conn.close()
 
+    def record_gap(
+        self,
+        *,
+        symbol: str,
+        source: str,
+        expected_sequence: int | None,
+        observed_sequence: int | None,
+        status: str,
+        metadata: dict[str, Any] | None = None,
+        gap_id: str | None = None,
+    ) -> str:
+        self.init()
+        identity = {
+            "symbol": symbol.upper(),
+            "source": source,
+            "expected_sequence": expected_sequence,
+            "observed_sequence": observed_sequence,
+            "status": status,
+        }
+        gap_id = gap_id or hashlib.sha256(
+            _json(identity).encode("utf-8")
+        ).hexdigest()[:32]
+        values = (
+            gap_id,
+            _utc_now(),
+            symbol.upper(),
+            source,
+            expected_sequence,
+            observed_sequence,
+            status,
+            _json(metadata or {}),
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_data_gaps
+                        (gap_id,detected_at,symbol,source,expected_sequence,
+                         observed_sequence,status,metadata)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(gap_id) DO NOTHING""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT OR IGNORE INTO crypto_data_gaps
+                    (gap_id,detected_at,symbol,source,expected_sequence,
+                     observed_sequence,status,metadata)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            conn.commit()
+            return gap_id
+        finally:
+            conn.close()
+
+    def upsert_source_health(
+        self,
+        *,
+        source: str,
+        status: str,
+        last_event_time: str | None,
+        last_received_time: str | None,
+        event_age_seconds: float | None,
+        transport_age_seconds: float | None,
+        rows_last_batch: int = 0,
+        error: str | None = None,
+    ) -> None:
+        self.init()
+        values = (
+            source,
+            _utc_now(),
+            status,
+            last_event_time,
+            last_received_time,
+            event_age_seconds,
+            transport_age_seconds,
+            int(rows_last_batch),
+            error,
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_source_health
+                        (source,updated_at,status,last_event_time,last_received_time,
+                         event_age_seconds,transport_age_seconds,rows_last_batch,error)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(source) DO UPDATE SET
+                          updated_at=EXCLUDED.updated_at,
+                          status=EXCLUDED.status,
+                          last_event_time=EXCLUDED.last_event_time,
+                          last_received_time=EXCLUDED.last_received_time,
+                          event_age_seconds=EXCLUDED.event_age_seconds,
+                          transport_age_seconds=EXCLUDED.transport_age_seconds,
+                          rows_last_batch=EXCLUDED.rows_last_batch,
+                          error=EXCLUDED.error""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT INTO crypto_source_health
+                    (source,updated_at,status,last_event_time,last_received_time,
+                     event_age_seconds,transport_age_seconds,rows_last_batch,error)
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(source) DO UPDATE SET
+                      updated_at=excluded.updated_at,
+                      status=excluded.status,
+                      last_event_time=excluded.last_event_time,
+                      last_received_time=excluded.last_received_time,
+                      event_age_seconds=excluded.event_age_seconds,
+                      transport_age_seconds=excluded.transport_age_seconds,
+                      rows_last_batch=excluded.rows_last_batch,
+                      error=excluded.error""",
+                    values,
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def start_runtime_run(self, *, kind: str, run_id: str | None = None) -> str:
+        self.init()
+        run_id = run_id or str(uuid.uuid4())
+        values = (run_id, _utc_now(), kind, "RUNNING", None, _json({}))
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_runtime_runs
+                        (run_id,created_at,kind,status,completed_at,result)
+                        VALUES (%s,%s,%s,%s,%s,%s)""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT INTO crypto_runtime_runs
+                    (run_id,created_at,kind,status,completed_at,result)
+                    VALUES (?,?,?,?,?,?)""",
+                    values,
+                )
+            conn.commit()
+            return run_id
+        finally:
+            conn.close()
+
+    def finish_runtime_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        self.init()
+        values = (_utc_now(), status, _json(result or {}), run_id)
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """UPDATE crypto_runtime_runs
+                        SET completed_at=%s,status=%s,result=%s
+                        WHERE run_id=%s""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """UPDATE crypto_runtime_runs
+                    SET completed_at=?,status=?,result=?
+                    WHERE run_id=?""",
+                    values,
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
     def health(self) -> list[dict[str, Any]]:
         self.init()
         conn = self.connect()
