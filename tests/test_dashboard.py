@@ -104,3 +104,17 @@ def test_live_quote_reports_market_closed_without_live_cache(monkeypatch):
 
     assert payload["status"] == "MARKET_CLOSED"
     assert payload["quote"] is None
+
+
+def test_source_health_ui_hides_retired_and_secondary_vendor_rows():
+    from gorila_argentum.app import _visible_source_health
+
+    rows = [
+        {"source": "BYMADATA/MarketData", "status": "DEGRADED"},
+        {"source": "YahooChart/GGAL.BA", "status": "DEGRADED"},
+        {"source": "YahooChartLive/GGAL.BA", "status": "DEGRADED"},
+        {"source": "BYMADATA/BMA/historical", "status": "HEALTHY"},
+    ]
+    visible = _visible_source_health(rows)
+
+    assert [row["source"] for row in visible] == ["BYMADATA/BMA/historical"]
