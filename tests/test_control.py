@@ -13,7 +13,7 @@ def test_control_room_reports_blocked_and_drift_alerts(tmp_path, monkeypatch):
     store.init()
     store.save_drift(
         "GGAL",
-        "close",
+        "return_1",
         {
             "status": "ALERT",
             "reference_n": 90,
@@ -27,7 +27,7 @@ def test_control_room_reports_blocked_and_drift_alerts(tmp_path, monkeypatch):
             "reference_window": 90,
             "current_window": 30,
         },
-        metadata={"trigger": "test"},
+        metadata={"trigger": "test", "drift_monitor_version": "v1", "methodology": "stationary_returns"},
     )
 
     state = build_control_state(store)
@@ -72,3 +72,37 @@ def test_shadow_diagnostics_detect_prediction_shift():
     assert diag["prediction_drift"]["status"] in {"WARN", "ALERT"}
     assert diag["realized_vs_predicted"]["status"] == "ALERT"
     assert diag["status"] == "ALERT"
+
+
+def test_legacy_raw_close_drift_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(tmp_path / "legacy_close.sqlite3"))
+
+    store = Store()
+    store.init()
+    store.save_drift(
+        "GGAL",
+        "close",
+        {
+            "status": "ALERT",
+            "reference_n": 90,
+            "current_n": 30,
+            "psi": 8.3,
+            "ks": 0.9,
+            "mean_shift_z": 12.0,
+            "std_ratio": 3.0,
+            "reference_mean": 5000.0,
+            "current_mean": 6000.0,
+            "reference_window": 90,
+            "current_window": 30,
+        },
+        metadata={"trigger": "legacy"},
+    )
+
+    state = build_control_state(store)
+
+    assert state["drift"]["snapshots_seen"] == 0
+    assert state["drift"]["legacy_snapshots_ignored"] == 1
+    assert state["drift"]["operational_monitor_available"] is False
+    assert "DRIFT_MONITOR_UNAVAILABLE" in state["runtime"]["degraded_reasons"]
+    assert state["runtime"]["circuit_breaker"] == "DEGRADED"
