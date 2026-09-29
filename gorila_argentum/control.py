@@ -12,6 +12,29 @@ def _promotion_status(decision: dict | None = None) -> str:
     return str(decision.get("status", "BLOCKED"))
 
 
+def _eligible_operational_drift(row: dict) -> bool:
+    """Accept only drift snapshots bound to a stationary, versioned monitor."""
+    field = str(row.get("field") or "").strip().lower()
+    if field in {"close", "price", "last"}:
+        return False
+    metadata = row.get("metadata") or {}
+    version = metadata.get("drift_monitor_version")
+    methodology = str(
+        metadata.get("methodology")
+        or metadata.get("method")
+        or metadata.get("feature_space")
+        or ""
+    ).strip().lower()
+    if not version:
+        return False
+    return methodology in {
+        "stationary_returns",
+        "stationary_features",
+        "prediction_features",
+        "residual_features",
+    }
+
+
 def _shadow_diagnostics(rows: list[dict], *, current_size: int = 30, reference_size: int = 90) -> dict:
     settled = [
         row for row in rows
@@ -91,7 +114,8 @@ def build_control_state(
     store = store or Store()
     store.init()
 
-    drift_rows = store.latest_drift(limit=200)
+    raw_drift_rows = store.latest_drift(limit=200)
+    drift_rows = [row for row in raw_drift_rows if _eligible_operational_drift(row)]
     latest = {}
     for row in drift_rows:
         key = (row["symbol"], row["field"])
@@ -115,10 +139,13 @@ def build_control_state(
     durability_ok = bool(store.pg)
 
     halt_reasons = []
+    degraded_reasons = []
     if not durability_ok:
         halt_reasons.append("NON_DURABLE_STORAGE")
     if any(row.get("status") == "ALERT" for row in alerts):
         halt_reasons.append("DRIFT_ALERT")
+    if raw_drift_rows and not drift_rows:
+        degraded_reasons.append("DRIFT_MONITOR_UNAVAILABLE")
     required_sources = {"BCRA/FX", "ArgentinaDatos/FX", "ArgentinaDatos/EMBI+"}
     required_failures = [
         row for row in store.health()
@@ -130,7 +157,7 @@ def build_control_state(
 
     if halt_reasons:
         circuit_status = "HALTED"
-    elif alerts:
+    elif alerts or degraded_reasons:
         circuit_status = "DEGRADED"
     else:
         circuit_status = "NORMAL"
@@ -173,6 +200,7 @@ def build_control_state(
             "storage_durable": durability_ok,
             "circuit_breaker": circuit_status,
             "circuit_breaker_reasons": halt_reasons,
+            "degraded_reasons": degraded_reasons,
             "promotion_operational_gate": "PASS" if durability_ok and circuit_status == "NORMAL" else "BLOCKED",
         },
         "promotion_gate": {
@@ -183,7 +211,11 @@ def build_control_state(
             "historical_reference": historical_evaluation,
         },
         "monitoring": {
-            "data_distribution_drift": "IMPLEMENTED",
+            "data_distribution_drift": (
+                "IMPLEMENTED"
+                if drift_rows
+                else "UNAVAILABLE_UNTIL_STATIONARY_DRIFT_BINDING"
+            ),
             "prediction_drift": "IMPLEMENTED",
             "realized_vs_predicted": "IMPLEMENTED",
             "automatic_recalibration": "IMPLEMENTED_AS_GATED_CANDIDATE",
@@ -198,7 +230,9 @@ def build_control_state(
         "drift": {
             "snapshots_seen": len(drift_rows),
             "latest_series": len(latest),
+            "legacy_snapshots_ignored": max(0, len(raw_drift_rows) - len(drift_rows)),
             "warnings_or_alerts": alerts,
+            "operational_monitor_available": bool(drift_rows),
         },
         "learning": {
             "runs": latest_learning,
