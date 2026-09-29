@@ -1,7 +1,6 @@
-databases:
-  - name: pmsfx-nano-db
-    plan: free
-    region: oregon
+# This Blueprint manages only the isolated Crypto capture service.
+# It references the already-existing Render Postgres instance by name and
+# deliberately does not declare that database as a managed Blueprint resource.
 
 services:
   - type: web
