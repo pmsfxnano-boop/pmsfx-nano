@@ -12,6 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterator, Mapping, Callable
 
 import websocket
@@ -48,10 +49,10 @@ def _timestamp(value: Any, field_name: str) -> datetime:
 def _number(value: Any, field_name: str) -> str:
     text = str(value)
     try:
-        number = float(text)
-    except (TypeError, ValueError) as exc:
+        number = Decimal(text)
+    except (InvalidOperation, TypeError, ValueError) as exc:
         raise KrakenAdapterError(f"{field_name} must be numeric") from exc
-    if not number == number or number in (float("inf"), float("-inf")):
+    if not number.is_finite():
         raise KrakenAdapterError(f"{field_name} must be finite")
     return text
 
@@ -351,7 +352,10 @@ class KrakenSpotMarketAdapter:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
             try:
-                message = json.loads(raw)
+                # Decimal parsing is intentional: Kraken checksum validation is
+                # precision-sensitive, so converting wire JSON floats through
+                # binary IEEE-754 floats would destroy the exact decimal token.
+                message = json.loads(raw, parse_float=Decimal, parse_int=int)
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise KrakenAdapterError("Kraken websocket payload is not valid JSON") from exc
             if not isinstance(message, Mapping):
