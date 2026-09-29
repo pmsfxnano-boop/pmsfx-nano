@@ -54,44 +54,64 @@ def test_runtime_tick_http_route_returns_409_without_postgres(monkeypatch):
     assert response.json()["detail"] == "durable_storage_required"
 
 
-def test_learning_shadow_capture_is_idempotent():
+def test_learning_shadow_capture_is_idempotent(monkeypatch):
     from scripts.gorila_runtime_tick import _create_learning_shadow_predictions
 
     class FakeStore:
         def __init__(self):
             self.created = []
-            self.latest = []
-        def recent_series(self, symbol, field, limit=1):
-            assert field == "close"
-            return [("2026-09-25T15:30:00+00:00", 100.0)]
-        def latest_shadow(self, symbol=None, status=None, limit=1):
-            return list(self.latest)
-        def save_shadow_prediction(self, **kwargs):
-            row = {"id": "shadow-1", **kwargs}
-            self.created.append(row)
-            self.latest = [{"feature_hash": kwargs["feature_hash"]}]
-            return {"id": row["id"], "created_at": "2026-09-26T00:00:00+00:00", "status": "OPEN"}
+            self.feature_hashes = set()
 
     store = FakeStore()
+
+    monkeypatch.setattr(
+        runtime_tick,
+        "canonical_daily_series",
+        lambda store, symbol, field, limit: [("2026-09-25", 100.0)],
+    )
+
+    def shadow_existing_feature_hashes(hashes):
+        return set(hashes) & store.feature_hashes
+
+    def save_shadow_predictions_bulk(predictions):
+        new = []
+        for i, row in enumerate(predictions):
+            store.feature_hashes.add(row["feature_hash"])
+            item = {"id": f"shadow-{len(store.created)+i+1}"}
+            new.append(item)
+            store.created.append({"id": item["id"], **row})
+        return {"created": len(new), "items": new}
+
+    store.shadow_existing_feature_hashes = shadow_existing_feature_hashes
+    store.save_shadow_predictions_bulk = save_shadow_predictions_bulk
+
     result = _create_learning_shadow_predictions(
         store,
         [{
             "symbol": "GGAL",
-            "status": "CANDIDATE_REJECTED",
+            "status": "CANDIDATE_ELIGIBLE",
             "latest_probability_up": 0.57,
             "dataset_hash": "dataset-1",
+            "learner_id": "gorila-learning-5d-v2",
+            "data_fabric": "CANONICAL_DAILY_V1",
+            "canonical_content_hash": "canonical-1",
+            "model_hash": "model-1",
         }],
     )
     assert result["created_count"] == 1
-    assert store.created[0]["model_version"] == "gorila-learning-5d-v1"
+    assert store.created[0]["model_version"] == "gorila-learning-5d-v2"
 
     result2 = _create_learning_shadow_predictions(
         store,
         [{
             "symbol": "GGAL",
-            "status": "CANDIDATE_REJECTED",
+            "status": "CANDIDATE_ELIGIBLE",
             "latest_probability_up": 0.57,
             "dataset_hash": "dataset-1",
+            "learner_id": "gorila-learning-5d-v2",
+            "data_fabric": "CANONICAL_DAILY_V1",
+            "canonical_content_hash": "canonical-1",
+            "model_hash": "model-1",
         }],
     )
     assert result2["created_count"] == 0
