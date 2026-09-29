@@ -98,6 +98,28 @@ CREATE TABLE IF NOT EXISTS crypto_source_health (
     rows_last_batch INTEGER NOT NULL DEFAULT 0,
     error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS crypto_replay_manifests (
+    manifest_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    replay_version TEXT NOT NULL,
+    order_mode TEXT NOT NULL,
+    symbol TEXT,
+    source TEXT,
+    start_received_time TEXT,
+    end_received_time TEXT,
+    start_event_time TEXT,
+    end_event_time TEXT,
+    row_count INTEGER NOT NULL,
+    first_ledger_seq BIGINT,
+    last_ledger_seq BIGINT,
+    fingerprint_sha256 TEXT NOT NULL,
+    manifest_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_replay_manifest_time
+    ON crypto_replay_manifests(created_at);
+CREATE INDEX IF NOT EXISTS idx_crypto_replay_manifest_fingerprint
+    ON crypto_replay_manifests(fingerprint_sha256);
 """
 
 _SQLITE_SCHEMA = (
@@ -530,6 +552,52 @@ class CryptoStore:
                 )
             conn.commit()
             return connection_id
+        finally:
+            conn.close()
+
+    def save_replay_manifest(self, manifest: dict[str, Any]) -> str:
+        self.init()
+        manifest_id = str(uuid.uuid4())
+        values = (
+            manifest_id,
+            _utc_now(),
+            str(manifest.get("replay_version", "1")),
+            str(manifest.get("order", "ingest")),
+            manifest.get("symbol"),
+            manifest.get("source"),
+            manifest.get("start_received_time"),
+            manifest.get("end_received_time"),
+            manifest.get("start_event_time"),
+            manifest.get("end_event_time"),
+            int(manifest.get("row_count", 0)),
+            manifest.get("first_ledger_seq"),
+            manifest.get("last_ledger_seq"),
+            str(manifest["fingerprint_sha256"]),
+            _json(manifest),
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_replay_manifests
+                        (manifest_id,created_at,replay_version,order_mode,symbol,source,
+                         start_received_time,end_received_time,start_event_time,end_event_time,
+                         row_count,first_ledger_seq,last_ledger_seq,fingerprint_sha256,manifest_json)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT INTO crypto_replay_manifests
+                    (manifest_id,created_at,replay_version,order_mode,symbol,source,
+                     start_received_time,end_received_time,start_event_time,end_event_time,
+                     row_count,first_ledger_seq,last_ledger_seq,fingerprint_sha256,manifest_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            conn.commit()
+            return manifest_id
         finally:
             conn.close()
 
