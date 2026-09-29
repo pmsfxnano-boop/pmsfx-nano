@@ -85,10 +85,14 @@ def _heartbeat_loop() -> None:
 
 def _required_quality_event_types() -> tuple[str, ...]:
     event_types = ["trade"]
-    if "bookTicker" in settings.streams:
-        event_types.append("bookTicker")
-    if "depth" in settings.streams:
-        event_types.append("depthUpdate")
+    if settings.provider == "kraken":
+        if "bookTicker" in settings.streams or "depth" in settings.streams:
+            event_types.append("bookUpdate")
+    else:
+        if "bookTicker" in settings.streams:
+            event_types.append("bookTicker")
+        if "depth" in settings.streams:
+            event_types.append("depthUpdate")
     return tuple(dict.fromkeys(event_types))
 
 
