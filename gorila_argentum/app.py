@@ -24,6 +24,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 from .audit import build_audit_state
 from .config import settings
+from .market_freshness import assess_observation, aggregate_status
 from .control import build_control_state
 from .coupling import current_coupling_state
 from .dashboard_terminal import HTML as DASHBOARD_HTML
@@ -224,13 +225,11 @@ def _run_macro_ingest() -> dict[str, Any]:
 
 
 async def _argentina_live_loop() -> None:
-    """Maintain a bounded intraday cache without blocking the API process.
+    """Maintain a point-in-time intraday cache without blocking the API.
 
-    Priority: BYMADATA Open Access (unauthenticated public BYMA feed). It returns
-    the whole leading-equity panel in one request, so the loop avoids six separate
-    vendor calls and respects the public endpoint's rate-limit guidance. Twelve Data
-    remains a secondary fallback when explicitly configured. Yahoo is opt-in only.
-    When BYMA is closed the loop does not hit any vendor and reports CLOSED.
+    BYMADATA transport success is tracked separately from observation freshness.
+    A row with an old trade timestamp is never labeled LIVE merely because the
+    HTTP request completed recently.
     """
     await asyncio.sleep(5)
     while True:
@@ -238,18 +237,23 @@ async def _argentina_live_loop() -> None:
         errors: list[dict[str, str]] = []
         updated = 0
         rows_to_store: list[dict[str, Any]] = []
+        assessments: list[dict[str, Any]] = []
         session = argentina_session_state()
         provider = "byma_open_access"
         fallback_provider = "twelve_data" if settings.twelve_data_api_key else "none"
         if not session["open"]:
             _ARG_LIVE_STATE.update({
                 "status": "MARKET_CLOSED",
+                "transport_status": "IDLE",
                 "updated_at": time.time(),
                 "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
                 "updated_symbols": 0,
+                "live_symbols": 0,
+                "delayed_symbols": 0,
+                "stale_symbols": 0,
                 "errors": [],
                 "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
-                "provider": provider if not errors else (provider if updated else fallback_provider),
+                "provider": provider,
                 "symbols": list(settings.core_symbols),
             })
             await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
@@ -261,6 +265,14 @@ async def _argentina_live_loop() -> None:
                     symbol = str(latest.get("symbol") or "").upper()
                     if symbol not in settings.core_symbols:
                         continue
+                    freshness = assess_observation(
+                        latest.get("event_time"),
+                        latest.get("received_time"),
+                    )
+                    latest["quality"] = freshness["status"]
+                    metadata = dict(latest.get("metadata") or {})
+                    metadata["freshness"] = freshness
+                    latest["metadata"] = metadata
                     _ARG_LIVE_CACHE[symbol] = {
                         "symbol": symbol,
                         "last": float(latest["value"]),
@@ -269,22 +281,25 @@ async def _argentina_live_loop() -> None:
                         "source": result.source,
                         "latency_ms": round(float(result.latency_ms or 0), 2),
                         "updated_epoch": time.time(),
+                        "event_quality": freshness,
                     }
                     rows_to_store.append(latest)
+                    assessments.append(freshness)
                     updated += 1
             if not result.rows:
                 errors.append({"symbol":"*","error": result.error or "BYMA_NO_ROWS"})
                 if fallback_provider != "none":
                     for symbol in settings.core_symbols:
-                        fallback = await asyncio.to_thread(
-                            twelve_data_live_quote,
-                            symbol,
-                            "1min",
-                        )
+                        fallback = await asyncio.to_thread(twelve_data_live_quote, symbol, "1min")
                         if not fallback.rows:
                             errors.append({"symbol":symbol,"error":fallback.error or "FALLBACK_NO_ROWS"})
                             continue
                         latest = max(fallback.rows, key=lambda row: str(row.get("event_time") or ""))
+                        freshness = assess_observation(latest.get("event_time"), latest.get("received_time"))
+                        latest["quality"] = freshness["status"]
+                        metadata = dict(latest.get("metadata") or {})
+                        metadata["freshness"] = freshness
+                        latest["metadata"] = metadata
                         _ARG_LIVE_CACHE[symbol] = {
                             "symbol": symbol,
                             "last": float(latest["value"]),
@@ -293,22 +308,44 @@ async def _argentina_live_loop() -> None:
                             "source": fallback.source,
                             "latency_ms": round(float(fallback.latency_ms or 0), 2),
                             "updated_epoch": time.time(),
+                            "event_quality": freshness,
                         }
                         rows_to_store.append(latest)
+                        assessments.append(freshness)
                         updated += 1
+            aggregate = aggregate_status(assessments)
             if rows_to_store:
                 try:
-                    await asyncio.to_thread(Store().insert_observations, rows_to_store)
+                    store = Store()
+                    await asyncio.to_thread(store.insert_observations, rows_to_store)
+                    await asyncio.to_thread(
+                        store.upsert_health,
+                        result.source,
+                        aggregate["status"],
+                        result.error if errors else None,
+                        updated,
+                        float(result.latency_ms or 0),
+                        True,
+                    )
                 except Exception as exc:
                     errors.append({"symbol":"*","error":f"persist:{type(exc).__name__}: {exc}"})
+            transport_status = "HEALTHY" if result.rows or rows_to_store else "DEGRADED"
+            cycle_status = aggregate["status"] if updated == len(settings.core_symbols) else "DEGRADED"
             _ARG_LIVE_STATE.update({
-                "status": "HEALTHY" if updated == len(settings.core_symbols) else "DEGRADED",
+                "status": cycle_status,
+                "transport_status": transport_status,
                 "updated_at": time.time(),
                 "last_cycle_ms": round((time.perf_counter()-started)*1000,2),
                 "updated_symbols": updated,
+                "live_symbols": aggregate["live_symbols"],
+                "delayed_symbols": aggregate["delayed_symbols"],
+                "stale_symbols": aggregate["stale_symbols"],
+                "invalid_timestamp_symbols": aggregate["invalid_timestamp_symbols"],
+                "median_event_age_seconds": aggregate["median_event_age_seconds"],
+                "max_event_age_seconds": aggregate["max_event_age_seconds"],
                 "errors": errors[-8:],
                 "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
-                "provider": provider,
+                "provider": provider if updated else fallback_provider,
                 "symbols": list(settings.core_symbols),
             })
             print("GORILA_ARG_LIVE_CYCLE", _ARG_LIVE_STATE.copy(), flush=True)
@@ -317,6 +354,7 @@ async def _argentina_live_loop() -> None:
         except Exception as exc:
             _ARG_LIVE_STATE.update({
                 "status":"ERROR",
+                "transport_status":"ERROR",
                 "updated_at":time.time(),
                 "last_cycle_ms":round((time.perf_counter()-started)*1000,2),
                 "updated_symbols":updated,
@@ -364,11 +402,16 @@ def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
     }
     live = _ARG_LIVE_CACHE.get(symbol)
     if live is not None:
-        live_age = max(0.0, time.time() - float(live.get("updated_epoch") or time.time()))
+        freshness = assess_observation(live.get("quote_timestamp"), live.get("received_at"))
         state = {**state, "last": live.get("last", state.get("last")),
                  "quote_timestamp": live.get("quote_timestamp", state.get("quote_timestamp")),
                  "data_source": live.get("source") or state.get("data_source"),
-                 "market_freshness": {"age_seconds": live_age}}
+                 "market_freshness": {
+                     "age_seconds": freshness.get("event_age_seconds"),
+                     "event_age_seconds": freshness.get("event_age_seconds"),
+                     "transport_age_seconds": freshness.get("transport_age_seconds"),
+                     "status": freshness.get("status"),
+                 }}
     series = store.recent_series(symbol, "close_1m", limit=240) or store.recent_series(symbol, "close_5m", limit=240) or store.recent_series(symbol, "close", limit=240)
     # Do not bind persisted raw-close drift snapshots to the live research signal.
     # Price levels are non-stationary, and the legacy drift ledger is not a current
@@ -1110,8 +1153,16 @@ def gorila_health():
         "primary_market_data": {
             "provider": "BYMADATA_OPEN_ACCESS",
             "configured": True,
-            "source": "BYMADATA_OPEN_ACCESS" if live.get("status") == "HEALTHY" else "ARGENTINA_SIGNAL_SNAPSHOT",
-            "status": "READY_LIVE" if live.get("status") == "HEALTHY" else "READY_SNAPSHOT" if snapshot_ready else "DEGRADED",
+            "source": "BYMADATA_OPEN_ACCESS" if live.get("updated_symbols", 0) else "ARGENTINA_SIGNAL_SNAPSHOT",
+            "status": (
+                "READY_LIVE" if live.get("status") == "HEALTHY" and live.get("live_symbols", 0) == len(SIGNAL_SYMBOLS)
+                else "READY_DELAYED" if live.get("status") in {"DELAYED", "STALE"}
+                else "READY_SNAPSHOT" if snapshot_ready else "DEGRADED"
+            ),
+            "transport_status": live.get("transport_status"),
+            "live_symbols": live.get("live_symbols", 0),
+            "delayed_symbols": live.get("delayed_symbols", 0),
+            "stale_symbols": live.get("stale_symbols", 0),
         },
         "database": db,
         "market_session": market_session_state(),
@@ -1316,23 +1367,35 @@ def gorila_live_quote(ticker: str):
             "status": status,
             "quote": None,
             "age_seconds": None,
+            "event_age_seconds": None,
+            "transport_age_seconds": None,
+            "is_live": False,
             "session": session,
             "runtime": dict(_ARG_LIVE_STATE),
             "research_only": True,
             "no_execution_authority": True,
         }
-    age = max(0.0, time.time() - float(snapshot.get("updated_epoch") or time.time()))
-    # A cached last-session quote is not a live quote once the market closes.
-    status = (
-        "MARKET_CLOSED"
-        if not session.get("open")
-        else "LIVE" if age <= _ARG_LIVE_INTERVAL_SECONDS * 2.5 else "STALE"
-    )
+    freshness = assess_observation(snapshot.get("quote_timestamp"), snapshot.get("received_at"))
+    if not session.get("open"):
+        status = "MARKET_CLOSED"
+    else:
+        status = str(freshness.get("status") or "INVALID_TIMESTAMP")
     return {
         "symbol": symbol,
         "status": status,
-        "quote": {"last": snapshot.get("last"), "quoteTimestamp": snapshot.get("quote_timestamp"), "timestamp": snapshot.get("quote_timestamp"), "source": snapshot.get("source")},
-        "age_seconds": round(age,2),
+        "quote": {
+            "last": snapshot.get("last"),
+            "quoteTimestamp": snapshot.get("quote_timestamp"),
+            "timestamp": snapshot.get("quote_timestamp"),
+            "source": snapshot.get("source"),
+        },
+        # Backward-compatible alias: age_seconds now means market-event age,
+        # not HTTP/cache receipt age.
+        "age_seconds": freshness.get("event_age_seconds"),
+        "event_age_seconds": freshness.get("event_age_seconds"),
+        "transport_age_seconds": freshness.get("transport_age_seconds"),
+        "is_live": status == "LIVE",
+        "freshness": freshness,
         "received_at": snapshot.get("received_at"),
         "latency_ms": snapshot.get("latency_ms"),
         "session": session,
@@ -1428,7 +1491,16 @@ def gorila_chart(
         rows = store.recent_series(symbol, "close", limit=fallback_limit)
         selected_field = "close"
         resolution = "1d"
+    # Keep the chart aligned with the canonical latest live observation. The
+    # persistent series may lag one write cycle behind the in-memory cache.
+    live = _ARG_LIVE_CACHE.get(symbol)
+    if live and selected_field == "close_1m" and live.get("quote_timestamp"):
+        live_point = (str(live["quote_timestamp"]), float(live["last"]))
+        if not rows or str(rows[-1][0]) < live_point[0]:
+            rows = [*rows, live_point][-requested_limit:]
+
     status = "READY" if rows else "NO_DATA"
+    latest_freshness = assess_observation(rows[-1][0]) if rows else {"status":"INVALID_TIMESTAMP","event_age_seconds":None,"transport_age_seconds":None}
 
     first = float(rows[0][1]) if rows else None
     last = float(rows[-1][1]) if rows else None
@@ -1454,6 +1526,7 @@ def gorila_chart(
         "last": last,
         "research_only": True,
         "no_execution_authority": True,
+        "freshness": latest_freshness,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
