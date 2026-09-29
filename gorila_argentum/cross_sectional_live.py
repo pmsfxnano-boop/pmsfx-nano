@@ -233,7 +233,9 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
             {
                 "symbol": symbol,
                 "p_residual_up": float(probability),
-                "alpha": alpha,
+                "relative_edge_pp": round(alpha * 100.0, 4),
+                "probability_semantics": "RELATIVE_OUTPERFORMANCE_VS_CROSS_SECTIONAL_MEDIAN",
+                "alpha_semantics": "P_RELATIVE_OUTPERFORMANCE_MINUS_50PP",
                 "rank": ranks[symbol]["rank"],
                 "percentile": percentile,
                 "direction": direction,
@@ -248,6 +250,12 @@ def score_universe(store: Store | None = None, limit: int = 2500) -> dict[str, A
     return {
         "status": "READY",
         "research_score_status": "VALIDATED_RESEARCH_BOUND" if evidence_bound_to_live else "UNVALIDATED_LIVE_REFIT",
+        "score_semantics": {
+            "primary_forecast": False,
+            "probability": "RELATIVE_OUTPERFORMANCE_VS_CROSS_SECTIONAL_MEDIAN",
+            "alpha": "P_RELATIVE_OUTPERFORMANCE_MINUS_50PP",
+            "display_rule": "NEVER_PRESENT_AS_ABSOLUTE_DIRECTIONAL_P_UP",
+        },
         "model": "fixed-pooled-logit-v1",
         "data_fabric": "CANONICAL_DAILY_V1",
         "features": list(FEATURE_NAMES),
