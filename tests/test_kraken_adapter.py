@@ -17,10 +17,12 @@ def test_kraken_subscriptions_are_explicit_and_deterministic() -> None:
         depth=10,
     )
     messages = subscription_messages(config)
-    assert messages[0]["params"]["channel"] == "trade"
+    assert messages[0]["params"]["channel"] == "instrument"
     assert messages[0]["params"]["symbol"] == ["BTC/USD", "ETH/USD"]
-    assert messages[1]["params"]["channel"] == "book"
-    assert messages[1]["params"]["snapshot"] is True
+    assert messages[1]["params"]["channel"] == "trade"
+    assert messages[1]["params"]["snapshot"] is False
+    assert messages[2]["params"]["channel"] == "book"
+    assert messages[2]["params"]["snapshot"] is True
 
 
 def test_kraken_trade_normalization_preserves_provider_time_and_sequence() -> None:
