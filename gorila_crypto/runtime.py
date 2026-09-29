@@ -46,7 +46,7 @@ class SequenceContinuityMonitor:
     def observe(self, event: NormalizedMarketEvent) -> tuple[int, int] | None:
         if event.sequence_start is None or event.sequence_end is None:
             return None
-        if event.event_type not in {"trade", "depthUpdate"}:
+        if event.event_type != "depthUpdate":
             return None
 
         key = (event.symbol.upper(), event.event_type)
