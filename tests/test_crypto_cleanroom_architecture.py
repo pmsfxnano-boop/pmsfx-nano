@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -88,8 +90,25 @@ def test_crypto_app_routes_are_domain_scoped() -> None:
 
 
 def test_importing_crypto_app_does_not_load_legacy_domains() -> None:
-    forbidden_loaded = FORBIDDEN_TOP_LEVEL_IMPORTS & set(sys.modules)
-    assert not forbidden_loaded, sorted(forbidden_loaded)
+    code = """
+import sys
+import gorila_crypto.app
+
+forbidden = {"gorila_argentum", "scripts", "main", "quant"} & set(sys.modules)
+if forbidden:
+    raise SystemExit("FORBIDDEN_LOADED:" + ",".join(sorted(forbidden)))
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_crypto_app_capture_is_opt_in_by_default() -> None:
