@@ -246,8 +246,21 @@ def build_signal(
     if not validated:
         risk_flags.append("MODEL_NOT_VALIDATED")
         reasons.append("research model has not cleared its OOS gate")
-    # Freshness is only meaningful when a forecast/evidence snapshot exists.
-    # A closed market with no forecast is not the same thing as stale data.
+
+    market_status = str((state.get("market_freshness") or {}).get("status") or "UNKNOWN").upper()
+    market_session_open = state.get("market_session_open", True)
+    if market_session_open:
+        if market_status == "DELAYED":
+            risk_flags.append("MARKET_DATA_DELAYED")
+            reasons.append("market event timestamp is older than the live-data freshness contract")
+        elif market_status == "STALE":
+            risk_flags.append("MARKET_DATA_STALE")
+            reasons.append("market event timestamp is beyond the stale-data threshold")
+        elif market_status == "INVALID_TIMESTAMP":
+            risk_flags.append("MARKET_DATA_INVALID_TIMESTAMP")
+            reasons.append("market-data event timestamp failed the point-in-time contract")
+
+    # Forecast freshness remains a separate research constraint.
     if state.get("forecast") is not None and freshness < 0.7:
         risk_flags.append("DATA_NOT_FRESH")
     if brier_skill is not None and brier_skill <= 0:
@@ -331,6 +344,9 @@ def build_signal(
             "engine_age_seconds": forecast_age_seconds,
             "forecast_age_seconds": forecast_age_seconds,
             "market_age_seconds": market_age_seconds,
+            "market_event_age_seconds": market_age_seconds,
+            "market_transport_age_seconds": (state.get("market_freshness") or {}).get("transport_age_seconds"),
+            "market_status": market_status,
             "data_grade": _data_grade(market_age_seconds),
             "source": state.get("data_source") or state.get("engine_source"),
         },
