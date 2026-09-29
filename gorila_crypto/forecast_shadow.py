@@ -30,6 +30,23 @@ def run_forecast_shadow(
         raise ValueError("A7 forecast requires ingest-order PIT replay")
 
     replay_result = replay(store, replay_spec)
+    replay_manifest = {
+        "replay_version": "1",
+        "order": replay_spec.order,
+        "symbol": replay_spec.symbol,
+        "source": replay_spec.source,
+        "start_received_time": replay_spec.start_received_time,
+        "end_received_time": replay_spec.end_received_time,
+        "start_event_time": replay_spec.start_event_time,
+        "end_event_time": replay_spec.end_event_time,
+        "limit": replay_spec.limit,
+        "row_count": len(replay_result.rows),
+        "first_ledger_seq": replay_result.first_ledger_seq,
+        "last_ledger_seq": replay_result.last_ledger_seq,
+        "fingerprint_sha256": replay_result.fingerprint,
+        "analysis": "A7_FORECAST_SHADOW",
+    }
+    replay_manifest_id = store.save_replay_manifest(replay_manifest)
     points = build_price_points(replay_result.rows)
     leader = points.get(leader_symbol.upper()) or []
     target = points.get(target_symbol.upper()) or []
@@ -85,6 +102,7 @@ def run_forecast_shadow(
             "metadata": {
                 "forecast_domain": "CRYPTO",
                 "research_mode": "SHADOW",
+                "replay_manifest_id": replay_manifest_id,
             },
         }
         forecasts.append(row)
