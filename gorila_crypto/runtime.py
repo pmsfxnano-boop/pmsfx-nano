@@ -11,7 +11,7 @@ import json
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from gorila_core.market_freshness import assess_observation
 
@@ -19,6 +19,21 @@ from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMa
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .config import settings
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
+
+
+class MarketAdapterProtocol(Protocol):
+    config: Any
+    source_family: str
+
+    def iter_forever(
+        self,
+        *,
+        stop_event=None,
+        on_connection: Callable[[str, dict[str, Any]], None] | None = None,
+        initial_backoff_s: float = 1.0,
+        max_backoff_s: float = 60.0,
+    ):
+        ...
 
 
 @dataclass(frozen=True)
@@ -72,7 +87,7 @@ class ProspectiveCryptoIngestor:
     def __init__(
         self,
         store: CryptoStore,
-        adapter: BinanceSpotMarketAdapter,
+        adapter: MarketAdapterProtocol,
         *,
         config: IngestRuntimeConfig | None = None,
         now: Callable[[], datetime] | None = None,
