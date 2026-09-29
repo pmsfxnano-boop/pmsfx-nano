@@ -43,6 +43,7 @@ class ReplayResult:
     fingerprint: str
     first_ledger_seq: int | None
     last_ledger_seq: int | None
+    final_state: Any = None
 
 
 def canonical_replay_row(row: Mapping[str, Any]) -> str:
@@ -114,20 +115,15 @@ def replay(
         fingerprint=fingerprint,
         first_ledger_seq=int(rows[0]["ledger_seq"]) if rows else None,
         last_ledger_seq=int(rows[-1]["ledger_seq"]) if rows else None,
+        final_state=None,
     )
     if reducer is not None:
         return ReplayResult(
-            rows=tuple(
-                [
-                    {
-                        **row,
-                    }
-                    for row in result.rows
-                ]
-            ),
+            rows=result.rows,
             fingerprint=result.fingerprint,
             first_ledger_seq=result.first_ledger_seq,
             last_ledger_seq=result.last_ledger_seq,
+            final_state=state,
         )
     return result
 
