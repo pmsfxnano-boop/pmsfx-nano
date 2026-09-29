@@ -18,6 +18,7 @@ on:
       - "tests/test_crypto_validation.py"
       - "tests/test_crypto_runtime.py"
       - "tests/test_crypto_quality.py"
+      - "tests/test_crypto_app.py"
       - ".github/workflows/gorila-crypto-cleanroom.yml"
   pull_request:
     paths:
@@ -73,3 +74,6 @@ jobs:
 
       - name: Run A11 quality gate tests
         run: pytest -q tests/test_crypto_quality.py
+
+      - name: Run prospective capture app tests
+        run: pytest -q tests/test_crypto_app.py
