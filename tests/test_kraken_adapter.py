@@ -51,3 +51,25 @@ def test_kraken_rejects_implicit_instrument_remapping() -> None:
         assert "explicit provider pairs" in str(exc)
     else:
         raise AssertionError("implicit BTCUSDT remapping was accepted")
+
+
+def test_kraken_book_keeps_raw_l2_separate_from_derived_l1() -> None:
+    from gorila_crypto.kraken import _book_event
+
+    event = _book_event(
+        {
+            "symbol": "BTC/USD",
+            "timestamp": "2026-09-29T20:00:00.123456Z",
+            "bids": [{"price": "60000.0", "qty": "1.2"}],
+            "asks": [{"price": "60001.0", "qty": "1.1"}],
+        },
+        received_time=datetime(2026, 9, 29, 20, 0, 0, 130000, tzinfo=timezone.utc),
+        receive_ns=123,
+        message_type="update",
+    )
+    assert event.event_type == "bookUpdate"
+    assert event.quality == "INTEGRITY_UNVERIFIED"
+    assert event.payload["bids"][0]["price"] == "60000.0"
+    assert event.payload["_derived_l1"]["bid"]["price"] == "60000.0"
+    assert "b" not in event.payload
+    assert "a" not in event.payload
