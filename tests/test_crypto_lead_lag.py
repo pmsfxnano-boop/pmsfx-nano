@@ -15,6 +15,8 @@ from gorila_crypto.lead_lag import (
     summarize_opportunity_clock,
 )
 from gorila_crypto.storage import CryptoStore
+from gorila_crypto.ledger import ReplaySpec
+from gorila_crypto.shadow_analysis import run_shadow_analysis
 
 
 def point(seq: int, symbol: str, t: int, received: int, price: float) -> PricePoint:
@@ -223,3 +225,56 @@ def test_pairwise_shadow_scan_never_emits_self_pairs() -> None:
     assert scan.symbols == ("BTCUSDT", "ETHUSDT")
     assert scan.opportunity_count >= 1
     assert all(s.leader_symbol != s.target_symbol for s in scan.summaries)
+
+
+def test_shadow_analysis_requires_ingest_order_pit_replay(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / 'shadow.sqlite3'))
+    try:
+        run_shadow_analysis(
+            store,
+            ReplaySpec(order='event_time'),
+            LeadLagConfig(),
+            symbols=('BTCUSDT', 'ETHUSDT'),
+        )
+    except ValueError as exc:
+        assert 'ingest-order PIT replay' in str(exc)
+    else:
+        raise AssertionError('event-time replay was incorrectly accepted by A6')
+
+
+def test_shadow_analysis_binds_results_to_replay_fingerprint(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / 'shadow.sqlite3'))
+    rows = [
+        (1, 'BTCUSDT', '2026-09-29T15:00:00+00:00', '2026-09-29T15:00:00+00:00', '100.0'),
+        (2, 'BTCUSDT', '2026-09-29T15:00:01+00:00', '2026-09-29T15:00:01+00:00', '100.06'),
+        (10, 'ETHUSDT', '2026-09-29T15:00:00+00:00', '2026-09-29T15:00:00+00:00', '200.0'),
+        (11, 'ETHUSDT', '2026-09-29T15:00:02+00:00', '2026-09-29T15:00:02+00:00', '200.08'),
+    ]
+    for seq, symbol, event_time, received_time, price in rows:
+        store.append_event(
+            symbol=symbol,
+            event_type='trade',
+            event_time=event_time,
+            received_time=received_time,
+            provider_time=event_time,
+            source='binance.websocket.trade',
+            sequence_start=seq,
+            sequence_end=seq,
+            payload={'e': 'trade', 's': symbol, 't': seq, 'p': price, 'q': '1'},
+        )
+
+    report = run_shadow_analysis(
+        store,
+        ReplaySpec(order='ingest'),
+        LeadLagConfig(
+            shock_min_bps=5.0,
+            reaction_threshold_bps=1.0,
+            convergence_fraction=0.5,
+        ),
+        symbols=('BTCUSDT', 'ETHUSDT'),
+    )
+    assert report['status'] == 'DESCRIPTIVE_SHADOW'
+    assert report['replay_fingerprint']
+    assert report['automatic_promotion'] is False
+    assert report['forecast'] is False
+    assert report['execution'] is False
