@@ -1,0 +1,36 @@
+name: gorila-crypto-cleanroom
+
+on:
+  push:
+    branches:
+      - gorila-crypto-cleanroom
+    paths:
+      - "gorila_core/**"
+      - "gorila_crypto/**"
+      - "tests/test_crypto_cleanroom_architecture.py"
+      - ".github/workflows/gorila-crypto-cleanroom.yml"
+  pull_request:
+    paths:
+      - "gorila_core/**"
+      - "gorila_crypto/**"
+      - "tests/test_crypto_cleanroom_architecture.py"
+      - ".github/workflows/gorila-crypto-cleanroom.yml"
+
+jobs:
+  architecture:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gorila.txt pytest
+      - name: Compile cleanroom modules
+        run: python -m compileall -q gorila_core gorila_crypto tests/test_crypto_cleanroom_architecture.py
+      - name: Run architecture guardrails
+        run: pytest -q tests/test_crypto_cleanroom_architecture.py
