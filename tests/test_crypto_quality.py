@@ -51,6 +51,8 @@ def test_quality_gate_passes_clean_prospective_replay() -> None:
     assert report.passed is True
     assert report.invalid_timestamp_count == 0
     assert report.future_event_count == 0
+    assert report.future_received_count == 0
+    assert report.negative_transport_latency_count == 0
     assert report.required_source_gap_count == 0
     assert report.symbol_stats["BTCUSDT"].duration_seconds >= 3600
     assert quality_fingerprint(report)
@@ -137,3 +139,20 @@ def test_quality_report_persists_with_deterministic_hash(tmp_path) -> None:
         assert "BTCUSDT" in row["report_json"]
     finally:
         conn.close()
+
+
+def test_quality_gate_rejects_negative_transport_clock() -> None:
+    rows = make_rows("BTCUSDT")
+    rows[10]["received_time"] = (BASE - timedelta(seconds=1)).isoformat()
+    report = evaluate_replay_quality(
+        rows,
+        replay_fingerprint="fp-negative-latency",
+        config=DataQualityConfig(
+            min_rows_per_symbol=100,
+            min_duration_seconds=3600,
+        ),
+        reference_time=BASE + timedelta(hours=2),
+    )
+    assert report.status == "FAIL"
+    assert report.negative_transport_latency_count >= 1
+    assert "NEGATIVE_TRANSPORT_LATENCY" in report.reasons
