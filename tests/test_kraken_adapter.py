@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from gorila_crypto.kraken import (
+    KrakenAdapterError,
     KrakenStreamConfig,
     normalize_trade_row,
     subscription_messages,
@@ -41,3 +42,12 @@ def test_kraken_trade_normalization_preserves_provider_time_and_sequence() -> No
     assert event.provider_time == event.event_time
     assert event.sequence_start == 123456
     assert event.quality == "OK"
+
+
+def test_kraken_rejects_implicit_instrument_remapping() -> None:
+    try:
+        KrakenStreamConfig(symbols=("BTCUSDT",))
+    except ValueError as exc:
+        assert "explicit provider pairs" in str(exc)
+    else:
+        raise AssertionError("implicit BTCUSDT remapping was accepted")
