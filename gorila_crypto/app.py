@@ -54,6 +54,7 @@ def _quality_loop() -> None:
                     rows,
                     replay_fingerprint=replay_fp,
                     config=config,
+                    gap_rows=store.read_data_gaps(limit=10000),
                     reference_time=datetime.now(timezone.utc),
                 )
                 report_json = asdict(report)
