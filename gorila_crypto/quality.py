@@ -75,6 +75,8 @@ class QualitySymbolStats:
 class DataQualityReport:
     status: str
     replay_fingerprint: str
+    reference_time: str
+    config_hash: str
     rows: int
     symbols: tuple[str, ...]
     invalid_timestamp_count: int
@@ -108,6 +110,9 @@ def evaluate_replay_quality(
     reference_time: datetime | None = None,
 ) -> DataQualityReport:
     config.validate()
+    config_hash = hashlib.sha256(
+        json.dumps(asdict(config), sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
     cutoff = reference_time or datetime.now(timezone.utc)
     if cutoff.tzinfo is None:
         cutoff = cutoff.replace(tzinfo=timezone.utc)
@@ -200,6 +205,8 @@ def evaluate_replay_quality(
     return DataQualityReport(
         status=status,
         replay_fingerprint=replay_fingerprint,
+        reference_time=cutoff.isoformat(),
+        config_hash=config_hash,
         rows=len(ordered),
         symbols=tuple(sorted(by_symbol)),
         invalid_timestamp_count=invalid_timestamp_count,
