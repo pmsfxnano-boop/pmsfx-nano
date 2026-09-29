@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
+from datetime import datetime, timezone
 
-from .storage import CryptoStore
+from .storage import CryptoStore, CRYPTO_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -131,7 +133,10 @@ def replay(
 def replay_manifest(spec: ReplaySpec, result: ReplayResult) -> dict[str, Any]:
     """Create a persisted research manifest for an exact replay slice."""
     return {
-        "replay_version": "1",
+        "replay_version": "2",
+        "ledger_schema_version": CRYPTO_SCHEMA_VERSION,
+        "code_version": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION") or "unknown",
+        "manifest_created_at": datetime.now(timezone.utc).isoformat(),
         "order": spec.order,
         "symbol": spec.symbol,
         "source": spec.source,
