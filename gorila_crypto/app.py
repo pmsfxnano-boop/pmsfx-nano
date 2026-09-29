@@ -20,10 +20,9 @@ from gorila_core.market_freshness import (
     DELAYED_MAX_AGE_SECONDS,
     LIVE_MAX_AGE_SECONDS,
 )
-from gorila_crypto.binance import BinanceSpotMarketAdapter, BinanceStreamConfig
 from gorila_crypto.config import settings
 from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, quality_fingerprint
-from gorila_crypto.runtime import ProspectiveCryptoIngestor
+from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
 from gorila_crypto.storage import CryptoStore
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
 
@@ -36,7 +35,7 @@ _stop_event = threading.Event()
 
 
 def _new_store() -> CryptoStore:
-    return CryptoStore()
+    return CryptoStore(require_durable=settings.ingest_enabled)
 
 
 def _heartbeat_loop() -> None:
@@ -107,13 +106,7 @@ async def lifespan(app: FastAPI):
 
     if settings.ingest_enabled:
         store = _new_store()
-        adapter = BinanceSpotMarketAdapter(
-            BinanceStreamConfig(
-                symbols=settings.symbols,
-                streams=settings.streams,
-                depth_speed=settings.depth_speed,
-            )
-        )
+        adapter = build_market_adapter()
         _runtime = ProspectiveCryptoIngestor(store, adapter)
         _runtime_thread = threading.Thread(
             target=_runtime.run,
@@ -230,6 +223,7 @@ def prospective_status() -> dict[str, Any]:
 def config_snapshot() -> dict[str, Any]:
     return {
         "environment": settings.environment,
+        "provider": settings.provider,
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
         "depth_speed": settings.depth_speed,
@@ -240,4 +234,6 @@ def config_snapshot() -> dict[str, Any]:
         "quality_min_rows_per_symbol": settings.quality_min_rows_per_symbol,
         "quality_min_duration_seconds": settings.quality_min_duration_seconds,
         "quality_max_p99_transport_latency_ms": settings.quality_max_p99_transport_latency_ms,
+        "durable_storage_required_when_ingesting": settings.ingest_enabled,
+        "storage_backend": _new_store().backend,
     }
