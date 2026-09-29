@@ -52,14 +52,10 @@ def _number(value: Any, field_name: str) -> str:
 
 def _provider_symbol(symbol: str) -> str:
     text = symbol.strip().upper()
-    if "/" in text:
+    if "/" in text and text.count("/") == 1 and all(text.split("/")):
         return text
-    if text.endswith("USDT") and len(text) > 4:
-        return f"{text[:-4]}/USD"
-    if text.endswith("USD") and len(text) > 3:
-        return f"{text[:-3]}/USD"
     raise ValueError(
-        f"Kraken symbols must be explicit BASE/USD pairs; received {symbol!r}"
+        f"Kraken symbols must be explicit provider pairs such as BASE/USD; received {symbol!r}"
     )
 
 
