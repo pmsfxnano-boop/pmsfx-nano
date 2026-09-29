@@ -128,7 +128,7 @@ def evaluate_replay_quality(
         if not symbol or event_time is None or received_time is None:
             invalid_timestamp_count += 1
             continue
-        if event_time > cutoff.timestamp() if False else event_time > cutoff:
+        if event_time > cutoff:
             future_event_count += 1
         epoch = int((row.get("metadata") or {}).get("ingest_epoch") or 0)
         key = (symbol, source, epoch)
