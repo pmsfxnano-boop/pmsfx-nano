@@ -175,7 +175,6 @@ def evaluate_replay_quality(
         for row in gap_rows
         if str(row.get("event_type") or (row.get("metadata") or {}).get("event_type") or "")
         in config.required_event_types
-        or str(row.get("source") or "") in config.required_event_types
     ]
     required_source_gap_count = len(gaps)
 
