@@ -1064,6 +1064,21 @@ def gorila_root():
 
 RUNTIME_CONTRACT_VERSION = "gorila-runtime-2026-09-29"
 
+_UI_HIDDEN_SOURCE_EXACT = {"BYMADATA/MarketData"}
+_UI_HIDDEN_SOURCE_PREFIXES = ("YahooChart",)
+
+
+def _visible_source_health(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide retired/secondary vendors from the public Gorila data-fabric panel."""
+    visible = []
+    for row in rows or []:
+        source = str(row.get("source") or "")
+        if source in _UI_HIDDEN_SOURCE_EXACT or any(source.startswith(prefix) for prefix in _UI_HIDDEN_SOURCE_PREFIXES):
+            continue
+        visible.append(row)
+    return visible
+
+
 def build_identity() -> dict[str, Any]:
     """Expose immutable deployment identity for production E2E verification."""
     return {
@@ -1105,7 +1120,7 @@ def gorila_health():
         "argentina_signals": snap,
         "macro_ingest": dict(_MACRO_STATE),
         "db_init": dict(_DB_STATE),
-        "sources": Store().health() if _DB_STATE.get("ready") else [],
+        "sources": _visible_source_health(Store().health()) if _DB_STATE.get("ready") else [],
     }
 
 @app.get("/api/gorila/market")
