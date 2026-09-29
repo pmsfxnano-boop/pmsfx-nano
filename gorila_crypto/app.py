@@ -34,6 +34,7 @@ def root() -> dict:
         "runtime_isolated": True,
         "network_adapters": 0,
         "background_workers": 0,
+        "forecast_status": "BLOCKED_NO_VALIDATED_MODEL",
     }
 
 
@@ -47,6 +48,11 @@ def health() -> dict:
         "network_adapters": 0,
         "background_workers": 0,
         "symbols": list(settings.symbols),
+        "forecast": {
+            "status": "BLOCKED_NO_VALIDATED_MODEL",
+            "semantics": "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)",
+            "automatic_promotion": False,
+        },
         "freshness_contract": {
             "live_max_age_seconds": LIVE_MAX_AGE_SECONDS,
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
