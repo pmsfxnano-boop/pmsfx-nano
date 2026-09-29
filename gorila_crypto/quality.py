@@ -42,6 +42,7 @@ class DataQualityConfig:
     required_event_types: tuple[str, ...] = ("trade",)
     future_tolerance_seconds: float = 5.0
     required_event_type_min_rows: Mapping[str, int] = field(default_factory=dict)
+    required_integrity_event_types: tuple[str, ...] = ()
 
     def validate(self) -> None:
         if self.min_rows_per_symbol < 1:
@@ -65,6 +66,8 @@ class DataQualityConfig:
             raise ValueError(f"event-type minima specified for non-required types: {sorted(unknown)}")
         if any(int(value) < 1 for value in self.required_event_type_min_rows.values()):
             raise ValueError("required event-type minimum rows must be positive")
+        if not set(self.required_integrity_event_types).issubset(set(self.required_event_types)):
+            raise ValueError("required integrity event types must be required event types")
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,7 @@ class DataQualityReport:
     negative_transport_latency_count: int
     required_source_gap_count: int
     event_type_counts: Mapping[str, int]
+    event_quality_counts: Mapping[str, Mapping[str, int]]
     symbol_stats: Mapping[str, QualitySymbolStats]
     reasons: tuple[str, ...]
 
@@ -135,6 +139,7 @@ def evaluate_replay_quality(
     future_received_count = 0
     negative_transport_latency_count = 0
     event_type_counts: dict[str, int] = {}
+    event_quality_counts: dict[str, dict[str, int]] = {}
 
     previous_receive: dict[tuple[str, str, int], datetime] = {}
     for row in ordered:
@@ -143,6 +148,9 @@ def evaluate_replay_quality(
         event_type = str(row.get("event_type") or "")
         if event_type:
             event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
+            quality = str(row.get("quality") or "UNKNOWN")
+            by_quality = event_quality_counts.setdefault(event_type, {})
+            by_quality[quality] = by_quality.get(quality, 0) + 1
         event_time = _dt(row.get("event_time"))
         received_time = _dt(row.get("received_time"))
         if not symbol or event_time is None or received_time is None:
@@ -230,6 +238,19 @@ def evaluate_replay_quality(
         if observed < minimum:
             reasons.append(f"EVENT_TYPE_INSUFFICIENT:{event_type}:{observed}<{minimum}")
 
+    for event_type in config.required_integrity_event_types:
+        verified = int((event_quality_counts.get(event_type) or {}).get("INTEGRITY_VERIFIED", 0))
+        failures = sum(
+            count
+            for quality, count in (event_quality_counts.get(event_type) or {}).items()
+            if quality != "INTEGRITY_VERIFIED"
+        )
+        if failures:
+            reasons.append(
+                f"INTEGRITY_UNVERIFIED_OR_FAILED:{event_type}:"
+                f"{failures} non-verified/{verified} verified"
+            )
+
     status = "PASS" if not reasons else "FAIL"
     return DataQualityReport(
         status=status,
@@ -245,6 +266,10 @@ def evaluate_replay_quality(
         negative_transport_latency_count=negative_transport_latency_count,
         required_source_gap_count=required_source_gap_count,
         event_type_counts=dict(sorted(event_type_counts.items())),
+        event_quality_counts={
+            event_type: dict(sorted(qualities.items()))
+            for event_type, qualities in sorted(event_quality_counts.items())
+        },
         symbol_stats=symbol_stats,
         reasons=tuple(dict.fromkeys(reasons)),
     )
