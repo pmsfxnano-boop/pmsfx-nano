@@ -1353,6 +1353,74 @@ def gorila_signal_matrix():
     return result
 
 
+@app.get("/api/gorila/chart/{ticker}")
+def gorila_chart(
+    ticker: str,
+    timeframe: str = "1D",
+    limit: int | None = None,
+):
+    """Low-latency market chart surface for the single Gorila terminal UI."""
+    symbol = normalize_ticker(ticker)
+    if symbol not in SIGNAL_SYMBOLS:
+        raise HTTPException(status_code=404, detail="ARGENTUM_SYMBOL_NOT_IN_UNIVERSE")
+
+    presets = {
+        "1D": ("close_1m", 390, "1m"),
+        "5D": ("close_5m", 390, "5m"),
+        "1M": ("close", 30, "1d"),
+        "3M": ("close", 90, "1d"),
+        "6M": ("close", 180, "1d"),
+        "1Y": ("close", 252, "1d"),
+    }
+    key = str(timeframe or "1D").upper()
+    if key not in presets:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_CHART_TIMEFRAME", "allowed": sorted(presets)})
+
+    field, default_limit, resolution = presets[key]
+    requested_limit = default_limit if limit is None else max(30, min(int(limit), 1000))
+    store = Store()
+    store.init()
+
+    selected_field = field
+    rows = store.recent_series(symbol, field, limit=requested_limit)
+
+    # Fall back only when the requested intraday fabric has no observations.
+    # The response identifies the effective resolution so the UI never implies
+    # unavailable precision.
+    if not rows and field in {"close_1m", "close_5m"}:
+        fallback_limit = 90 if key in {"1D", "5D"} else requested_limit
+        rows = store.recent_series(symbol, "close", limit=fallback_limit)
+        selected_field = "close"
+        resolution = "1d"
+    status = "READY" if rows else "NO_DATA"
+
+    first = float(rows[0][1]) if rows else None
+    last = float(rows[-1][1]) if rows else None
+    change = (last - first) if rows and first is not None and last is not None else None
+    change_pct = (change / first) if rows and first not in (None, 0) and change is not None else None
+
+    return {
+        "service": "gorila-argentum",
+        "symbol": symbol,
+        "timeframe": key,
+        "status": status,
+        "field": selected_field,
+        "resolution": resolution,
+        "requested_limit": requested_limit,
+        "rows": [{"time": row[0], "close": row[1]} for row in rows],
+        "bars": len(rows),
+        "coverage": {
+            "start": rows[0][0] if rows else None,
+            "end": rows[-1][0] if rows else None,
+        },
+        "change": change,
+        "change_pct": change_pct,
+        "last": last,
+        "research_only": True,
+        "no_execution_authority": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 @app.get("/api/gorila/terminal/{ticker}")
 def gorila_terminal(ticker: str):
     symbol = normalize_ticker(ticker)
