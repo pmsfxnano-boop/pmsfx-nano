@@ -1,0 +1,38 @@
+# Isolated Binance capture service.
+# This Blueprint references the already-running Kraken capture service only for
+# the durable DATABASE_URL. It does not modify the Kraken service.
+services:
+  - type: web
+    name: gorila-crypto-cleanroom-binance-capture
+    runtime: python
+    region: oregon
+    plan: free
+    branch: gorila-crypto-binance-parallel
+    buildCommand: pip install -r requirements-gorila.txt
+    startCommand: uvicorn gorila_crypto.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/crypto/health
+    autoDeploy: false
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: gorila-crypto-cleanroom-capture
+          type: web
+          envVarKey: DATABASE_URL
+      - key: GORILA_CRYPTO_PROVIDER
+        value: binance
+      - key: GORILA_CRYPTO_SYMBOLS
+        value: BTCUSDT,ETHUSDT,SOLUSDT
+      - key: GORILA_CRYPTO_STREAMS
+        value: trade,bookTicker,depth
+      - key: GORILA_CRYPTO_DEPTH_SPEED
+        value: 100ms
+      - key: GORILA_CRYPTO_ENVIRONMENT
+        value: cleanroom-binance
+      - key: GORILA_CRYPTO_INGEST_ENABLED
+        value: "true"
+      - key: GORILA_CRYPTO_QUALITY_MONITOR_ENABLED
+        value: "true"
+      - key: GORILA_LIVE_EVENT_MAX_AGE_SECONDS
+        value: "90"
+      - key: GORILA_DELAYED_EVENT_MAX_AGE_SECONDS
+        value: "1800"
