@@ -82,6 +82,8 @@ class DataQualityReport:
     invalid_timestamp_count: int
     future_event_count: int
     receive_time_reversal_count: int
+    future_received_count: int
+    negative_transport_latency_count: int
     required_source_gap_count: int
     symbol_stats: Mapping[str, QualitySymbolStats]
     reasons: tuple[str, ...]
@@ -123,6 +125,8 @@ def evaluate_replay_quality(
     invalid_timestamp_count = 0
     future_event_count = 0
     receive_time_reversal_count = 0
+    future_received_count = 0
+    negative_transport_latency_count = 0
 
     previous_receive: dict[tuple[str, str, int], datetime] = {}
     for row in ordered:
@@ -135,6 +139,10 @@ def evaluate_replay_quality(
             continue
         if event_time > cutoff:
             future_event_count += 1
+        if received_time > cutoff:
+            future_received_count += 1
+        if received_time < event_time:
+            negative_transport_latency_count += 1
         epoch = int((row.get("metadata") or {}).get("ingest_epoch") or 0)
         key = (symbol, source, epoch)
         previous = previous_receive.get(key)
@@ -165,7 +173,8 @@ def evaluate_replay_quality(
             received_time = _dt(row.get("received_time"))
             if event_time is None or received_time is None:
                 continue
-            latencies.append(max(0.0, (received_time - event_time).total_seconds() * 1000.0))
+            latency_ms = (received_time - event_time).total_seconds() * 1000.0
+            latencies.append(max(0.0, latency_ms))
         duration = (
             max(event_times).timestamp() - min(event_times).timestamp()
             if len(event_times) >= 2
@@ -196,6 +205,10 @@ def evaluate_replay_quality(
         reasons.append("INVALID_TIMESTAMPS")
     if future_event_count:
         reasons.append("FUTURE_EVENTS")
+    if future_received_count:
+        reasons.append("FUTURE_RECEIVED_TIMES")
+    if negative_transport_latency_count:
+        reasons.append("NEGATIVE_TRANSPORT_LATENCY")
     if receive_time_reversal_count > config.max_receive_time_reversals:
         reasons.append("RECEIVE_TIME_REVERSAL")
     if required_source_gap_count > config.max_required_source_gaps:
@@ -212,6 +225,8 @@ def evaluate_replay_quality(
         invalid_timestamp_count=invalid_timestamp_count,
         future_event_count=future_event_count,
         receive_time_reversal_count=receive_time_reversal_count,
+        future_received_count=future_received_count,
+        negative_transport_latency_count=negative_transport_latency_count,
         required_source_gap_count=required_source_gap_count,
         symbol_stats=symbol_stats,
         reasons=tuple(dict.fromkeys(reasons)),
