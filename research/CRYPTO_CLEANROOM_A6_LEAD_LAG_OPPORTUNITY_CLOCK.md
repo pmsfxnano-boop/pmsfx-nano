@@ -111,3 +111,8 @@ does not expose any forecast or execution endpoint.
 
 A7 — forecast integration, but only after the shadow engine has sufficient replay
 data and passes integrity/OOS design review. No automatic promotion is permitted.
+
+The persisted lead-lag observations also bind the target ledger sequence, target
+event time and target receive time. Opportunity rows bind the ledger sequences of
+first reaction and convergence. This keeps each descriptive result traceable to
+specific immutable events rather than only to aggregate timestamps.
