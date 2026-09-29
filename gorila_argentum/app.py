@@ -1058,6 +1058,20 @@ def gorila_root():
     )
 
 
+def build_identity() -> dict[str, Any]:
+    """Expose immutable deployment identity for production E2E verification."""
+    return {
+        "render": bool(os.getenv("RENDER")),
+        "commit": os.getenv("RENDER_GIT_COMMIT"),
+        "branch": os.getenv("RENDER_GIT_BRANCH"),
+        "repo": os.getenv("RENDER_GIT_REPO_SLUG"),
+        "external_url": os.getenv("RENDER_EXTERNAL_URL"),
+    }
+
+@app.get("/api/gorila/build")
+def gorila_build():
+    return build_identity()
+
 @app.get("/api/gorila/health")
 def gorila_health():
     live = dict(_ARG_LIVE_STATE)
@@ -1066,6 +1080,7 @@ def gorila_health():
     db = persistence_summary() if _DB_STATE.get("ready") else {"ready": False, "status": _DB_STATE.get("status")}
     return {
         "service": "gorila-argentum",
+        "build": build_identity(),
         "mode": "RESEARCH",
         "trading_execution": False,
         "automatic_promotion": False,
