@@ -97,8 +97,6 @@ def test_byma_live_panel_never_promotes_close_to_live(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setattr(sources, "_byma_client", lambda: FakeClient())
-    monkeypatch.setattr(sources.settings, "core_symbols", ("GGAL",))
-
     result = sources.byma_live_panel()
 
     assert result.rows == []
