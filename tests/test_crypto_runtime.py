@@ -133,6 +133,11 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
     try:
         assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM crypto_data_gaps").fetchone()[0] == 1
+        metadata = conn.execute(
+            "SELECT metadata FROM crypto_events WHERE event_type='trade' ORDER BY ledger_seq LIMIT 1"
+        ).fetchone()[0]
+        assert "transport_latency_seconds" in metadata
+        assert "received_age_seconds" in metadata
         assert conn.execute("SELECT COUNT(*) FROM crypto_connection_events").fetchone()[0] >= 3
         runtime = conn.execute(
             "SELECT status,result FROM crypto_runtime_runs WHERE run_id=?",
