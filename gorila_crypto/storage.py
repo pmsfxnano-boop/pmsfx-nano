@@ -20,7 +20,7 @@ CRYPTO_DB_SCHEMA = os.getenv("GORILA_CRYPTO_DB_SCHEMA", "gorila_crypto").strip()
 if not CRYPTO_DB_SCHEMA.replace("_", "").isalnum():
     raise ValueError("invalid_crypto_database_schema")
 
-CRYPTO_SQLITE_PATH = os.getenv("GORILA_CRYPTO_SQLITE_PATH", ":memory:").strip()
+CRYPTO_SQLITE_PATH = os.getenv("GORILA_CRYPTO_SQLITE_PATH", "/tmp/gorila_crypto.sqlite3").strip()
 CRYPTO_DATABASE_URL = os.getenv("GORILA_CRYPTO_DATABASE_URL", "").strip()
 
 SCHEMA = """
