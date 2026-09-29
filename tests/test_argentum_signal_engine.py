@@ -1,3 +1,5 @@
+from math import isclose
+
 from gorila_argentum.signal_engine import build_signal, build_matrix
 
 
@@ -106,7 +108,7 @@ def test_signal_score_uses_single_0_to_100_conversion():
     assert result["signal_score"] == 65.9
     assert result["signal_score"] < 100
     assert result["score_audit"]["normalized_pre_penalty"] == 0.658667
-    assert sum(result["score_audit"]["weights"].values()) == 1.0
+    assert isclose(sum(result["score_audit"]["weights"].values()), 1.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_signal_score_is_bounded_at_100_with_perfect_factors():
