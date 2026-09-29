@@ -220,6 +220,66 @@ CREATE TABLE IF NOT EXISTS crypto_forecast_outcomes (
     metadata TEXT NOT NULL DEFAULT '{}'
 );
 
+
+CREATE TABLE IF NOT EXISTS crypto_validation_runs (
+    run_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    replay_fingerprint TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    horizon_ms INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    placebo_p_value DOUBLE PRECISION,
+    placebo_iterations INTEGER NOT NULL,
+    promotion_eligible INTEGER NOT NULL,
+    config_json TEXT NOT NULL,
+    aggregate_metrics_json TEXT NOT NULL,
+    stability_json TEXT NOT NULL,
+    stress_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_validation_runs_replay
+    ON crypto_validation_runs(replay_fingerprint);
+
+CREATE TABLE IF NOT EXISTS crypto_validation_folds (
+    run_id TEXT NOT NULL,
+    fold_id INTEGER NOT NULL,
+    train_start TEXT NOT NULL,
+    train_end TEXT NOT NULL,
+    test_start TEXT NOT NULL,
+    test_end TEXT NOT NULL,
+    train_rows INTEGER NOT NULL,
+    test_rows INTEGER NOT NULL,
+    model_spec_hash TEXT NOT NULL,
+    probabilistic_json TEXT NOT NULL,
+    baseline_fifty_json TEXT NOT NULL,
+    baseline_prevalence_json TEXT NOT NULL,
+    economic_json TEXT NOT NULL,
+    PRIMARY KEY(run_id, fold_id)
+);
+
+CREATE TABLE IF NOT EXISTS crypto_validation_oos (
+    run_id TEXT NOT NULL,
+    fold_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    leader_event_id TEXT NOT NULL,
+    target_symbol TEXT NOT NULL,
+    horizon_ms INTEGER NOT NULL,
+    decision_event_time TEXT NOT NULL,
+    decision_received_time TEXT NOT NULL,
+    label_event_time TEXT NOT NULL,
+    label_received_time TEXT NOT NULL,
+    probability DOUBLE PRECISION NOT NULL,
+    realized_target INTEGER NOT NULL,
+    realized_signed_return_bps DOUBLE PRECISION NOT NULL,
+    net_return_bps DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY(run_id, fold_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_validation_oos_group
+    ON crypto_validation_oos(target_symbol,horizon_ms,decision_received_time);
+CREATE INDEX IF NOT EXISTS idx_crypto_validation_oos_run
+    ON crypto_validation_oos(run_id,fold_id,row_index);
+
 """
 
 _SQLITE_SCHEMA = (
@@ -952,6 +1012,221 @@ class CryptoStore:
                 )
             conn.commit()
             return forecast_id
+        finally:
+            conn.close()
+
+    def save_validation_run(self, row: dict[str, Any]) -> str:
+        self.init()
+        run_id = str(row["run_id"])
+        values = (
+            run_id,
+            _utc_now(),
+            row["replay_fingerprint"],
+            row["model_id"],
+            row["model_version"],
+            row["target_kind"],
+            int(row["horizon_ms"]),
+            row["status"],
+            row.get("placebo_p_value"),
+            int(row.get("placebo_iterations", 0)),
+            1 if row.get("promotion_eligible") else 0,
+            _json(row.get("config") or {}),
+            _json(row.get("aggregate_metrics") or {}),
+            _json(row.get("stability") or {}),
+            _json(row.get("stress") or {}),
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_validation_runs
+                        (run_id,created_at,replay_fingerprint,model_id,model_version,
+                         target_kind,horizon_ms,status,placebo_p_value,
+                         placebo_iterations,promotion_eligible,config_json,
+                         aggregate_metrics_json,stability_json,stress_json)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(run_id) DO UPDATE SET
+                          status=EXCLUDED.status,
+                          placebo_p_value=EXCLUDED.placebo_p_value,
+                          placebo_iterations=EXCLUDED.placebo_iterations,
+                          promotion_eligible=EXCLUDED.promotion_eligible,
+                          config_json=EXCLUDED.config_json,
+                          aggregate_metrics_json=EXCLUDED.aggregate_metrics_json,
+                          stability_json=EXCLUDED.stability_json,
+                          stress_json=EXCLUDED.stress_json""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT INTO crypto_validation_runs
+                    (run_id,created_at,replay_fingerprint,model_id,model_version,
+                     target_kind,horizon_ms,status,placebo_p_value,
+                     placebo_iterations,promotion_eligible,config_json,
+                     aggregate_metrics_json,stability_json,stress_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                      status=excluded.status,
+                      placebo_p_value=excluded.placebo_p_value,
+                      placebo_iterations=excluded.placebo_iterations,
+                      promotion_eligible=excluded.promotion_eligible,
+                      config_json=excluded.config_json,
+                      aggregate_metrics_json=excluded.aggregate_metrics_json,
+                      stability_json=excluded.stability_json,
+                      stress_json=excluded.stress_json""",
+                    values,
+                )
+            conn.commit()
+            return run_id
+        finally:
+            conn.close()
+
+    def save_validation_folds(self, rows: list[dict[str, Any]]) -> int:
+        self.init()
+        if not rows:
+            return 0
+        conn = self.connect()
+        inserted = 0
+        try:
+            for row in rows:
+                values = (
+                    row["run_id"],
+                    int(row["fold_id"]),
+                    row["train_start"],
+                    row["train_end"],
+                    row["test_start"],
+                    row["test_end"],
+                    int(row["train_rows"]),
+                    int(row["test_rows"]),
+                    row["model_spec_hash"],
+                    _json(row["probabilistic"]),
+                    _json(row["baseline_fifty"]),
+                    _json(row["baseline_prevalence"]),
+                    _json(row["economic"]),
+                )
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO crypto_validation_folds
+                            (run_id,fold_id,train_start,train_end,test_start,test_end,
+                             train_rows,test_rows,model_spec_hash,probabilistic_json,
+                             baseline_fifty_json,baseline_prevalence_json,economic_json)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT(run_id,fold_id) DO UPDATE SET
+                              train_start=EXCLUDED.train_start,
+                              train_end=EXCLUDED.train_end,
+                              test_start=EXCLUDED.test_start,
+                              test_end=EXCLUDED.test_end,
+                              train_rows=EXCLUDED.train_rows,
+                              test_rows=EXCLUDED.test_rows,
+                              model_spec_hash=EXCLUDED.model_spec_hash,
+                              probabilistic_json=EXCLUDED.probabilistic_json,
+                              baseline_fifty_json=EXCLUDED.baseline_fifty_json,
+                              baseline_prevalence_json=EXCLUDED.baseline_prevalence_json,
+                              economic_json=EXCLUDED.economic_json""",
+                            values,
+                        )
+                        inserted += max(cur.rowcount, 0)
+                else:
+                    cur = conn.execute(
+                        """INSERT INTO crypto_validation_folds
+                        (run_id,fold_id,train_start,train_end,test_start,test_end,
+                         train_rows,test_rows,model_spec_hash,probabilistic_json,
+                         baseline_fifty_json,baseline_prevalence_json,economic_json)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(run_id,fold_id) DO UPDATE SET
+                          train_start=excluded.train_start,
+                          train_end=excluded.train_end,
+                          test_start=excluded.test_start,
+                          test_end=excluded.test_end,
+                          train_rows=excluded.train_rows,
+                          test_rows=excluded.test_rows,
+                          model_spec_hash=excluded.model_spec_hash,
+                          probabilistic_json=excluded.probabilistic_json,
+                          baseline_fifty_json=excluded.baseline_fifty_json,
+                          baseline_prevalence_json=excluded.baseline_prevalence_json,
+                          economic_json=excluded.economic_json""",
+                        values,
+                    )
+                    inserted += max(cur.rowcount, 0)
+            conn.commit()
+            return inserted
+        finally:
+            conn.close()
+
+    def save_validation_oos(self, rows: list[dict[str, Any]]) -> int:
+        self.init()
+        if not rows:
+            return 0
+        conn = self.connect()
+        inserted = 0
+        try:
+            for row in rows:
+                values = (
+                    row["run_id"],
+                    int(row["fold_id"]),
+                    int(row["row_index"]),
+                    row["leader_event_id"],
+                    row["target_symbol"].upper(),
+                    int(row["horizon_ms"]),
+                    row["decision_event_time"],
+                    row["decision_received_time"],
+                    row["label_event_time"],
+                    row["label_received_time"],
+                    float(row["probability"]),
+                    int(row["realized_target"]),
+                    float(row["realized_signed_return_bps"]),
+                    float(row["net_return_bps"]),
+                )
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO crypto_validation_oos
+                            (run_id,fold_id,row_index,leader_event_id,target_symbol,
+                             horizon_ms,decision_event_time,decision_received_time,
+                             label_event_time,label_received_time,probability,
+                             realized_target,realized_signed_return_bps,net_return_bps)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT(run_id,fold_id,row_index) DO UPDATE SET
+                              leader_event_id=EXCLUDED.leader_event_id,
+                              target_symbol=EXCLUDED.target_symbol,
+                              horizon_ms=EXCLUDED.horizon_ms,
+                              decision_event_time=EXCLUDED.decision_event_time,
+                              decision_received_time=EXCLUDED.decision_received_time,
+                              label_event_time=EXCLUDED.label_event_time,
+                              label_received_time=EXCLUDED.label_received_time,
+                              probability=EXCLUDED.probability,
+                              realized_target=EXCLUDED.realized_target,
+                              realized_signed_return_bps=EXCLUDED.realized_signed_return_bps,
+                              net_return_bps=EXCLUDED.net_return_bps""",
+                            values,
+                        )
+                        inserted += max(cur.rowcount, 0)
+                else:
+                    cur = conn.execute(
+                        """INSERT INTO crypto_validation_oos
+                        (run_id,fold_id,row_index,leader_event_id,target_symbol,
+                         horizon_ms,decision_event_time,decision_received_time,
+                         label_event_time,label_received_time,probability,
+                         realized_target,realized_signed_return_bps,net_return_bps)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(run_id,fold_id,row_index) DO UPDATE SET
+                          leader_event_id=excluded.leader_event_id,
+                          target_symbol=excluded.target_symbol,
+                          horizon_ms=excluded.horizon_ms,
+                          decision_event_time=excluded.decision_event_time,
+                          decision_received_time=excluded.decision_received_time,
+                          label_event_time=excluded.label_event_time,
+                          label_received_time=excluded.label_received_time,
+                          probability=excluded.probability,
+                          realized_target=excluded.realized_target,
+                          realized_signed_return_bps=excluded.realized_signed_return_bps,
+                          net_return_bps=excluded.net_return_bps""",
+                        values,
+                    )
+                    inserted += max(cur.rowcount, 0)
+            conn.commit()
+            return inserted
         finally:
             conn.close()
 
