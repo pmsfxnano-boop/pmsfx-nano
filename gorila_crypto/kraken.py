@@ -233,6 +233,7 @@ class KrakenSpotMarketAdapter:
         self.event_sink = event_sink
         self._precisions: dict[str, KrakenPrecision] = {}
         self._books: dict[str, KrakenBookState] = {}
+        self._book_snapshots_seen: set[str] = set()
 
     def connection_url(self) -> str:
         return self.config.ws_url
@@ -294,6 +295,10 @@ class KrakenSpotMarketAdapter:
                     symbol,
                     KrakenBookState(symbol=symbol, depth=self.config.depth),
                 )
+                if message_type != "snapshot" and symbol not in self._book_snapshots_seen:
+                    raise KrakenAdapterError(
+                        f"{symbol}: book update arrived before a snapshot; refusing to extend stale state"
+                    )
                 precision = self._precisions.get(symbol)
                 integrity = apply_and_verify(
                     book,
@@ -328,6 +333,8 @@ class KrakenSpotMarketAdapter:
                     receive_time_ns=event.receive_time_ns,
                     quality=integrity.status,
                 )
+                if message_type == "snapshot":
+                    self._book_snapshots_seen.add(symbol)
                 yield event
                 if integrity.status == "INTEGRITY_CHECKSUM_FAIL":
                     raise KrakenChecksumMismatch(
@@ -336,6 +343,12 @@ class KrakenSpotMarketAdapter:
                     )
 
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
+        # Every connection starts from an empty local book. A fresh snapshot is
+        # mandatory before any update is admitted, preventing stale pre-reconnect
+        # state from contaminating checksum verification.
+        self._precisions.clear()
+        self._books.clear()
+        self._book_snapshots_seen.clear()
         for request in subscription_messages(self.config):
             ws.send(json.dumps(request, separators=(",", ":")))
 
