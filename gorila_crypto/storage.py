@@ -1521,6 +1521,42 @@ class CryptoStore:
         finally:
             conn.close()
 
+    def read_data_gaps(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+        self.init()
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        conn = self.connect()
+        try:
+            query = (
+                "SELECT gap_id,detected_at,symbol,source,expected_sequence,"
+                "observed_sequence,status,metadata FROM crypto_data_gaps "
+                "ORDER BY detected_at DESC LIMIT "
+                + str(int(limit))
+            )
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    rows = cur.fetchall()
+                    keys = [
+                        "gap_id","detected_at","symbol","source",
+                        "expected_sequence","observed_sequence","status","metadata"
+                    ]
+                    return [
+                        {key: (json.loads(value) if key == "metadata" else value)
+                         for key, value in zip(keys, row)}
+                        for row in rows
+                    ]
+            rows = conn.execute(query).fetchall()
+            return [
+                {
+                    **dict(row),
+                    "metadata": json.loads(row["metadata"] or "{}"),
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
     def prospective_stats(self) -> dict[str, Any]:
         self.init()
         conn = self.connect()
