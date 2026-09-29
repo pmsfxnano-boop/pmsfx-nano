@@ -107,7 +107,13 @@ def test_sequence_monitor_does_not_infer_trade_id_gaps() -> None:
 
 def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
     store = CryptoStore(sqlite_path=str(tmp_path / "runtime.sqlite3"))
-    adapter = FakeAdapter([event(trade_id=1), event(trade_id=3, second=1)])
+    adapter = FakeAdapter(
+        [
+            event(trade_id=1),
+            depth_event(first_id=1, final_id=1, second=1),
+            depth_event(first_id=3, final_id=3, second=2),
+        ]
+    )
     ingestor = ProspectiveCryptoIngestor(
         store,
         adapter,
@@ -117,7 +123,7 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
     result = ingestor.run()
 
     assert result["status"] == "STREAM_ENDED"
-    assert result["events_inserted"] == 2
+    assert result["events_inserted"] == 3
     assert result["gaps_detected"] == 1
     assert result["automatic_promotion"] is False
     assert result["forecast"] is False
@@ -125,7 +131,7 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
 
     conn = store.connect()
     try:
-        assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM crypto_data_gaps").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM crypto_connection_events").fetchone()[0] >= 3
         runtime = conn.execute(
