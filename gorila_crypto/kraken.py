@@ -1,0 +1,336 @@
+"""Kraken Spot WebSocket v2 market-data adapter for the Crypto cleanroom.
+
+The adapter is intentionally read-only and normalizes Kraken public trade/L2
+events into the same immutable ledger event contract used by the research
+runtime. It keeps provider timestamps separate from local receive timestamps.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Iterator, Mapping, Callable
+
+import websocket
+
+from .binance import NormalizedMarketEvent
+
+
+WS_BASE = "wss://ws.kraken.com/v2"
+
+
+class KrakenAdapterError(RuntimeError):
+    """Base error for Kraken public market-data transport."""
+
+
+def _timestamp(value: Any, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise KrakenAdapterError(f"{field_name} must be an RFC3339 timestamp")
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise KrakenAdapterError(f"invalid {field_name}: {value}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _number(value: Any, field_name: str) -> str:
+    text = str(value)
+    try:
+        number = float(text)
+    except (TypeError, ValueError) as exc:
+        raise KrakenAdapterError(f"{field_name} must be numeric") from exc
+    if not number == number or number in (float("inf"), float("-inf")):
+        raise KrakenAdapterError(f"{field_name} must be finite")
+    return text
+
+
+def _provider_symbol(symbol: str) -> str:
+    text = symbol.strip().upper()
+    if "/" in text:
+        return text
+    if text.endswith("USDT") and len(text) > 4:
+        return f"{text[:-4]}/USD"
+    if text.endswith("USD") and len(text) > 3:
+        return f"{text[:-3]}/USD"
+    raise ValueError(
+        f"Kraken symbols must be explicit BASE/USD pairs; received {symbol!r}"
+    )
+
+
+@dataclass(frozen=True)
+class KrakenStreamConfig:
+    symbols: tuple[str, ...]
+    streams: tuple[str, ...] = ("trade", "bookTicker")
+    depth: int = 10
+    ws_url: str = WS_BASE
+    connect_timeout_s: float = 10.0
+    recv_timeout_s: float = 20.0
+    connection_max_seconds: float = 23.5 * 3600.0
+    ping_interval_s: float = 20.0
+
+    def __post_init__(self) -> None:
+        symbols = tuple(dict.fromkeys(s.strip().upper() for s in self.symbols if s.strip()))
+        streams = tuple(dict.fromkeys(s.strip() for s in self.streams if s.strip()))
+        if not symbols:
+            raise ValueError("at least one Kraken symbol is required")
+        if not streams:
+            raise ValueError("at least one Kraken stream is required")
+        if any(stream not in {"trade", "bookTicker", "depth"} for stream in streams):
+            raise ValueError(f"unsupported Kraken stream: {streams}")
+        if self.depth not in {10, 25, 100, 500, 1000}:
+            raise ValueError("Kraken book depth must be one of 10,25,100,500,1000")
+        if self.connect_timeout_s <= 0 or self.recv_timeout_s <= 0:
+            raise ValueError("timeouts must be positive")
+        for symbol in symbols:
+            _provider_symbol(symbol)
+        object.__setattr__(self, "symbols", symbols)
+        object.__setattr__(self, "streams", streams)
+
+
+def subscription_messages(config: KrakenStreamConfig) -> tuple[dict[str, Any], ...]:
+    symbols = [_provider_symbol(symbol) for symbol in config.symbols]
+    messages: list[dict[str, Any]] = []
+    if "trade" in config.streams:
+        messages.append(
+            {
+                "method": "subscribe",
+                "params": {
+                    "channel": "trade",
+                    "symbol": symbols,
+                    "snapshot": False,
+                },
+                "req_id": 1,
+            }
+        )
+    if "bookTicker" in config.streams or "depth" in config.streams:
+        messages.append(
+            {
+                "method": "subscribe",
+                "params": {
+                    "channel": "book",
+                    "symbol": symbols,
+                    "depth": config.depth,
+                    "snapshot": True,
+                },
+                "req_id": 2,
+            }
+        )
+    return tuple(messages)
+
+
+def normalize_trade_row(
+    row: Mapping[str, Any],
+    *,
+    received_time: datetime,
+    receive_ns: int,
+) -> NormalizedMarketEvent:
+    symbol = str(row.get("symbol") or "").upper()
+    trade_id = row.get("trade_id")
+    if not symbol or trade_id is None:
+        raise KrakenAdapterError("trade event missing symbol/trade_id")
+    event_time = _timestamp(row.get("timestamp"), "timestamp")
+    payload = dict(row)
+    payload["_provider"] = "kraken"
+    payload["_event_time_semantics"] = "PROVIDER_TIMESTAMP"
+    return NormalizedMarketEvent(
+        symbol=symbol,
+        event_type="trade",
+        event_time=event_time,
+        received_time=received_time,
+        source="kraken.websocket.trade",
+        payload=payload,
+        provider_time=event_time,
+        sequence_start=int(trade_id),
+        sequence_end=int(trade_id),
+        sequence_kind="trade_id",
+        receive_time_ns=receive_ns,
+        quality="OK",
+    )
+
+
+def _book_event(
+    row: Mapping[str, Any],
+    *,
+    received_time: datetime,
+    receive_ns: int,
+    message_type: str,
+) -> NormalizedMarketEvent:
+    symbol = str(row.get("symbol") or "").upper()
+    if not symbol:
+        raise KrakenAdapterError("book event missing symbol")
+    event_time = _timestamp(row.get("timestamp"), "timestamp")
+    bids = row.get("bids")
+    asks = row.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise KrakenAdapterError("book event bids/asks must be arrays")
+
+    payload = dict(row)
+    payload["_provider"] = "kraken"
+    payload["_event_time_semantics"] = "PROVIDER_TIMESTAMP"
+    payload["_message_type"] = message_type
+
+    if bids:
+        best_bid = bids[0]
+        if isinstance(best_bid, Mapping):
+            payload["b"] = _number(best_bid.get("price"), "bid.price")
+            payload["B"] = _number(best_bid.get("qty"), "bid.qty")
+    if asks:
+        best_ask = asks[0]
+        if isinstance(best_ask, Mapping):
+            payload["a"] = _number(best_ask.get("price"), "ask.price")
+            payload["A"] = _number(best_ask.get("qty"), "ask.qty")
+
+    return NormalizedMarketEvent(
+        symbol=symbol,
+        event_type="bookTicker",
+        event_time=event_time,
+        received_time=received_time,
+        provider_time=event_time,
+        source="kraken.websocket.book",
+        payload=payload,
+        sequence_start=None,
+        sequence_end=None,
+        sequence_kind="checksum" if row.get("checksum") is not None else None,
+        receive_time_ns=receive_ns,
+        quality="OK",
+    )
+
+
+class KrakenSpotMarketAdapter:
+    """Reconnectable public Kraken v2 market-data adapter."""
+
+    source_family = "kraken.websocket.market"
+
+    def __init__(
+        self,
+        config: KrakenStreamConfig,
+        *,
+        event_sink: Callable[[NormalizedMarketEvent], None] | None = None,
+    ) -> None:
+        self.config = config
+        self.event_sink = event_sink
+
+    def connection_url(self) -> str:
+        return self.config.ws_url
+
+    def connect(self):
+        return websocket.create_connection(
+            self.connection_url(),
+            timeout=self.config.recv_timeout_s,
+            ping_interval=self.config.ping_interval_s,
+            enable_multithread=True,
+        )
+
+    def _events_from_message(
+        self,
+        message: Mapping[str, Any],
+        *,
+        received_time: datetime,
+        receive_ns: int,
+    ) -> Iterator[NormalizedMarketEvent]:
+        channel = str(message.get("channel") or "")
+        message_type = str(message.get("type") or "")
+        data = message.get("data")
+        if message.get("success") is False or message.get("error"):
+            raise KrakenAdapterError(str(message.get("error") or "Kraken subscription error"))
+        if channel not in {"trade", "book"} or not isinstance(data, list):
+            return
+        for row in data:
+            if not isinstance(row, Mapping):
+                raise KrakenAdapterError("Kraken channel row must be an object")
+            if channel == "trade":
+                yield normalize_trade_row(
+                    row,
+                    received_time=received_time,
+                    receive_ns=receive_ns,
+                )
+            else:
+                yield _book_event(
+                    row,
+                    received_time=received_time,
+                    receive_ns=receive_ns,
+                    message_type=message_type,
+                )
+
+    def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
+        for request in subscription_messages(self.config):
+            ws.send(json.dumps(request, separators=(",", ":")))
+
+        connected_ns = time.time_ns()
+        while (time.time_ns() - connected_ns) / 1_000_000_000 < self.config.connection_max_seconds:
+            raw = ws.recv()
+            if raw is None:
+                break
+            receive_ns = time.time_ns()
+            received_time = datetime.fromtimestamp(
+                receive_ns / 1_000_000_000,
+                tz=timezone.utc,
+            )
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            try:
+                message = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise KrakenAdapterError("Kraken websocket payload is not valid JSON") from exc
+            if not isinstance(message, Mapping):
+                raise KrakenAdapterError("Kraken websocket message must be an object")
+            yield from self._events_from_message(
+                message,
+                received_time=received_time,
+                receive_ns=receive_ns,
+            )
+
+    def close(self, ws) -> None:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+    def iter_forever(
+        self,
+        *,
+        stop_event=None,
+        on_connection: Callable[[str, dict[str, Any]], None] | None = None,
+        initial_backoff_s: float = 1.0,
+        max_backoff_s: float = 60.0,
+    ) -> Iterator[NormalizedMarketEvent]:
+        backoff = max(0.1, float(initial_backoff_s))
+        while stop_event is None or not stop_event.is_set():
+            ws = None
+            try:
+                if on_connection:
+                    on_connection("CONNECTING", {"provider": "kraken"})
+                ws = self.connect()
+                backoff = max(0.1, float(initial_backoff_s))
+                if on_connection:
+                    on_connection("CONNECTED", {"provider": "kraken"})
+                for event in self.iter_events_once(ws=ws):
+                    if self.event_sink is not None:
+                        self.event_sink(event)
+                    yield event
+                    if stop_event is not None and stop_event.is_set():
+                        return
+            except Exception as exc:
+                if on_connection:
+                    on_connection(
+                        "ERROR",
+                        {
+                            "provider": "kraken",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                if stop_event is not None and stop_event.is_set():
+                    return
+                time.sleep(backoff)
+                backoff = min(max_backoff_s, backoff * 2.0)
+            finally:
+                if ws is not None:
+                    self.close(ws)
+                if on_connection:
+                    on_connection("DISCONNECTED", {"provider": "kraken"})
