@@ -122,7 +122,9 @@ def test_opportunity_clock_tracks_reaction_convergence_and_excursions() -> None:
     row = result[0]
     assert row.status == 'CONVERGED'
     assert row.first_reaction_information_lag_ms == 1000.0
-    assert row.convergence_information_lag_ms == 2000.0
+    # Event 12 is the first reaction and also crosses the 50% convergence
+    # threshold, so both information lags are 1000 ms from the leader event.
+    assert row.convergence_information_lag_ms == 1000.0
     assert row.max_adverse_excursion_bps < 0
     assert row.max_favorable_excursion_bps > 0
 
