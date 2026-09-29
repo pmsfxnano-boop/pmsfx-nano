@@ -96,29 +96,48 @@ def _fixed(value: Decimal, places: int, field_name: str) -> str:
     return rendered
 
 
-def _checksum_component(value: Decimal, places: int, field_name: str) -> str:
-    rendered = _fixed(value, places, field_name)
-    digits = rendered.replace(".", "").lstrip("0")
-    return digits or "0"
+def _checksum_level(price: Decimal, qty: Decimal, *, price_places: int, qty_places: int, field_prefix: str) -> str:
+    return (
+        f"{_fixed(price, price_places, field_prefix + '.price')}:"
+        f"{_fixed(qty, qty_places, field_prefix + '.qty')}"
+    )
 
 
 def kraken_checksum(
     book: KrakenBookState,
     precision: KrakenPrecision,
 ) -> tuple[int, str]:
-    """Compute Kraken's checksum from the resulting book state."""
+    """Compute Kraken's WS v2 CRC32 checksum from the resulting book state."""
     precision.validate()
     book.validate()
 
-    parts: list[str] = []
+    levels: list[str] = []
     for price, qty in sorted(book.asks.items(), key=lambda item: item[0])[:KRAKEN_CHECKSUM_DEPTH]:
-        parts.append(_checksum_component(price, precision.price, "ask.price"))
-        parts.append(_checksum_component(qty, precision.qty, "ask.qty"))
-    for price, qty in sorted(book.bids.items(), key=lambda item: item[0], reverse=True)[:KRAKEN_CHECKSUM_DEPTH]:
-        parts.append(_checksum_component(price, precision.price, "bid.price"))
-        parts.append(_checksum_component(qty, precision.qty, "bid.qty"))
+        levels.append(
+            _checksum_level(
+                price,
+                qty,
+                price_places=precision.price,
+                qty_places=precision.qty,
+                field_prefix="ask",
+            )
+        )
+    for price, qty in sorted(
+        book.bids.items(),
+        key=lambda item: item[0],
+        reverse=True,
+    )[:KRAKEN_CHECKSUM_DEPTH]:
+        levels.append(
+            _checksum_level(
+                price,
+                qty,
+                price_places=precision.price,
+                qty_places=precision.qty,
+                field_prefix="bid",
+            )
+        )
 
-    payload = "".join(parts)
+    payload = ",".join(levels)
     return binascii.crc32(payload.encode("ascii")) & 0xFFFFFFFF, payload
 
 
