@@ -22,6 +22,7 @@ if not CRYPTO_DB_SCHEMA.replace("_", "").isalnum():
 
 CRYPTO_SQLITE_PATH = os.getenv("GORILA_CRYPTO_SQLITE_PATH", "/tmp/gorila_crypto.sqlite3").strip()
 CRYPTO_DATABASE_URL = os.getenv("GORILA_CRYPTO_DATABASE_URL", "").strip()
+CRYPTO_SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crypto_events (
@@ -116,6 +117,10 @@ def _json(value: Any) -> str:
 
 def _pg_identifier(value: str) -> str:
     return value.replace('"', '""')
+
+
+class LedgerIntegrityError(RuntimeError):
+    """Raised when the same provider identity is delivered with different content."""
 
 
 class CryptoStore:
@@ -231,17 +236,23 @@ class CryptoStore:
         symbol = symbol.upper()
         payload_json = _json(payload)
         payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-        event_key = event_key or hashlib.sha256(
-            _json(
+        identity = {
+            "source": source,
+            "symbol": symbol,
+            "event_type": event_type,
+            "sequence_start": sequence_start,
+            "sequence_end": sequence_end,
+        }
+        if sequence_start is None or sequence_end is None:
+            identity.update(
                 {
-                    "source": source,
-                    "symbol": symbol,
-                    "event_type": event_type,
-                    "sequence_start": sequence_start,
-                    "sequence_end": sequence_end,
+                    "event_time": event_time,
+                    "provider_time": provider_time,
                     "payload_hash": payload_hash,
                 }
-            ).encode("utf-8")
+            )
+        event_key = event_key or hashlib.sha256(
+            _json(identity).encode("utf-8")
         ).hexdigest()
         event_id = event_id or str(uuid.uuid4())
         recorded_at = _utc_now()
@@ -279,13 +290,17 @@ class CryptoStore:
                     row = cur.fetchone()
                     if row is None:
                         cur.execute(
-                            "SELECT ledger_seq,event_id,event_key FROM crypto_events "
-                            "WHERE event_key=%s",
+                            "SELECT ledger_seq,event_id,event_key,payload_hash "
+                            "FROM crypto_events WHERE event_key=%s",
                             (event_key,),
                         )
                         existing = cur.fetchone()
                         if existing is None:
                             raise RuntimeError("event_deduplication_lookup_failed")
+                        if str(existing[3]) != payload_hash:
+                            raise LedgerIntegrityError(
+                                "provider_identity_conflict: existing payload hash differs"
+                            )
                         result = {
                             "inserted": False,
                             "ledger_seq": int(existing[0]),
@@ -317,11 +332,16 @@ class CryptoStore:
                     }
                 else:
                     row = conn.execute(
-                        "SELECT ledger_seq,event_id,event_key FROM crypto_events WHERE event_key=?",
+                        "SELECT ledger_seq,event_id,event_key,payload_hash "
+                        "FROM crypto_events WHERE event_key=?",
                         (event_key,),
                     ).fetchone()
                     if row is None:
                         raise RuntimeError("event_deduplication_lookup_failed")
+                    if str(row[3]) != payload_hash:
+                        raise LedgerIntegrityError(
+                            "provider_identity_conflict: existing payload hash differs"
+                        )
                     result = {
                         "inserted": False,
                         "ledger_seq": int(row[0]),
