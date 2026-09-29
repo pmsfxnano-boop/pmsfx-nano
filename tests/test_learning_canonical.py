@@ -9,7 +9,8 @@ def _synthetic_series(n=180):
     rows = []
     price = 100.0
     for i in range(n):
-        price *= 1.0 + (0.0005 if i % 3 else -0.0002)
+        shock = 0.004 if (i // 4) % 2 == 0 else -0.004
+        price *= 1.0 + shock
         rows.append(((start + timedelta(days=i)).isoformat(), price))
     return rows
 
@@ -83,6 +84,8 @@ def test_rejected_learning_candidate_is_not_shadowed():
 
         def latest_shadow(self, symbol=None, limit=1):
             return []
+        def shadow_existing_feature_hashes(self, hashes):
+            return set()
 
         def save_shadow_prediction(self, **kwargs):
             self.saved.append(kwargs)
