@@ -43,6 +43,21 @@ class CryptoSettings:
     event_delayed_max_age_seconds: float
 
 
+    def validate(self) -> None:
+        supported = {"trade", "aggTrade", "bookTicker", "depth"}
+        if not self.symbols:
+            raise ValueError("Crypto settings require at least one symbol")
+        if not self.streams:
+            raise ValueError("Crypto settings require at least one stream")
+        if any(stream not in supported for stream in self.streams):
+            raise ValueError(f"unsupported crypto stream: {self.streams}")
+        if self.depth_speed not in {"100ms", "1000ms"}:
+            raise ValueError("depth_speed must be 100ms or 1000ms")
+        if self.quality_interval_seconds < 60.0:
+            raise ValueError("quality interval cannot be below 60 seconds")
+        if self.quality_row_limit < 1000:
+            raise ValueError("quality row limit must be >= 1000")
+
 settings = CryptoSettings(
     symbols=_symbols(os.getenv("GORILA_CRYPTO_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT")),
     streams=_csv_items(os.getenv("GORILA_CRYPTO_STREAMS", "trade,bookTicker")),
@@ -73,3 +88,5 @@ settings = CryptoSettings(
         float(os.getenv("GORILA_DELAYED_EVENT_MAX_AGE_SECONDS", "1800")),
     ),
 )
+
+settings.validate()
