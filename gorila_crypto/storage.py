@@ -280,6 +280,17 @@ CREATE INDEX IF NOT EXISTS idx_crypto_validation_oos_group
 CREATE INDEX IF NOT EXISTS idx_crypto_validation_oos_run
     ON crypto_validation_oos(run_id,fold_id,row_index);
 
+CREATE TABLE IF NOT EXISTS crypto_validation_lineage (
+    run_id TEXT NOT NULL,
+    fold_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    feature_set_hash TEXT NOT NULL,
+    source_event_ids_json TEXT NOT NULL,
+    PRIMARY KEY(run_id, fold_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_validation_lineage_feature
+    ON crypto_validation_lineage(feature_set_hash);
+
 """
 
 _SQLITE_SCHEMA = (
@@ -1405,6 +1416,49 @@ class CryptoStore:
                     values,
                 )
             conn.commit()
+        finally:
+            conn.close()
+
+    def save_validation_lineage(self, rows: list[dict[str, Any]]) -> int:
+        self.init()
+        if not rows:
+            return 0
+        conn = self.connect()
+        inserted = 0
+        try:
+            for row in rows:
+                values = (
+                    row["run_id"],
+                    int(row["fold_id"]),
+                    int(row["row_index"]),
+                    row["feature_set_hash"],
+                    _json(row.get("source_event_ids") or []),
+                )
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO crypto_validation_lineage
+                            (run_id,fold_id,row_index,feature_set_hash,source_event_ids_json)
+                            VALUES (%s,%s,%s,%s,%s)
+                            ON CONFLICT(run_id,fold_id,row_index) DO UPDATE SET
+                              feature_set_hash=EXCLUDED.feature_set_hash,
+                              source_event_ids_json=EXCLUDED.source_event_ids_json""",
+                            values,
+                        )
+                        inserted += max(cur.rowcount, 0)
+                else:
+                    cur = conn.execute(
+                        """INSERT INTO crypto_validation_lineage
+                        (run_id,fold_id,row_index,feature_set_hash,source_event_ids_json)
+                        VALUES (?,?,?,?,?)
+                        ON CONFLICT(run_id,fold_id,row_index) DO UPDATE SET
+                          feature_set_hash=excluded.feature_set_hash,
+                          source_event_ids_json=excluded.source_event_ids_json""",
+                        values,
+                    )
+                    inserted += max(cur.rowcount, 0)
+            conn.commit()
+            return inserted
         finally:
             conn.close()
 
