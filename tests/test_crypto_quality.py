@@ -156,3 +156,40 @@ def test_quality_gate_rejects_negative_transport_clock() -> None:
     assert report.status == "FAIL"
     assert report.negative_transport_latency_count >= 1
     assert "NEGATIVE_TRANSPORT_LATENCY" in report.reasons
+
+
+def test_quality_gate_rejects_insufficient_required_event_type_coverage() -> None:
+    rows = make_rows("BTCUSDT", count=100)
+    # One book update is present, but the configured minimum is 10.
+    rows.append({
+        "ledger_seq": 101,
+        "event_id": "BTCUSDT-book-1",
+        "symbol": "BTCUSDT",
+        "source": "binance.websocket.bookTicker",
+        "event_type": "bookTicker",
+        "event_time": (BASE + timedelta(seconds=4000)).isoformat(),
+        "received_time": (BASE + timedelta(seconds=4000, milliseconds=10)).isoformat(),
+        "metadata": {"ingest_epoch": 1},
+        "payload": {"b": "100.0", "a": "101.0"},
+    })
+    report = evaluate_replay_quality(
+        rows,
+        replay_fingerprint="fp-coverage",
+        config=DataQualityConfig(
+            min_rows_per_symbol=1,
+            min_duration_seconds=0,
+            required_event_types=("trade", "bookTicker", "depthUpdate"),
+            required_event_type_min_rows={
+                "trade": 100,
+                "bookTicker": 10,
+                "depthUpdate": 10,
+            },
+        ),
+        reference_time=BASE + timedelta(hours=2),
+    )
+    assert report.status == "FAIL"
+    assert report.event_type_counts["trade"] == 100
+    assert report.event_type_counts["bookTicker"] == 1
+    assert report.event_type_counts.get("depthUpdate", 0) == 0
+    assert "EVENT_TYPE_INSUFFICIENT:bookTicker:1<10" in report.reasons
+    assert "EVENT_TYPE_INSUFFICIENT:depthUpdate:0<10" in report.reasons
