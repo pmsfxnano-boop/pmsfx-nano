@@ -177,6 +177,48 @@ CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_pair
 CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_status
     ON crypto_opportunity_shadow(status,created_at);
 CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_fingerprint
+
+
+CREATE TABLE IF NOT EXISTS crypto_forecast_shadow (
+    forecast_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    replay_fingerprint TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    target_symbol TEXT NOT NULL,
+    leader_event_id TEXT NOT NULL,
+    decision_event_time TEXT NOT NULL,
+    decision_received_time TEXT NOT NULL,
+    horizon_ms INTEGER NOT NULL,
+    target_kind TEXT NOT NULL,
+    semantics TEXT NOT NULL,
+    probability_response_positive DOUBLE PRECISION,
+    status TEXT NOT NULL,
+    feature_set_hash TEXT NOT NULL,
+    features_json TEXT NOT NULL,
+    source_event_ids_json TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_forecast_pair_time
+    ON crypto_forecast_shadow(symbol,target_symbol,decision_received_time);
+CREATE INDEX IF NOT EXISTS idx_crypto_forecast_model
+    ON crypto_forecast_shadow(model_id,model_version,decision_received_time);
+CREATE INDEX IF NOT EXISTS idx_crypto_forecast_fingerprint
+    ON crypto_forecast_shadow(replay_fingerprint);
+
+CREATE TABLE IF NOT EXISTS crypto_forecast_outcomes (
+    forecast_id TEXT PRIMARY KEY,
+    observed_at TEXT NOT NULL,
+    observed_event_id TEXT,
+    observed_price DOUBLE PRECISION,
+    realized_signed_return_bps DOUBLE PRECISION,
+    realized_target INTEGER,
+    transaction_cost_bps DOUBLE PRECISION,
+    slippage_bps DOUBLE PRECISION,
+    status TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
     ON crypto_opportunity_shadow(replay_fingerprint);
 """
 
@@ -812,6 +854,103 @@ class CryptoStore:
                     inserted += max(cur.rowcount, 0)
             conn.commit()
             return inserted
+        finally:
+            conn.close()
+
+    def save_forecast_shadow(self, row: dict[str, Any]) -> str:
+        self.init()
+        forecast_id = str(row["forecast_id"])
+        values = (
+            forecast_id,
+            _utc_now(),
+            row["replay_fingerprint"],
+            row["model_id"],
+            row["model_version"],
+            row["symbol"].upper(),
+            row["target_symbol"].upper(),
+            row["leader_event_id"],
+            row["decision_event_time"],
+            row["decision_received_time"],
+            int(row["horizon_ms"]),
+            row["target_kind"],
+            row["semantics"],
+            row.get("probability_response_positive"),
+            row["status"],
+            row["feature_set_hash"],
+            _json(row.get("features") or {}),
+            _json(row.get("source_event_ids") or []),
+            _json(row.get("metadata") or {}),
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_forecast_shadow
+                        (forecast_id,created_at,replay_fingerprint,model_id,model_version,
+                         symbol,target_symbol,leader_event_id,decision_event_time,
+                         decision_received_time,horizon_ms,target_kind,semantics,
+                         probability_response_positive,status,feature_set_hash,
+                         features_json,source_event_ids_json,metadata)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(forecast_id) DO NOTHING""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT OR IGNORE INTO crypto_forecast_shadow
+                    (forecast_id,created_at,replay_fingerprint,model_id,model_version,
+                     symbol,target_symbol,leader_event_id,decision_event_time,
+                     decision_received_time,horizon_ms,target_kind,semantics,
+                     probability_response_positive,status,feature_set_hash,
+                     features_json,source_event_ids_json,metadata)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            conn.commit()
+            return forecast_id
+        finally:
+            conn.close()
+
+    def save_forecast_outcome(self, row: dict[str, Any]) -> str:
+        self.init()
+        forecast_id = str(row["forecast_id"])
+        values = (
+            forecast_id,
+            row["observed_at"],
+            row.get("observed_event_id"),
+            row.get("observed_price"),
+            row.get("realized_signed_return_bps"),
+            row.get("realized_target"),
+            row.get("transaction_cost_bps"),
+            row.get("slippage_bps"),
+            row["status"],
+            _json(row.get("metadata") or {}),
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_forecast_outcomes
+                        (forecast_id,observed_at,observed_event_id,observed_price,
+                         realized_signed_return_bps,realized_target,
+                         transaction_cost_bps,slippage_bps,status,metadata)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(forecast_id) DO NOTHING""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT OR IGNORE INTO crypto_forecast_outcomes
+                    (forecast_id,observed_at,observed_event_id,observed_price,
+                     realized_signed_return_bps,realized_target,
+                     transaction_cost_bps,slippage_bps,status,metadata)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+            conn.commit()
+            return forecast_id
         finally:
             conn.close()
 
