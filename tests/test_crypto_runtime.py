@@ -45,6 +45,31 @@ def event(
     )
 
 
+def depth_event(*, first_id: int, final_id: int, second: int = 0) -> NormalizedMarketEvent:
+    t = BASE.replace(second=BASE.second + second)
+    return NormalizedMarketEvent(
+        symbol="BTCUSDT",
+        event_type="depthUpdate",
+        event_time=t,
+        received_time=t,
+        source="binance.websocket.depth",
+        payload={
+            "e": "depthUpdate",
+            "s": "BTCUSDT",
+            "U": first_id,
+            "u": final_id,
+            "b": [],
+            "a": [],
+        },
+        provider_time=t,
+        sequence_start=first_id,
+        sequence_end=final_id,
+        sequence_kind="book_update_id",
+        receive_time_ns=1_000_000_000 + second,
+        quality="OK",
+    )
+
+
 class FakeAdapter:
     def __init__(self, events: list[NormalizedMarketEvent], *, reconnect_events: list[list[NormalizedMarketEvent]] | None = None) -> None:
         self.config = BinanceStreamConfig(symbols=("BTCUSDT",), streams=("trade",))
@@ -63,13 +88,20 @@ class FakeAdapter:
                     yield item
 
 
-def test_sequence_monitor_flags_gap_only_within_connection() -> None:
+def test_sequence_monitor_flags_depth_gap_only_within_connection() -> None:
+    monitor = SequenceContinuityMonitor()
+    monitor.new_connection()
+    assert monitor.observe(depth_event(first_id=1, final_id=1)) is None
+    assert monitor.observe(depth_event(first_id=3, final_id=3)) == (2, 3)
+
+    monitor.new_connection()
+    assert monitor.observe(depth_event(first_id=100, final_id=100)) is None
+
+
+def test_sequence_monitor_does_not_infer_trade_id_gaps() -> None:
     monitor = SequenceContinuityMonitor()
     monitor.new_connection()
     assert monitor.observe(event(trade_id=1)) is None
-    assert monitor.observe(event(trade_id=3)) == (2, 3)
-
-    monitor.new_connection()
     assert monitor.observe(event(trade_id=100)) is None
 
 
