@@ -31,11 +31,38 @@ from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprin
 _runtime: ProspectiveCryptoIngestor | None = None
 _runtime_thread: threading.Thread | None = None
 _quality_thread: threading.Thread | None = None
+_heartbeat_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
 
 def _new_store() -> CryptoStore:
     return CryptoStore()
+
+
+def _heartbeat_loop() -> None:
+    store = _new_store()
+    while not _stop_event.is_set():
+        try:
+            stats = store.prospective_stats()
+            print(
+                "GORILA_CAPTURE_HEARTBEAT "
+                + json.dumps(
+                    {
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "stats": stats,
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "GORILA_CAPTURE_HEARTBEAT_ERROR "
+                + f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        _stop_event.wait(settings.heartbeat_interval_seconds)
 
 
 def _quality_loop() -> None:
@@ -75,7 +102,7 @@ def _quality_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread
+    global _runtime, _runtime_thread, _quality_thread, _heartbeat_thread
     _stop_event.clear()
 
     if settings.ingest_enabled:
@@ -95,6 +122,13 @@ async def lifespan(app: FastAPI):
         )
         _runtime_thread.start()
 
+        _heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            name="gorila-crypto-heartbeat",
+            daemon=True,
+        )
+        _heartbeat_thread.start()
+
         if settings.quality_monitor_enabled:
             _quality_thread = threading.Thread(
                 target=_quality_loop,
@@ -112,6 +146,8 @@ async def lifespan(app: FastAPI):
         _runtime_thread.join(timeout=5.0)
     if _quality_thread is not None:
         _quality_thread.join(timeout=5.0)
+    if _heartbeat_thread is not None:
+        _heartbeat_thread.join(timeout=5.0)
 
 
 app = FastAPI(
@@ -159,6 +195,7 @@ def health() -> dict[str, Any]:
         "prospective_capture": settings.ingest_enabled,
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
         "quality_monitor_alive": bool(_quality_thread and _quality_thread.is_alive()),
+        "heartbeat_alive": bool(_heartbeat_thread and _heartbeat_thread.is_alive()),
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
         "forecast": {
