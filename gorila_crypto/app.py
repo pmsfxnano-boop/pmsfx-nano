@@ -135,9 +135,8 @@ async def lifespan(app: FastAPI):
                     {
                         "reason": _capture_block_reason,
                         "provider": settings.provider,
-                        "provider": settings.provider,
-        "symbols": list(settings.symbols),
-        "capture_block_reason": _capture_block_reason,
+                        "symbols": list(settings.symbols),
+                        "capture_block_reason": _capture_block_reason,
                     },
                     sort_keys=True,
                 ),
@@ -205,7 +204,9 @@ def root() -> dict[str, Any]:
             else "CAPTURE_ENABLED" if settings.ingest_enabled else "READY"
         ),
         "runtime_isolated": True,
-        "prospective_capture": settings.ingest_enabled,
+        "provider": settings.provider,
+        "prospective_capture": settings.ingest_enabled and not _capture_block_reason,
+        "capture_block_reason": _capture_block_reason,
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
         "forecast_status": "BLOCKED_NO_VALIDATED_MODEL",
