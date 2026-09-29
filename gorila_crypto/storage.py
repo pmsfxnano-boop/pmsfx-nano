@@ -149,7 +149,6 @@ class CryptoStore:
     """Storage boundary that can only address the Crypto persistence namespace."""
 
     _schema_lock = threading.Lock()
-    _schema_ready = False
 
     def __init__(
         self,
@@ -171,6 +170,7 @@ class CryptoStore:
         ):
             raise ValueError("crypto_sqlite_path_matches_legacy_storage")
         self._pg = bool(self.database_url)
+        self._schema_ready = False
 
     @property
     def backend(self) -> str:
