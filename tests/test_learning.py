@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from gorila_argentum.learning import build_training_dataset, run_learning_cycle
 from gorila_argentum.storage import Store
+from gorila_argentum.canonical_data import reconcile_daily_symbol
 
 
 def _seed_prices(store):
@@ -15,9 +16,10 @@ def _seed_prices(store):
             "value": value,
             "event_time": (datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)).isoformat(),
             "received_time": "2026-09-26T00:00:00+00:00",
-            "source": "TEST",
+            "source": "BYMADATA/UNITTEST",
         })
     store.insert_observations(rows)
+    reconcile_daily_symbol(store, "GGAL", "close")
 
 
 def test_learning_cycle_candidate_is_persisted(tmp_path, monkeypatch):
