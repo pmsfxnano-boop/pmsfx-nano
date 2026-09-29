@@ -195,6 +195,9 @@ _PG_SCHEMA_INITIALIZED = False
 class Store:
     def __init__(self):
         self.pg = bool(os.getenv("DATABASE_URL"))
+        self.require_durable = os.getenv("GORILA_REQUIRE_DURABLE_STORAGE", "0").strip().lower() in {"1", "true", "yes"}
+        if self.require_durable and not self.pg:
+            raise RuntimeError("durable_storage_required")
         self.path = os.getenv("GORILA_SQLITE_PATH","/tmp/gorila_argentum.sqlite3")
         self.conn = None
 
