@@ -865,6 +865,7 @@ def persist_validation_report(
 
     fold_rows = []
     oos_rows = []
+    lineage_rows = []
     probability_offset = 0
     for fold_eval in report.folds:
         fold = fold_eval.fold
@@ -918,6 +919,15 @@ def persist_validation_report(
                     "realized_signed_return_bps": row.label.realized_signed_return_bps,
                     "net_return_bps": signed - cost,
                 }
+            lineage_rows.append(
+                {
+                    "run_id": run_id,
+                    "fold_id": fold.fold_id,
+                    "row_index": local_index,
+                    "feature_set_hash": row.snapshot.feature_set_hash,
+                    "source_event_ids": list(row.snapshot.source_event_ids),
+                }
+            )
             )
         probability_offset += len(fold.test_indices)
 
@@ -925,5 +935,6 @@ def persist_validation_report(
         "run_id": run_id,
         "fold_rows": store.save_validation_folds(fold_rows),
         "oos_rows": store.save_validation_oos(oos_rows),
+        "lineage_rows": store.save_validation_lineage(lineage_rows),
         "promotion_eligible": report.promotion_eligible,
     }
