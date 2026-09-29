@@ -64,6 +64,9 @@ class WalkForwardConfig:
     embargo_ms: int = 1000
     min_group_rows: int = 20
     min_fold_pass_fraction: float = 0.67
+    temporal_max_logloss_rel_increase: float = 0.10
+    temporal_max_brier_increase: float = 0.02
+    temporal_max_net_drop_bps: float = 2.0
     ridge_alpha: float = 1.0
     max_iterations: int = 100
     convergence_tol: float = 1e-8
@@ -82,6 +85,12 @@ class WalkForwardConfig:
             raise ValueError("min_group_rows must be positive")
         if not 0.5 <= self.min_fold_pass_fraction <= 1.0:
             raise ValueError("min_fold_pass_fraction must be in [0.5,1]")
+        if self.temporal_max_logloss_rel_increase < 0:
+            raise ValueError("temporal_max_logloss_rel_increase must be non-negative")
+        if self.temporal_max_brier_increase < 0:
+            raise ValueError("temporal_max_brier_increase must be non-negative")
+        if self.temporal_max_net_drop_bps < 0:
+            raise ValueError("temporal_max_net_drop_bps must be non-negative")
         if self.ridge_alpha < 0:
             raise ValueError("ridge_alpha must be non-negative")
         if self.max_iterations < 1:
@@ -173,12 +182,33 @@ class FoldEvaluation:
 
 
 @dataclass(frozen=True)
+class TemporalStabilityMetrics:
+    early_fold_count: int
+    late_fold_count: int
+    early_log_loss: float
+    late_log_loss: float
+    early_brier: float
+    late_brier: float
+    early_net_mean_bps: float
+    late_net_mean_bps: float
+    early_baseline_pass_fraction: float
+    late_baseline_pass_fraction: float
+    early_economic_positive_fraction: float
+    late_economic_positive_fraction: float
+    log_loss_relative_change: float
+    brier_change: float
+    net_drop_bps: float
+    passed: bool
+
+
+@dataclass(frozen=True)
 class ValidationReport:
     status: str
     dataset_rows: int
     folds: tuple[FoldEvaluation, ...]
     fold_baseline_pass_fraction: float
     fold_economic_positive_fraction: float
+    temporal_stability: TemporalStabilityMetrics
     oos_probabilities: tuple[float, ...]
     oos_labels: tuple[int, ...]
     oos_returns_bps: tuple[float, ...]
@@ -593,6 +623,88 @@ def stability_metrics(
     )
 
 
+def temporal_stability_metrics(
+    folds: Sequence[FoldEvaluation],
+    config: WalkForwardConfig,
+) -> TemporalStabilityMetrics:
+    if len(folds) < 2:
+        return TemporalStabilityMetrics(
+            early_fold_count=len(folds),
+            late_fold_count=0,
+            early_log_loss=float("nan"),
+            late_log_loss=float("nan"),
+            early_brier=float("nan"),
+            late_brier=float("nan"),
+            early_net_mean_bps=float("nan"),
+            late_net_mean_bps=float("nan"),
+            early_baseline_pass_fraction=0.0,
+            late_baseline_pass_fraction=0.0,
+            early_economic_positive_fraction=0.0,
+            late_economic_positive_fraction=0.0,
+            log_loss_relative_change=float("inf"),
+            brier_change=float("inf"),
+            net_drop_bps=float("inf"),
+            passed=False,
+        )
+
+    split = len(folds) // 2
+    early = folds[:split]
+    late = folds[split:]
+
+    def baseline_pass_fraction(items: Sequence[FoldEvaluation]) -> float:
+        return sum(
+            item.probabilistic.log_loss < item.baseline_fifty.log_loss
+            and item.probabilistic.brier < item.baseline_fifty.brier
+            and item.probabilistic.log_loss < item.baseline_prevalence.log_loss
+            and item.probabilistic.brier < item.baseline_prevalence.brier
+            for item in items
+        ) / len(items)
+
+    def economic_positive_fraction(items: Sequence[FoldEvaluation]) -> float:
+        return sum(item.economic.net_mean_bps > 0.0 for item in items) / len(items)
+
+    early_ll = sum(item.probabilistic.log_loss for item in early) / len(early)
+    late_ll = sum(item.probabilistic.log_loss for item in late) / len(late)
+    early_brier = sum(item.probabilistic.brier for item in early) / len(early)
+    late_brier = sum(item.probabilistic.brier for item in late) / len(late)
+    early_net = sum(item.economic.net_mean_bps for item in early) / len(early)
+    late_net = sum(item.economic.net_mean_bps for item in late) / len(late)
+
+    ll_rel = (late_ll - early_ll) / max(abs(early_ll), 1e-12)
+    brier_change = late_brier - early_brier
+    net_drop = early_net - late_net
+    early_base = baseline_pass_fraction(early)
+    late_base = baseline_pass_fraction(late)
+    early_econ = economic_positive_fraction(early)
+    late_econ = economic_positive_fraction(late)
+
+    passed = bool(
+        late_base >= config.min_fold_pass_fraction
+        and late_econ >= config.min_fold_pass_fraction
+        and ll_rel <= config.temporal_max_logloss_rel_increase
+        and brier_change <= config.temporal_max_brier_increase
+        and net_drop <= config.temporal_max_net_drop_bps
+    )
+    return TemporalStabilityMetrics(
+        early_fold_count=len(early),
+        late_fold_count=len(late),
+        early_log_loss=float(early_ll),
+        late_log_loss=float(late_ll),
+        early_brier=float(early_brier),
+        late_brier=float(late_brier),
+        early_net_mean_bps=float(early_net),
+        late_net_mean_bps=float(late_net),
+        early_baseline_pass_fraction=float(early_base),
+        late_baseline_pass_fraction=float(late_base),
+        early_economic_positive_fraction=float(early_econ),
+        late_economic_positive_fraction=float(late_econ),
+        log_loss_relative_change=float(ll_rel),
+        brier_change=float(brier_change),
+        net_drop_bps=float(net_drop),
+        passed=passed,
+    )
+
+
 def run_walk_forward_validation(
     dataset: Sequence[ForecastDatasetRow],
     feature_names: Sequence[str],
@@ -616,6 +728,24 @@ def run_walk_forward_validation(
             folds=(),
             fold_baseline_pass_fraction=0.0,
             fold_economic_positive_fraction=0.0,
+            temporal_stability=TemporalStabilityMetrics(
+                early_fold_count=0,
+                late_fold_count=0,
+                early_log_loss=float("nan"),
+                late_log_loss=float("nan"),
+                early_brier=float("nan"),
+                late_brier=float("nan"),
+                early_net_mean_bps=float("nan"),
+                late_net_mean_bps=float("nan"),
+                early_baseline_pass_fraction=0.0,
+                late_baseline_pass_fraction=0.0,
+                early_economic_positive_fraction=0.0,
+                late_economic_positive_fraction=0.0,
+                log_loss_relative_change=float("nan"),
+                brier_change=float("nan"),
+                net_drop_bps=float("nan"),
+                passed=False,
+            ),
             oos_probabilities=(),
             oos_labels=(),
             oos_returns_bps=(),
@@ -688,6 +818,7 @@ def run_walk_forward_validation(
             slippage_multiplier=scenario.slippage_multiplier,
         )
 
+    temporal = temporal_stability_metrics(fold_evaluations, config)
     aggregate = probabilistic_metrics(oos_labels, oos_probabilities)
     aggregate_baseline = baseline_constant(oos_labels, 0.5)
     prevalence_values = [
@@ -746,6 +877,7 @@ def run_walk_forward_validation(
         and stress_pass
         and group_sample_pass
         and fold_consistency_pass
+        and temporal.passed
     )
     return ValidationReport(
         status="OOS_EVALUATED",
@@ -753,6 +885,7 @@ def run_walk_forward_validation(
         folds=tuple(fold_evaluations),
         fold_baseline_pass_fraction=fold_baseline_pass_fraction,
         fold_economic_positive_fraction=fold_economic_positive_fraction,
+        temporal_stability=temporal,
         oos_probabilities=tuple(oos_probabilities),
         oos_labels=tuple(oos_labels),
         oos_returns_bps=tuple(oos_returns),
@@ -845,6 +978,7 @@ def persist_validation_report(
             "economic": asdict(aggregate_economic) if aggregate_economic else {},
             "fold_baseline_pass_fraction": report.fold_baseline_pass_fraction,
             "fold_economic_positive_fraction": report.fold_economic_positive_fraction,
+            "temporal_stability": asdict(report.temporal_stability),
         },
         "stability": {
             "by_symbol": {
