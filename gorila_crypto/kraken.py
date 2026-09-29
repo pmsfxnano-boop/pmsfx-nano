@@ -170,21 +170,28 @@ def _book_event(
     payload["_provider"] = "kraken"
     payload["_event_time_semantics"] = "PROVIDER_TIMESTAMP"
     payload["_message_type"] = message_type
+    payload["_raw_book_preserved"] = True
 
+    derived_l1: dict[str, dict[str, str]] = {}
     if bids:
         best_bid = bids[0]
         if isinstance(best_bid, Mapping):
-            payload["b"] = _number(best_bid.get("price"), "bid.price")
-            payload["B"] = _number(best_bid.get("qty"), "bid.qty")
+            derived_l1["bid"] = {
+                "price": _number(best_bid.get("price"), "bid.price"),
+                "qty": _number(best_bid.get("qty"), "bid.qty"),
+            }
     if asks:
         best_ask = asks[0]
         if isinstance(best_ask, Mapping):
-            payload["a"] = _number(best_ask.get("price"), "ask.price")
-            payload["A"] = _number(best_ask.get("qty"), "ask.qty")
+            derived_l1["ask"] = {
+                "price": _number(best_ask.get("price"), "ask.price"),
+                "qty": _number(best_ask.get("qty"), "ask.qty"),
+            }
+    payload["_derived_l1"] = derived_l1
 
     return NormalizedMarketEvent(
         symbol=symbol,
-        event_type="bookTicker",
+        event_type="bookUpdate",
         event_time=event_time,
         received_time=received_time,
         provider_time=event_time,
@@ -194,7 +201,7 @@ def _book_event(
         sequence_end=None,
         sequence_kind="checksum" if row.get("checksum") is not None else None,
         receive_time_ns=receive_ns,
-        quality="OK",
+        quality="INTEGRITY_UNVERIFIED",
     )
 
 
