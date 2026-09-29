@@ -1061,6 +1061,7 @@ def gorila_root():
 def build_identity() -> dict[str, Any]:
     """Expose immutable deployment identity for production E2E verification."""
     return {
+        "schema_version": 1,
         "render": bool(os.getenv("RENDER")),
         "commit": os.getenv("RENDER_GIT_COMMIT"),
         "branch": os.getenv("RENDER_GIT_BRANCH"),
