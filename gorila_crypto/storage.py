@@ -1521,6 +1521,79 @@ class CryptoStore:
         finally:
             conn.close()
 
+    def prospective_stats(self) -> dict[str, Any]:
+        self.init()
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT symbol,event_type,COUNT(*) AS rows,
+                           MIN(event_time) AS first_event_time,
+                           MAX(event_time) AS last_event_time,
+                           MIN(received_time) AS first_received_time,
+                           MAX(received_time) AS last_received_time
+                        FROM crypto_events
+                        GROUP BY symbol,event_type
+                        ORDER BY symbol,event_type"""
+                    )
+                    counts = [
+                        {
+                            "symbol": row[0],
+                            "event_type": row[1],
+                            "rows": int(row[2]),
+                            "first_event_time": row[3],
+                            "last_event_time": row[4],
+                            "first_received_time": row[5],
+                            "last_received_time": row[6],
+                        }
+                        for row in cur.fetchall()
+                    ]
+                    cur.execute("SELECT COUNT(*) FROM crypto_data_gaps")
+                    gap_count = int(cur.fetchone()[0])
+                    cur.execute(
+                        "SELECT status,created_at,result FROM crypto_runtime_runs "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    )
+                    runtime_row = cur.fetchone()
+            else:
+                counts = [
+                    dict(row)
+                    for row in conn.execute(
+                        """SELECT symbol,event_type,COUNT(*) AS rows,
+                           MIN(event_time) AS first_event_time,
+                           MAX(event_time) AS last_event_time,
+                           MIN(received_time) AS first_received_time,
+                           MAX(received_time) AS last_received_time
+                        FROM crypto_events
+                        GROUP BY symbol,event_type
+                        ORDER BY symbol,event_type"""
+                    ).fetchall()
+                ]
+                gap_count = int(
+                    conn.execute("SELECT COUNT(*) FROM crypto_data_gaps").fetchone()[0]
+                )
+                runtime_row = conn.execute(
+                    "SELECT status,created_at,result FROM crypto_runtime_runs "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+
+            runtime = None
+            if runtime_row is not None:
+                runtime = {
+                    "status": runtime_row[0],
+                    "created_at": runtime_row[1],
+                    "result": json.loads(runtime_row[2] or "{}"),
+                }
+            return {
+                "backend": self.backend,
+                "event_counts": counts,
+                "gap_count": gap_count,
+                "runtime": runtime,
+            }
+        finally:
+            conn.close()
+
     def health(self) -> list[dict[str, Any]]:
         self.init()
         conn = self.connect()
