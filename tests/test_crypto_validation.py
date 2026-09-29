@@ -169,6 +169,7 @@ def test_full_walk_forward_validation_stays_research_only() -> None:
     assert report.placebo_p_value is not None
     assert report.fold_baseline_pass_fraction >= 0.67
     assert report.fold_economic_positive_fraction >= 0.67
+    assert report.temporal_stability.passed is True
     assert "double_costs" in report.stress_results
     assert report.promotion_eligible is True
 
@@ -321,3 +322,12 @@ def test_fold_consistency_threshold_rejects_inconsistent_validation_configuratio
         WalkForwardConfig(min_fold_pass_fraction=0.49).validate()
     with pytest.raises(ValueError):
         WalkForwardConfig(min_fold_pass_fraction=1.01).validate()
+
+
+def test_temporal_degradation_configuration_is_pre_registered() -> None:
+    with pytest.raises(ValueError):
+        WalkForwardConfig(temporal_max_logloss_rel_increase=-0.01).validate()
+    with pytest.raises(ValueError):
+        WalkForwardConfig(temporal_max_brier_increase=-0.01).validate()
+    with pytest.raises(ValueError):
+        WalkForwardConfig(temporal_max_net_drop_bps=-0.01).validate()
