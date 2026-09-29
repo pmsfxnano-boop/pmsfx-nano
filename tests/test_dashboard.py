@@ -118,3 +118,13 @@ def test_source_health_ui_hides_retired_and_secondary_vendor_rows():
     visible = _visible_source_health(rows)
 
     assert [row["source"] for row in visible] == ["BYMADATA/BMA/historical"]
+
+
+def test_terminal_telemetry_is_collapsed_into_diagnostics_layer():
+    from gorila_argentum.dashboard_terminal import HTML as TERMINAL_HTML
+    html = TERMINAL_HTML.body.decode("utf-8")
+    assert '<details class="diagnostics">' in html
+    assert '<summary>' in html
+    assert 'SYSTEM DIAGNOSTICS' in html
+    assert 'FULL DIAGNOSTICS AVAILABLE ABOVE' in html
+    assert 'id="diagnosticSummary"' in html
