@@ -65,7 +65,6 @@ def run_forecast_shadow(
     ):
         try:
             snapshot = build_detection_features(
-                leader,
                 target,
                 trigger,
                 leader_return_bps,
