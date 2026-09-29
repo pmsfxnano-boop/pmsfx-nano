@@ -10,6 +10,7 @@ from gorila_crypto.forecast import (
     DetectionFeatureSnapshot,
     ForecastTargetSpec,
 )
+from gorila_crypto.lead_lag import LeadLagConfig
 from gorila_crypto.validation import (
     EconomicPolicySpec,
     ForecastDatasetRow,
@@ -182,7 +183,7 @@ def test_build_forecast_dataset_returns_empty_without_both_series() -> None:
         data,
         "BTCUSDT",
         "ETHUSDT",
-        __import__("gorila_crypto.lead_lag", fromlist=["LeadLagConfig"]).LeadLagConfig(),
+        LeadLagConfig(),
         ForecastTargetSpec(horizon_ms=1000),
     )
     assert dataset == ()
