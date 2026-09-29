@@ -216,7 +216,9 @@ def build_signal(
     shadow_acc = _finite((shadow_summary or {}).get("accuracy"))
     shadow_support = 0.5 if shadow_acc is None else _clamp((shadow_acc - 0.50) / 0.15)
 
-    drift_status = str((drift or {}).get("status") or "UNKNOWN").upper()
+    drift_status = str((drift or {}).get("status") or "UNAVAILABLE").upper()
+    if drift_status in {"UNKNOWN", "NONE", "NULL", ""}:
+        drift_status = "UNAVAILABLE"
     drift_psi = _finite((drift or {}).get("psi"))
     drift_penalty = 0.0
     if drift_status == "ALERT":
@@ -244,13 +246,18 @@ def build_signal(
     if not validated:
         risk_flags.append("MODEL_NOT_VALIDATED")
         reasons.append("research model has not cleared its OOS gate")
-    if freshness < 0.7:
+    # Freshness is only meaningful when a forecast/evidence snapshot exists.
+    # A closed market with no forecast is not the same thing as stale data.
+    if state.get("forecast") is not None and freshness < 0.7:
         risk_flags.append("DATA_NOT_FRESH")
     if brier_skill is not None and brier_skill <= 0:
         risk_flags.append("NEGATIVE_BRIER_SKILL")
     if drift_status == "ALERT":
         risk_flags.append("DRIFT_ALERT")
         reasons.append("distribution drift is above the operational threshold")
+    elif drift_status == "UNAVAILABLE":
+        risk_flags.append("DRIFT_UNAVAILABLE")
+        reasons.append("no current stationary drift snapshot is bound to the live research signal")
     if momentum["volatility"] is None:
         risk_flags.append("LIMITED_PRICE_HISTORY")
 
@@ -261,7 +268,7 @@ def build_signal(
     actionable = (
         validated
         and freshness >= 0.7
-        and drift_status not in {"ALERT", "HALTED"}
+        and drift_status in {"OK", "WARN", "WATCH"}
         and signal_score >= threshold
         and raw_direction != "NEUTRAL"
         and confidence is not None
