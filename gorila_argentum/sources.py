@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from zoneinfo import ZoneInfo
 from .config import settings
+from .market_freshness import assess_observation
 
 def now(): return datetime.now(timezone.utc)
 def iso(dt): return dt.astimezone(timezone.utc).isoformat()
@@ -362,13 +363,15 @@ def byma_historical_daily(symbol: str):
 def byma_live_panel():
     """Fetch the BYMADATA leading-equity panel in one request.
 
-    Returns one latest observation per core ticker and respects the public feed's
-    settlement convention. The caller should rate-limit repeated requests.
+    Only an actual trade is admitted to the live cache. Closing/settlement
+    prices are not silently promoted to live prices. The observation timestamp
+    is carried through so downstream code can distinguish transport health from
+    market-event freshness.
     """
     source="BYMADATA/leading-equity"
     t0=time.perf_counter()
     received=now()
-    url=f"{settings.byma_open_access_base_url.rstrip('/')}/leading-equity"
+    url=f"{settings.byma_open_access_base_url.rstrip('/')}\/leading-equity"
     try:
         with _byma_client() as c:
             response=c.post(url, json={"T1": True, "page_size": 100})
@@ -382,39 +385,54 @@ def byma_live_panel():
             symbol=str(item.get("symbol") or "").upper()
             if symbol not in core:
                 continue
+            # A closing/settlement price is historical context, not proof of a
+            # current trade. Never place it in the live cache.
             price=item.get("trade")
-            if price is None or float(price) <= 0:
-                price=item.get("closingPrice") or item.get("settlementPrice")
-            if price is None or float(price) <= 0:
+            if price is None:
+                continue
+            try:
+                price=float(price)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
                 continue
             trade_hour=str(item.get("tradeHour") or "").strip()
+            if not trade_hour:
+                continue
             try:
                 hh,mm,ss=[int(x) for x in trade_hour.split(":")]
-                event_local=datetime(local_now.year,local_now.month,local_now.day,hh,mm,ss,tzinfo=local_now.tzinfo)
+                event_local=datetime(
+                    local_now.year,local_now.month,local_now.day,
+                    hh,mm,ss,tzinfo=local_now.tzinfo
+                )
                 event_time=event_local.astimezone(timezone.utc).isoformat()
-            except Exception:
-                event_time=iso(received)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            freshness=assess_observation(event_time, iso(received), received)
             rows.append({
                 "symbol":symbol,
                 "field":"close_1m",
-                "value":float(price),
+                "value":price,
                 "event_time":event_time,
                 "received_time":iso(received),
                 "source":source,
                 "latency_ms":(time.perf_counter()-t0)*1000,
+                "quality":freshness["status"],
                 "metadata":{
                     "provider":"BYMA",
                     "endpoint":"bymadata_free/leading-equity",
                     "settlement":"24HS",
+                    "quote_kind":"TRADE",
                     "trade_hour":trade_hour,
                     "closing_price":item.get("closingPrice"),
                     "previous_closing_price":item.get("previousClosingPrice"),
                     "volume":item.get("volume"),
                     "vwap":item.get("vwap"),
+                    "freshness":freshness,
                 },
             })
         if not rows:
-            raise RuntimeError("BYMA_LIVE_NO_CORE_ROWS")
+            raise RuntimeError("BYMA_LIVE_NO_CORE_TRADE_ROWS")
         return SourceResult(source,rows,latency_ms=(time.perf_counter()-t0)*1000)
     except Exception as e:
         return SourceResult(source,error=f"{type(e).__name__}: {e}",latency_ms=(time.perf_counter()-t0)*1000)
