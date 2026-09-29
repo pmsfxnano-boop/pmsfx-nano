@@ -16,6 +16,7 @@ on:
       - "tests/test_crypto_forecast.py"
       - "tests/test_crypto_forecast_shadow.py"
       - "tests/test_crypto_validation.py"
+      - "tests/test_crypto_runtime.py"
       - ".github/workflows/gorila-crypto-cleanroom.yml"
   pull_request:
     paths:
@@ -65,3 +66,6 @@ jobs:
 
       - name: Run A8 validation tests
         run: pytest -q tests/test_crypto_validation.py
+
+      - name: Run A9 prospective runtime tests
+        run: pytest -q tests/test_crypto_runtime.py
