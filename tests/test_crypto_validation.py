@@ -121,7 +121,8 @@ def test_economic_metrics_apply_cost_and_slippage() -> None:
         rows,
         [0.9, 0.1, 0.9],
         EconomicPolicySpec(
-            probability_threshold=0.5,
+            long_threshold=0.55,
+            short_threshold=0.45,
             round_trip_cost_bps=1.0,
             round_trip_slippage_bps=1.0,
         ),
@@ -144,7 +145,8 @@ def test_full_walk_forward_validation_stays_research_only() -> None:
             ridge_alpha=0.1,
         ),
         EconomicPolicySpec(
-            probability_threshold=0.5,
+            long_threshold=0.55,
+            short_threshold=0.45,
             round_trip_cost_bps=0.25,
             round_trip_slippage_bps=0.25,
         ),
