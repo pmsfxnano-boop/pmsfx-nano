@@ -1,0 +1,31 @@
+databases:
+  - name: pmsfx-nano-db
+    plan: free
+    region: oregon
+
+services:
+  - type: web
+    name: gorila-crypto-cleanroom-capture
+    runtime: python
+    region: oregon
+    plan: free
+    branch: gorila-crypto-cleanroom
+    buildCommand: pip install -r requirements-gorila.txt
+    startCommand: uvicorn gorila_crypto.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/crypto/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pmsfx-nano-db
+          property: connectionString
+      - key: GORILA_CRYPTO_PROVIDER
+        value: kraken
+      - key: GORILA_CRYPTO_SYMBOLS
+        value: BTC/USD,ETH/USD,SOL/USD
+      - key: GORILA_CRYPTO_STREAMS
+        value: trade,bookTicker
+      - key: GORILA_CRYPTO_INGEST_ENABLED
+        value: "true"
+      - key: GORILA_CRYPTO_QUALITY_MONITOR_ENABLED
+        value: "true"
