@@ -47,86 +47,21 @@ jobs:
           python -m pip install -r requirements-gorila.txt pytest
       - name: Compile cleanroom modules
         run: python -m compileall -q gorila_core gorila_crypto
-      - name: Architecture tests
-        run: pytest -q tests/test_crypto_cleanroom_architecture.py
+      - name: Run foundational cleanroom tests
+        run: >-
+          pytest -q
+          tests/test_crypto_cleanroom_architecture.py
+          tests/test_crypto_storage_isolation.py
+          tests/test_binance_adapter.py
+          tests/test_crypto_event_replay.py
+          tests/test_crypto_replay_manifest.py
+          tests/test_crypto_lead_lag.py
 
-      - name: Storage isolation tests
-        run: pytest -q tests/test_crypto_storage_isolation.py
-
-      - name: Binance 1 test_stream_names_are_deterministic_and_lowercase
-        run: pytest -q tests/test_binance_adapter.py::test_stream_names_are_deterministic_and_lowercase
-
-      - name: Binance 2 test_trade_normalization_preserves_event_and_trade_time
-        run: pytest -q tests/test_binance_adapter.py::test_trade_normalization_preserves_event_and_trade_time
-
-      - name: Binance 3 test_combined_message_is_unwrapped_and_book_ticker_is_not_falsely_dated
-        run: pytest -q tests/test_binance_adapter.py::test_combined_message_is_unwrapped_and_book_ticker_is_not_falsely_dated
-
-      - name: Binance 4 test_subscription_ack_is_not_market_event
-        run: pytest -q tests/test_binance_adapter.py::test_subscription_ack_is_not_market_event
-
-      - name: Binance 5 test_depth_update_applies_levels_and_removes_zero_quantity
-        run: pytest -q tests/test_binance_adapter.py::test_depth_update_applies_levels_and_removes_zero_quantity
-
-      - name: Binance 6 test_stale_depth_update_is_ignored
-        run: pytest -q tests/test_binance_adapter.py::test_stale_depth_update_is_ignored
-
-      - name: Binance 7 test_depth_gap_is_hard_failure
-        run: pytest -q tests/test_binance_adapter.py::test_depth_gap_is_hard_failure
-
-      - name: Binance 8 test_depth_bootstrap_accepts_only_the_first_bridging_event
-        run: pytest -q tests/test_binance_adapter.py::test_depth_bootstrap_accepts_only_the_first_bridging_event
-
-      - name: Binance 9 test_depth_bootstrap_rejects_a_missing_bridge_instead_of_skipping
-        run: pytest -q tests/test_binance_adapter.py::test_depth_bootstrap_rejects_a_missing_bridge_instead_of_skipping
-
-      - name: Binance 10 test_invalid_depth_shape_is_rejected
-        run: pytest -q tests/test_binance_adapter.py::test_invalid_depth_shape_is_rejected
-
-      - name: Binance 11 test_order_book_coordinator_resyncs_after_sequence_gap
-        run: pytest -q tests/test_binance_adapter.py::test_order_book_coordinator_resyncs_after_sequence_gap
-
-      - name: Binance 12 test_order_book_coordinator_requires_a_new_snapshot_after_gap
-        run: pytest -q tests/test_binance_adapter.py::test_order_book_coordinator_requires_a_new_snapshot_after_gap
-
-      - name: Event replay tests
-        run: pytest -q tests/test_crypto_event_replay.py
-
-      - name: Replay manifest tests
-        run: pytest -q tests/test_crypto_replay_manifest.py
-
-      - name: Lead lag 1 test_build_price_points_reads_only_trade_payloads
-        run: pytest -q tests/test_crypto_lead_lag.py::test_build_price_points_reads_only_trade_payloads
-
-      - name: Lead lag 2 test_lead_lag_uses_received_time_for_information_causality
-        run: pytest -q tests/test_crypto_lead_lag.py::test_lead_lag_uses_received_time_for_information_causality
-
-      - name: Lead lag 3 test_late_received_target_cannot_be_used_as_pit_baseline
-        run: pytest -q tests/test_crypto_lead_lag.py::test_late_received_target_cannot_be_used_as_pit_baseline
-
-      - name: Lead lag 4 test_opportunity_clock_tracks_reaction_convergence_and_excursions
-        run: pytest -q tests/test_crypto_lead_lag.py::test_opportunity_clock_tracks_reaction_convergence_and_excursions
-
-      - name: Lead lag 5 test_opportunity_summary_is_descriptive_shadow_only
-        run: pytest -q tests/test_crypto_lead_lag.py::test_opportunity_summary_is_descriptive_shadow_only
-
-      - name: Lead lag 6 test_storage_persists_a6_shadow_artifacts
-        run: pytest -q tests/test_crypto_lead_lag.py::test_storage_persists_a6_shadow_artifacts
-
-      - name: Lead lag 7 test_pairwise_shadow_scan_never_emits_self_pairs
-        run: pytest -q tests/test_crypto_lead_lag.py::test_pairwise_shadow_scan_never_emits_self_pairs
-
-      - name: Lead lag 8 test_shadow_analysis_requires_ingest_order_pit_replay
-        run: pytest -q tests/test_crypto_lead_lag.py::test_shadow_analysis_requires_ingest_order_pit_replay
-
-      - name: Lead lag 9 test_shadow_analysis_binds_results_to_replay_fingerprint
-        run: pytest -q tests/test_crypto_lead_lag.py::test_shadow_analysis_binds_results_to_replay_fingerprint
-
-      - name: Run A7 forecast contract tests
-        run: pytest -q tests/test_crypto_forecast.py
-
-      - name: Run A7 forecast shadow tests
-        run: pytest -q tests/test_crypto_forecast_shadow.py
+      - name: Run A7 forecast tests
+        run: >-
+          pytest -q
+          tests/test_crypto_forecast.py
+          tests/test_crypto_forecast_shadow.py
 
       - name: Run A8 validation tests
         run: pytest -q tests/test_crypto_validation.py
