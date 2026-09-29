@@ -210,6 +210,15 @@ class ProspectiveCryptoIngestor:
             rows_last_batch=1,
             error=None,
         )
+        # Keep the legacy storage column stable while preserving the true
+        # transport latency in the event's provenance metadata.
+        result_metadata = getattr(result, "metadata", None)
+        if isinstance(result_metadata, dict):
+            result_metadata.update({
+                "event_age_seconds": assessment["event_age_seconds"],
+                "received_age_seconds": assessment["received_age_seconds"],
+                "transport_latency_seconds": assessment["transport_latency_seconds"],
+            })
         self.last_event = event
 
     def stop(self) -> None:
