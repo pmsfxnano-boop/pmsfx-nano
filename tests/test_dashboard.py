@@ -194,3 +194,34 @@ def test_gorila_chart_marks_intraday_freshness(monkeypatch):
 
     assert payload["freshness"]["status"] == "LIVE"
     assert payload["freshness"]["event_age_seconds"] <= 1
+
+def test_signal_without_forecast_cannot_expose_legacy_probability():
+    from gorila_argentum.signal_engine import build_signal
+
+    signal = build_signal(
+        symbol="GGAL",
+        state={
+            "forecast": None,
+            "p_up": 0.524,
+            "evaluation": {},
+            "engine_freshness": {"age_seconds": None},
+            "market_freshness": {"age_seconds": None},
+        },
+    )
+
+    assert signal["status"] == "NO_DATA"
+    assert signal["probability"]["up"] is None
+    assert signal["probability"]["down"] is None
+    assert signal["probability"]["edge"] is None
+    assert signal["probability"]["confidence"] is None
+
+
+def test_terminal_does_not_present_v2_relative_probability_as_primary_probability():
+    from gorila_argentum.dashboard_terminal import HTML as TERMINAL_HTML
+
+    html = TERMINAL_HTML.body.decode('utf-8')
+    assert "V2 RELATIVE EDGE" in html
+    assert "V2 P(RES UP)" not in html
+    assert "primaryForecastAvailable" in html
+    assert "P(UP) — · P(DOWN) —" in html
+
