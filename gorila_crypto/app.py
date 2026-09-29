@@ -19,6 +19,9 @@ from gorila_crypto.config import settings
 app = FastAPI(
     title="Gorila Crypto Cleanroom",
     version="0.1.0-cleanroom",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 
