@@ -7,6 +7,7 @@ are not modified by this module.
 
 from __future__ import annotations
 
+import json
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -126,6 +127,8 @@ app = FastAPI(
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
     stats = _new_store().prospective_stats() if settings.ingest_enabled else None
+    if stats is not None:
+        print("GORILA_PROSPECTIVE_STATS " + json.dumps(stats, sort_keys=True, default=str), flush=True)
     return {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -139,6 +142,11 @@ def root() -> dict[str, Any]:
         "execution": False,
         "ledger_stats": stats,
     }
+
+
+@app.head("/", include_in_schema=False)
+def root_head() -> None:
+    return None
 
 
 @app.get("/api/crypto/health")
