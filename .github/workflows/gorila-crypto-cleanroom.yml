@@ -21,6 +21,13 @@ on:
       - "gorila_core/**"
       - "gorila_crypto/**"
       - "tests/test_crypto_cleanroom_architecture.py"
+      - "tests/test_crypto_storage_isolation.py"
+      - "tests/test_binance_adapter.py"
+      - "tests/test_crypto_event_replay.py"
+      - "tests/test_crypto_replay_manifest.py"
+      - "tests/test_crypto_lead_lag.py"
+      - "tests/test_crypto_forecast.py"
+      - "tests/test_crypto_forecast_shadow.py"
       - ".github/workflows/gorila-crypto-cleanroom.yml"
 
 jobs:
