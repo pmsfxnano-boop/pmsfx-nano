@@ -229,3 +229,27 @@ def score_forecast(
         feature_set_hash=snapshot.feature_set_hash,
     )
 
+
+
+def deterministic_forecast_id(
+    *,
+    replay_fingerprint: str,
+    snapshot: DetectionFeatureSnapshot,
+    target: ForecastTargetSpec,
+    model: ForecastModelSpec,
+) -> str:
+    target.validate()
+    identity = {
+        "replay_fingerprint": replay_fingerprint,
+        "feature_set_hash": snapshot.feature_set_hash,
+        "leader_event_id": snapshot.leader_event_id,
+        "model_id": model.model_id,
+        "model_version": model.version,
+        "target_symbol": snapshot.target_symbol,
+        "horizon_ms": target.horizon_ms,
+        "target_kind": target.kind,
+        "semantics": FORECAST_SEMANTICS,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:32]
