@@ -46,7 +46,7 @@ Reported metrics:
 ## Economic evaluation
 
 A separate, fixed policy layer converts probability into a signed decision.
-The decision threshold is fixed before evaluation and is not optimized on OOS.
+The long and short probability thresholds are fixed before evaluation. Probabilities between them abstain; neither threshold is optimized on OOS.
 
 Every economic result explicitly includes:
 - gross signed return;
@@ -54,7 +54,8 @@ Every economic result explicitly includes:
 - slippage;
 - net mean bps;
 - cumulative net bps;
-- traded fraction.
+- traded fraction;
+- null synthetic benchmark behavior;
 
 Stress scenarios can apply return haircuts and independent cost/slippage
 multipliers. A result that survives only under optimistic costs is not considered
@@ -81,7 +82,9 @@ A8 promotion eligibility requires, at minimum:
 - improvement over fixed baselines in both Brier and log loss;
 - positive net economics after costs/slippage;
 - placebo p-value at the configured threshold;
-- positive net economics under every declared stress scenario.
+- positive net economics under every declared stress scenario;
+- no-promotion behavior on a deterministic null benchmark;
+- sufficient observations for every evaluated symbol and horizon.
 
 This gate is a research gate only. It does not itself flip the production
 `ForecastModelSpec` admissibility flags.
