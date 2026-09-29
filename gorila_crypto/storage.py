@@ -788,7 +788,7 @@ class CryptoStore:
                              convergence_information_lag_ms,max_favorable_excursion_bps,
                              max_adverse_excursion_bps,status,metadata)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                                    %s,%s,%s,%s,%s,%s,%s,%s)
+                                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                             ON CONFLICT(opportunity_id) DO NOTHING""",
                             values,
                         )
@@ -806,7 +806,7 @@ class CryptoStore:
                          first_reaction_information_lag_ms,convergence_market_lag_ms,
                          convergence_information_lag_ms,max_favorable_excursion_bps,
                          max_adverse_excursion_bps,status,metadata)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         values,
                     )
                     inserted += max(cur.rowcount, 0)
