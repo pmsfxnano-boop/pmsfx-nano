@@ -50,6 +50,27 @@ jobs:
           print("GORILA_HEALTH_PASS", json.dumps(d, indent=2, sort_keys=True))
           PY
 
+      - name: Verify deployed commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com"
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 30 \
+            "$URL/api/gorila/build" -o /tmp/build.json
+          cat /tmp/build.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          d=json.loads(Path("/tmp/build.json").read_text())
+          expected=os.environ["GITHUB_SHA"]
+          assert d["render"] is True, d
+          assert d["commit"] == expected, {"expected": expected, "actual": d.get("commit"), "build": d}
+          assert d.get("branch") == "gorila-argentum-v0-hardening", d
+          assert d.get("repo") == "pmsfxnano-boop/pmsfx-nano", d
+          print("GORILA_DEPLOY_IDENTITY_PASS", json.dumps(d, indent=2, sort_keys=True))
+          PY
+
       - name: Verify validated cross-sectional predictor
         shell: bash
         run: |
