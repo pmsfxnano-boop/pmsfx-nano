@@ -94,3 +94,13 @@ def test_crypto_storage_ignores_legacy_database_env(
     store = CryptoStore(sqlite_path=":memory:")
     assert store.backend == "sqlite"
     assert store.database_url == ""
+
+
+def test_crypto_storage_rejects_legacy_sqlite_path_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    legacy_path = tmp_path / "legacy.sqlite3"
+    monkeypatch.setenv("GORILA_SQLITE_PATH", str(legacy_path))
+    with pytest.raises(ValueError, match="crypto_sqlite_path_matches_legacy_storage"):
+        CryptoStore(sqlite_path=str(legacy_path))
