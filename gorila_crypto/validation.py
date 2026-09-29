@@ -63,6 +63,7 @@ class WalkForwardConfig:
     purge_ms: int = 1000
     embargo_ms: int = 1000
     min_group_rows: int = 20
+    min_fold_pass_fraction: float = 0.67
     ridge_alpha: float = 1.0
     max_iterations: int = 100
     convergence_tol: float = 1e-8
@@ -79,6 +80,8 @@ class WalkForwardConfig:
             raise ValueError("purge/embargo must be non-negative")
         if self.min_group_rows < 1:
             raise ValueError("min_group_rows must be positive")
+        if not 0.5 <= self.min_fold_pass_fraction <= 1.0:
+            raise ValueError("min_fold_pass_fraction must be in [0.5,1]")
         if self.ridge_alpha < 0:
             raise ValueError("ridge_alpha must be non-negative")
         if self.max_iterations < 1:
@@ -174,6 +177,8 @@ class ValidationReport:
     status: str
     dataset_rows: int
     folds: tuple[FoldEvaluation, ...]
+    fold_baseline_pass_fraction: float
+    fold_economic_positive_fraction: float
     oos_probabilities: tuple[float, ...]
     oos_labels: tuple[int, ...]
     oos_returns_bps: tuple[float, ...]
@@ -609,6 +614,8 @@ def run_walk_forward_validation(
             status="INSUFFICIENT_OOS_DATA",
             dataset_rows=len(dataset),
             folds=(),
+            fold_baseline_pass_fraction=0.0,
+            fold_economic_positive_fraction=0.0,
             oos_probabilities=(),
             oos_labels=(),
             oos_returns_bps=(),
