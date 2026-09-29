@@ -11,6 +11,7 @@ from gorila_crypto.lead_lag import (
     build_opportunity_clock,
     build_price_points,
     measure_lead_lag,
+    run_lead_lag_shadow,
     summarize_opportunity_clock,
 )
 from gorila_crypto.storage import CryptoStore
@@ -179,3 +180,41 @@ def test_storage_persists_a6_shadow_artifacts(tmp_path) -> None:
         'status': 'CONVERGED',
     }
     assert store.save_opportunity_clocks([opportunity]) == 1
+
+
+def test_pairwise_shadow_scan_never_emits_self_pairs() -> None:
+    leader = [
+        point(1, "BTCUSDT", 0, 0, 100.0),
+        point(2, "BTCUSDT", 1000, 1000, 100.06),
+    ]
+    target = [
+        point(10, "ETHUSDT", 0, 0, 200.0),
+        point(11, "ETHUSDT", 2000, 2000, 200.08),
+    ]
+    rows = []
+    for p in [leader[0], leader[1], target[0], target[1]]:
+        rows.append(
+            {
+                "event_id": p.event_id,
+                "ledger_seq": p.ledger_seq,
+                "symbol": p.symbol,
+                "event_type": "trade",
+                "event_time": p.event_time.isoformat(),
+                "received_time": p.received_time.isoformat(),
+                "payload": {"p": str(p.price), "q": "1"},
+            }
+        )
+
+    scan = run_lead_lag_shadow(
+        rows,
+        "fingerprint",
+        LeadLagConfig(
+            shock_min_bps=5.0,
+            reaction_threshold_bps=1.0,
+            convergence_fraction=0.5,
+        ),
+        symbols=("BTCUSDT", "ETHUSDT"),
+    )
+    assert scan.symbols == ("BTCUSDT", "ETHUSDT")
+    assert scan.opportunity_count >= 1
+    assert all(s.leader_symbol != s.target_symbol for s in scan.summaries)
