@@ -9,6 +9,7 @@ explicit costs/slippage. It never marks a model as production-admissible.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -737,7 +738,7 @@ def validation_run_id(
         "economic_policy": asdict(policy),
     }
     return hashlib.sha256(
-        repr(sorted(identity.items(), key=lambda item: item[0])).encode("utf-8")
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:32]
 
 
