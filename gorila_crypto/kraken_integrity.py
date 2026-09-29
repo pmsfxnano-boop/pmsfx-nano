@@ -85,6 +85,7 @@ def _decimal(value: Any, field_name: str) -> Decimal:
 
 
 def _fixed(value: Decimal, places: int, field_name: str) -> str:
+    value = _decimal(value, field_name)
     if value < 0:
         raise KrakenIntegrityError(f"{field_name} cannot be negative")
     rendered = format(value, f".{places}f")
