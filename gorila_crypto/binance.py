@@ -317,10 +317,6 @@ def bootstrap_order_book(
     if not buffered:
         raise BinanceAdapterError("cannot bootstrap an order book without buffered depth events")
 
-    first = int(buffered[0]["U"])
-    if snapshot_id < first:
-        raise BinanceAdapterError("snapshot is older than first buffered depth event")
-
     filtered = [
         event for event in buffered
         if int(event["u"]) > snapshot_id
