@@ -128,3 +128,10 @@ def test_terminal_telemetry_is_collapsed_into_diagnostics_layer():
     assert 'SYSTEM DIAGNOSTICS' in html
     assert 'FULL DIAGNOSTICS AVAILABLE ABOVE' in html
     assert 'id="diagnosticSummary"' in html
+
+
+def test_terminal_frontend_has_no_invalid_async_function_declaration():
+    from gorila_argentum.dashboard_terminal import HTML as TERMINAL_HTML
+    html = TERMINAL_HTML.body.decode("utf-8")
+    assert "async async function" not in html
+    assert "async function refreshControl" in html
