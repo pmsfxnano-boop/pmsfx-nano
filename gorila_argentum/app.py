@@ -1501,7 +1501,14 @@ def gorila_chart(
             rows = [*rows, live_point][-requested_limit:]
 
     status = "READY" if rows else "NO_DATA"
-    latest_freshness = assess_observation(rows[-1][0]) if rows else {"status":"INVALID_TIMESTAMP","event_age_seconds":None,"transport_age_seconds":None}
+    if rows and selected_field in {"close_1m", "close_5m"}:
+        latest_freshness = assess_observation(rows[-1][0])
+    else:
+        latest_freshness = {
+            "status": "HISTORICAL",
+            "event_age_seconds": assess_observation(rows[-1][0]).get("event_age_seconds"),
+            "transport_age_seconds": None,
+        } if rows else {"status":"INVALID_TIMESTAMP","event_age_seconds":None,"transport_age_seconds":None}
 
     first = float(rows[0][1]) if rows else None
     last = float(rows[-1][1]) if rows else None
