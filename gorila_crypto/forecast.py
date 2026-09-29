@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
-from .lead_lag import LeadLagConfig, PricePoint, _log_return_bps
+from .lead_lag import LeadLagConfig, PricePoint
 
 
 FEATURE_SET_VERSION = "crypto_detection_v1"
@@ -23,6 +23,12 @@ FORECAST_SEMANTICS = "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)"
 
 def _ms(a: datetime, b: datetime) -> float:
     return (a - b).total_seconds() * 1000.0
+
+
+def _log_return_bps(current: float, reference: float) -> float:
+    if current <= 0 or reference <= 0:
+        raise ValueError("prices must be positive")
+    return 10_000.0 * math.log(current / reference)
 
 
 def _dt(value: datetime) -> datetime:
@@ -100,7 +106,6 @@ def _latest_available(
 
 
 def build_detection_features(
-    leader: list[PricePoint],
     target: list[PricePoint],
     trigger: PricePoint,
     leader_return_bps: float,
