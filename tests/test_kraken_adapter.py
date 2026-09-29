@@ -75,3 +75,54 @@ def test_kraken_book_keeps_raw_l2_separate_from_derived_l1() -> None:
     assert event.payload["_derived_l1"]["bid"]["price"] == "60000.0"
     assert "b" not in event.payload
     assert "a" not in event.payload
+
+
+def test_kraken_adapter_verifies_book_after_loading_instrument_precision() -> None:
+    from gorila_crypto.kraken import KrakenSpotMarketAdapter
+    from gorila_crypto.kraken_integrity import KrakenBookState, KrakenPrecision, kraken_checksum
+
+    adapter = KrakenSpotMarketAdapter(
+        KrakenStreamConfig(
+            symbols=("BTC/USD",),
+            streams=("bookTicker",),
+            depth=10,
+        )
+    )
+    state = KrakenBookState(
+        symbol="BTC/USD",
+        depth=10,
+        bids={60000.0: 1.2},
+        asks={60001.0: 1.1},
+    )
+    checksum, _ = kraken_checksum(state, KrakenPrecision(price=1, qty=1))
+    instrument = {
+        "channel": "instrument",
+        "type": "snapshot",
+        "data": [{"symbol": "BTC/USD", "price_precision": 1, "qty_precision": 1}],
+    }
+    snapshot = {
+        "channel": "book",
+        "type": "snapshot",
+        "data": [{
+            "symbol": "BTC/USD",
+            "timestamp": "2026-09-29T20:00:00.123456Z",
+            "bids": [{"price": 60000.0, "qty": 1.2}],
+            "asks": [{"price": 60001.0, "qty": 1.1}],
+            "checksum": checksum,
+        }],
+    }
+    received_time = datetime(2026, 9, 29, 20, 0, 0, 130000, tzinfo=timezone.utc)
+    list(adapter._events_from_message(
+        instrument,
+        received_time=received_time,
+        receive_ns=123,
+    ))
+    events = list(adapter._events_from_message(
+        snapshot,
+        received_time=received_time,
+        receive_ns=123,
+    ))
+    assert len(events) == 1
+    assert events[0].quality == "INTEGRITY_VERIFIED"
+    assert events[0].payload["_checksum_expected"] == checksum
+    assert events[0].payload["_checksum_computed"] == checksum
