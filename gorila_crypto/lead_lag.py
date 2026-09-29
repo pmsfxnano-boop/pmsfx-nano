@@ -96,6 +96,9 @@ class LeadLagObservation:
     leader_event_time: datetime
     leader_received_time: datetime
     delay_ms: int
+    target_ledger_seq: int
+    target_event_time: datetime
+    target_received_time: datetime
     leader_return_bps: float
     target_return_bps: float
     signed_target_response_bps: float
@@ -129,8 +132,10 @@ class OpportunityClockResult:
     detection_event_time: datetime
     detection_received_time: datetime
     baseline_target_price: float
+    first_reaction_ledger_seq: int | None
     first_reaction_event_time: datetime | None
     first_reaction_received_time: datetime | None
+    convergence_ledger_seq: int | None
     convergence_event_time: datetime | None
     convergence_received_time: datetime | None
     first_reaction_market_lag_ms: float | None
@@ -313,6 +318,9 @@ def measure_lead_lag(
                     leader_event_time=point.event_time,
                     leader_received_time=point.received_time,
                     delay_ms=delay_ms,
+                    target_ledger_seq=future.ledger_seq,
+                    target_event_time=future.event_time,
+                    target_received_time=future.received_time,
                     leader_return_bps=leader_return,
                     target_return_bps=target_return,
                     signed_target_response_bps=direction * target_return,
@@ -413,8 +421,10 @@ def build_opportunity_clock(
                 detection_event_time=point.event_time,
                 detection_received_time=point.received_time,
                 baseline_target_price=baseline.price,
+                first_reaction_ledger_seq=first_reaction.ledger_seq if first_reaction else None,
                 first_reaction_event_time=first_reaction.event_time if first_reaction else None,
                 first_reaction_received_time=first_reaction.received_time if first_reaction else None,
+                convergence_ledger_seq=convergence.ledger_seq if convergence else None,
                 convergence_event_time=convergence.event_time if convergence else None,
                 convergence_received_time=convergence.received_time if convergence else None,
                 first_reaction_market_lag_ms=_ms(first_reaction.event_time, point.event_time) if first_reaction else None,
