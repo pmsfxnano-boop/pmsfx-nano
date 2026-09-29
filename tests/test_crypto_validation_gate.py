@@ -30,3 +30,17 @@ def test_quality_gate_allows_explicitly_passed_replay() -> None:
         {"status": "PASS", "rows": 1000, "reasons": ()},
         minimum_rows=1000,
     )
+
+
+def test_quality_gate_blocks_replay_fingerprint_mismatch() -> None:
+    with pytest.raises(QualityGateBlocked, match="replay_fingerprint_mismatch"):
+        require_quality_gate(
+            {
+                "status": "PASS",
+                "rows": 1000,
+                "replay_fingerprint": "wrong",
+                "reasons": (),
+            },
+            minimum_rows=1000,
+            expected_replay_fingerprint="expected",
+        )
