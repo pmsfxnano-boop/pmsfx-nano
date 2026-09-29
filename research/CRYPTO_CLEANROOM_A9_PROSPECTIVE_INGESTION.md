@@ -81,3 +81,24 @@ frozen replay manifest feeding the A8 validation framework.
 
 Only after the ledger demonstrates sufficient completeness can true market OOS
 evidence be generated.
+
+## Activation gate
+
+The durable launcher now fails closed when `GORILA_CRYPTO_DATABASE_URL` is absent.
+This is deliberate: a 24/7 research ledger must not silently accumulate into an
+ephemeral filesystem.
+
+The current Render PostgreSQL instance exists, but its external access path is
+blocked by its IP allowlist and the hosted Render integration cannot query it.
+The runtime therefore has not been falsely declared live or accumulating.
+
+Required activation sequence:
+
+1. provide the cleanroom service with the Render PostgreSQL internal connection
+   string through Render's service/database environment-variable linkage;
+2. start `python -m gorila_crypto.runtime` on the cleanroom branch;
+3. verify connection lifecycle, source freshness, event growth and gap counters;
+4. freeze the first replay manifest only after a sufficiently long prospective
+   window has accumulated.
+
+No retrospective historical data will be substituted for the prospective ledger.
