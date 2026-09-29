@@ -843,6 +843,8 @@ def persist_validation_report(
         "aggregate_metrics": {
             "probabilistic": asdict(aggregate) if aggregate else {},
             "economic": asdict(aggregate_economic) if aggregate_economic else {},
+            "fold_baseline_pass_fraction": report.fold_baseline_pass_fraction,
+            "fold_economic_positive_fraction": report.fold_economic_positive_fraction,
         },
         "stability": {
             "by_symbol": {
