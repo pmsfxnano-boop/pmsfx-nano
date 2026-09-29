@@ -129,7 +129,14 @@ class CryptoStore:
         ).strip()
         self.sqlite_path = (
             sqlite_path if sqlite_path is not None else CRYPTO_SQLITE_PATH
-        ).strip() or ":memory:"
+        ).strip() or "/tmp/gorila_crypto.sqlite3"
+        legacy_sqlite_path = os.getenv("GORILA_SQLITE_PATH", "").strip()
+        if (
+            not self.database_url
+            and legacy_sqlite_path
+            and self.sqlite_path == legacy_sqlite_path
+        ):
+            raise ValueError("crypto_sqlite_path_matches_legacy_storage")
         self._pg = bool(self.database_url)
 
     @property
