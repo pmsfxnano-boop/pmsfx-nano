@@ -170,10 +170,12 @@ def build_signal(
     shadow_summary: dict[str, Any] | None = None,
     threshold: float = DEFAULT_SIGNAL_THRESHOLD,
 ) -> dict[str, Any]:
-    forecast = state.get("forecast") or {}
+    raw_forecast = state.get("forecast")
+    forecast_available = isinstance(raw_forecast, dict) and bool(raw_forecast)
+    forecast = raw_forecast or {}
     evaluation = state.get("evaluation") or {}
     p_up = _finite(forecast.get("raw_probability_up"))
-    if p_up is None:
+    if p_up is None and forecast_available:
         p_up = _finite(state.get("p_up"))
 
     p_down = 1.0 - p_up if p_up is not None else None
