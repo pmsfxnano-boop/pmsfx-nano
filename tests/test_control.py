@@ -105,4 +105,5 @@ def test_legacy_raw_close_drift_is_ignored(tmp_path, monkeypatch):
     assert state["drift"]["legacy_snapshots_ignored"] == 1
     assert state["drift"]["operational_monitor_available"] is False
     assert "DRIFT_MONITOR_UNAVAILABLE" in state["runtime"]["degraded_reasons"]
-    assert state["runtime"]["circuit_breaker"] == "DEGRADED"
+    assert state["runtime"]["circuit_breaker"] == "HALTED"
+    assert "NON_DURABLE_STORAGE" in state["runtime"]["circuit_breaker_reasons"]
