@@ -40,7 +40,7 @@ def test_audit_reuses_control_promotion_and_learning(monkeypatch):
             calls["learning"] += 1
             return control_payload["learning"]["runs"]
 
-    monkeypatch.setattr(audit, "build_control_state", lambda store: control_payload)
+    monkeypatch.setattr(audit, "build_control_state", lambda store, **kwargs: control_payload)
     monkeypatch.setattr(audit, "evaluate_live_promotion", lambda store, **kwargs: calls.__setitem__("promotion", calls["promotion"] + 1))
 
     result = audit.build_audit_state(Store())
