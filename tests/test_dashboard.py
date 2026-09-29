@@ -54,3 +54,12 @@ def test_gorila_chart_endpoint_fails_closed_for_invalid_timeframe():
         assert False, "expected invalid timeframe"
     except HTTPException as exc:
         assert exc.status_code == 400
+
+
+def test_terminal_frontend_uses_clear_forecast_unavailable_semantics():
+    from gorila_argentum.dashboard_terminal import HTML as TERMINAL_HTML
+    html = TERMINAL_HTML.body.decode("utf-8")
+    assert "FORECAST UNAVAILABLE" in html
+    assert "NOT SCORED · FORECAST UNAVAILABLE" in html
+    assert "NO VALIDATED FORECAST EVIDENCE" in html
+    assert "CHART CLOSE" in html
