@@ -165,6 +165,8 @@ def normalize_trade(
         raise InvalidMarketEvent("trade event missing symbol/trade id")
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_provider"] = "binance"
+    payload["_event_time_semantics"] = "PROVIDER_EVENT_TIME"
     return NormalizedMarketEvent(
         symbol=symbol,
         event_type="trade",
@@ -191,6 +193,7 @@ def normalize_book_ticker(
     symbol = str(data["s"]).upper()
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_provider"] = "binance"
     payload["_event_time_semantics"] = "RECEIVE_TIME_ONLY"
     return NormalizedMarketEvent(
         symbol=symbol,
@@ -226,6 +229,8 @@ def normalize_depth(
         raise InvalidMarketEvent("depth event bids/asks must be lists")
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_provider"] = "binance"
+    payload["_event_time_semantics"] = "PROVIDER_EVENT_TIME"
     return NormalizedMarketEvent(
         symbol=symbol,
         event_type="depthUpdate",
@@ -233,6 +238,7 @@ def normalize_depth(
         received_time=received,
         source="binance.websocket.depth",
         payload=payload,
+        provider_time=_epoch_ms(data.get("E"), "E"),
         sequence_start=int(first_id),
         sequence_end=int(final_id),
         sequence_kind="book_update_id",
@@ -431,6 +437,8 @@ class BinanceSpotMarketAdapter:
     This object is a transport component. It does not start automatically and it
     does not make forecasts or trading decisions.
     """
+
+    source_family = "binance.websocket.market"
 
     def __init__(
         self,
