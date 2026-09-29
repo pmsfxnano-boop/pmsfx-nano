@@ -11,6 +11,7 @@ from gorila_crypto.forecast import (
     ForecastTargetSpec,
 )
 from gorila_crypto.lead_lag import LeadLagConfig
+from gorila_crypto.storage import CryptoStore
 from gorila_crypto.validation import (
     EconomicPolicySpec,
     ForecastDatasetRow,
@@ -22,6 +23,7 @@ from gorila_crypto.validation import (
     make_walk_forward_folds,
     probabilistic_metrics,
     run_walk_forward_validation,
+    persist_validation_report,
 )
 
 
@@ -244,3 +246,62 @@ def test_null_benchmark_does_not_promote_without_predictive_information() -> Non
     )
     assert report.status == "OOS_EVALUATED"
     assert report.promotion_eligible is False
+
+
+def test_validation_evidence_persists_by_run_fold_and_oos_group(tmp_path) -> None:
+    dataset = [row(i) for i in range(120)]
+    config = WalkForwardConfig(
+        min_train_rows=40,
+        test_rows=20,
+        step_rows=20,
+        purge_ms=500,
+        embargo_ms=500,
+        ridge_alpha=0.1,
+    )
+    policy = EconomicPolicySpec(
+        long_threshold=0.55,
+        short_threshold=0.45,
+        round_trip_cost_bps=0.25,
+        round_trip_slippage_bps=0.25,
+    )
+    report = run_walk_forward_validation(
+        dataset,
+        ["leader_return_bps", "leader_abs_return_bps", "target_return_bps_lookback"],
+        config,
+        policy,
+        placebo_block_size=5,
+        placebo_iterations=20,
+        stress_scenarios=(
+            StressScenario(
+                name="storage_stress",
+                return_haircut=0.05,
+                cost_multiplier=1.5,
+                slippage_multiplier=1.5,
+            ),
+        ),
+    )
+    store = CryptoStore(sqlite_path=str(tmp_path / "validation.sqlite3"))
+    saved = persist_validation_report(
+        store,
+        report,
+        dataset,
+        replay_fingerprint="a8-test-fingerprint",
+        target_spec=ForecastTargetSpec(horizon_ms=500),
+        config=config,
+        policy=policy,
+        model_id="crypto-ridge-logit-wf",
+        model_version="1",
+    )
+    assert saved["fold_rows"] == len(report.folds)
+    assert saved["oos_rows"] == len(report.oos_labels)
+    conn = store.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM crypto_validation_runs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM crypto_validation_folds").fetchone()[0] == len(report.folds)
+        assert conn.execute("SELECT COUNT(*) FROM crypto_validation_oos").fetchone()[0] == len(report.oos_labels)
+        groups = conn.execute(
+            "SELECT DISTINCT target_symbol, horizon_ms FROM crypto_validation_oos"
+        ).fetchall()
+        assert groups
+    finally:
+        conn.close()
