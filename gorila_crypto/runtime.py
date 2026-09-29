@@ -280,7 +280,7 @@ def build_market_adapter():
             KrakenStreamConfig(
                 symbols=settings.symbols,
                 streams=settings.streams,
-                depth=settings.depth_speed,
+                depth=10,
             )
         )
     return BinanceSpotMarketAdapter(
