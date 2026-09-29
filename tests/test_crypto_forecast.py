@@ -60,7 +60,7 @@ def test_late_future_target_is_not_allowed_into_features() -> None:
     leader, target = data()
     target.append(p(12, 'ETHUSDT', 1500, 500, 200.20))
     snap = build_detection_features(
-        leader, target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
+        target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
     )
     assert 'ETHUSDT-12' not in snap.source_event_ids
 
@@ -68,11 +68,11 @@ def test_late_future_target_is_not_allowed_into_features() -> None:
 def test_feature_hash_changes_when_feature_information_changes() -> None:
     leader, target = data()
     one = build_detection_features(
-        leader, target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
+        target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
     )
     altered_leader = [leader[0], p(2, 'BTCUSDT', 1000, 1000, 100.07)]
     two = build_detection_features(
-        altered_leader, target, altered_leader[-1], 7.0, LeadLagConfig(lookback_seconds=1.0)
+        target, altered_leader[-1], 7.0, LeadLagConfig(lookback_seconds=1.0)
     )
     assert one.feature_set_hash != two.feature_set_hash
 
@@ -80,7 +80,7 @@ def test_feature_hash_changes_when_feature_information_changes() -> None:
 def test_unvalidated_model_is_blocked_without_probability() -> None:
     leader, target = data()
     snap = build_detection_features(
-        leader, target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
+        target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
     )
     model = ForecastModelSpec(
         model_id='crypto-logit-v0',
@@ -114,7 +114,7 @@ def test_admissibility_requires_all_research_gates() -> None:
 def test_admissible_model_score_is_bounded_and_identity_is_deterministic() -> None:
     leader, target = data()
     snap = build_detection_features(
-        leader, target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
+        target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
     )
     target_spec = ForecastTargetSpec(horizon_ms=1000)
     model = ForecastModelSpec(
