@@ -218,6 +218,40 @@ def test_full_walk_forward_validation_stays_research_only() -> None:
     assert report.promotion_eligible is True
 
 
+
+def test_zero_friction_validation_cannot_be_promotion_eligible() -> None:
+    dataset = [row(i) for i in range(180)]
+    report = run_walk_forward_validation(
+        dataset,
+        ["leader_return_bps", "leader_abs_return_bps", "target_return_bps_lookback"],
+        WalkForwardConfig(
+            min_train_rows=60,
+            test_rows=20,
+            step_rows=20,
+            purge_ms=500,
+            embargo_ms=500,
+            ridge_alpha=0.1,
+        ),
+        EconomicPolicySpec(
+            long_threshold=0.55,
+            short_threshold=0.45,
+            round_trip_cost_bps=0.0,
+            round_trip_slippage_bps=0.0,
+        ),
+        placebo_block_size=5,
+        placebo_iterations=50,
+        stress_scenarios=(
+            StressScenario(
+                name="zero_cost_stress",
+                return_haircut=0.05,
+                cost_multiplier=2.0,
+                slippage_multiplier=2.0,
+            ),
+        ),
+    )
+    assert report.status == "OOS_EVALUATED"
+    assert report.promotion_eligible is False
+
 def test_build_forecast_dataset_returns_empty_without_both_series() -> None:
     data = [
         {
