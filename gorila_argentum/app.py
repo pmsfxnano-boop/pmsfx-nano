@@ -370,9 +370,13 @@ def _build_argentina_signal_snapshot(symbol: str) -> dict[str, Any]:
                  "data_source": live.get("source") or state.get("data_source"),
                  "market_freshness": {"age_seconds": live_age}}
     series = store.recent_series(symbol, "close_1m", limit=240) or store.recent_series(symbol, "close_5m", limit=240) or store.recent_series(symbol, "close", limit=240)
-    drift_rows = store.latest_drift(symbol=symbol, field="close", limit=1)
+    # Do not bind persisted raw-close drift snapshots to the live research signal.
+    # Price levels are non-stationary, and the legacy drift ledger is not a current
+    # stationary feature-drift contract. Until a point-in-time stationary monitor
+    # is bound here, surface the drift monitor as unavailable rather than emitting
+    # a stale/ambiguous DRIFT_ALERT.
     signal = build_signal(symbol=symbol, state=state, price_series=series,
-                          drift=drift_rows[0] if drift_rows else None,
+                          drift=None,
                           shadow_summary=store.shadow_summary())
     signal["session"] = market_session_state()
     signal["snapshot_source"] = "argentina_local_snapshot"
