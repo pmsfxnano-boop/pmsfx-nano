@@ -233,7 +233,13 @@ def label_snapshot(
     if baseline is None:
         return None
 
-    future_cutoff = snapshot.decision_event_time + timedelta(milliseconds=target_spec.horizon_ms)
+    # Conservative actionable horizon: do not credit a market move that
+    # occurred before the information was actually available. The target event
+    # must be after BOTH the event-time horizon and the receive-time horizon.
+    future_cutoff = max(
+        snapshot.decision_event_time + timedelta(milliseconds=target_spec.horizon_ms),
+        snapshot.decision_received_time + timedelta(milliseconds=target_spec.horizon_ms),
+    )
     future = None
     for point in target:
         if point.event_time < future_cutoff:
