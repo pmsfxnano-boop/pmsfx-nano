@@ -35,6 +35,7 @@ class CryptoSettings:
     ingest_enabled: bool
     quality_monitor_enabled: bool
     quality_interval_seconds: float
+    heartbeat_interval_seconds: float
     quality_row_limit: int
     quality_min_rows_per_symbol: int
     quality_min_duration_seconds: float
@@ -55,6 +56,8 @@ class CryptoSettings:
             raise ValueError("depth_speed must be 100ms or 1000ms")
         if self.quality_interval_seconds < 60.0:
             raise ValueError("quality interval cannot be below 60 seconds")
+        if self.heartbeat_interval_seconds < 30.0:
+            raise ValueError("heartbeat interval cannot be below 30 seconds")
         if self.quality_row_limit < 1000:
             raise ValueError("quality row limit must be >= 1000")
 
@@ -69,6 +72,9 @@ settings = CryptoSettings(
     in {"1", "true", "yes", "on"},
     quality_interval_seconds=max(
         60.0, float(os.getenv("GORILA_CRYPTO_QUALITY_INTERVAL_SECONDS", "900"))
+    ),
+    heartbeat_interval_seconds=max(
+        30.0, float(os.getenv("GORILA_CRYPTO_HEARTBEAT_INTERVAL_SECONDS", "60"))
     ),
     quality_row_limit=max(
         1000, int(os.getenv("GORILA_CRYPTO_QUALITY_ROW_LIMIT", "100000"))
