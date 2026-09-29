@@ -1288,18 +1288,35 @@ async def gorila_cross_sectional():
 @app.get("/api/gorila/live/{ticker}")
 def gorila_live_quote(ticker: str):
     symbol = normalize_ticker(ticker)
+    session = argentina_session_state()
     snapshot = _ARG_LIVE_CACHE.get(symbol)
     if snapshot is None:
-        return {"symbol":symbol,"status":"NO_LIVE_CACHE","quote":None,"session":argentina_session_state(),"runtime":dict(_ARG_LIVE_STATE),"research_only":True,"no_execution_authority":True}
+        status = "MARKET_CLOSED" if not session.get("open") else "NO_LIVE_CACHE"
+        return {
+            "symbol": symbol,
+            "status": status,
+            "quote": None,
+            "age_seconds": None,
+            "session": session,
+            "runtime": dict(_ARG_LIVE_STATE),
+            "research_only": True,
+            "no_execution_authority": True,
+        }
     age = max(0.0, time.time() - float(snapshot.get("updated_epoch") or time.time()))
+    # A cached last-session quote is not a live quote once the market closes.
+    status = (
+        "MARKET_CLOSED"
+        if not session.get("open")
+        else "LIVE" if age <= _ARG_LIVE_INTERVAL_SECONDS * 2.5 else "STALE"
+    )
     return {
         "symbol": symbol,
-        "status": "LIVE" if age <= _ARG_LIVE_INTERVAL_SECONDS * 2.5 else "STALE",
+        "status": status,
         "quote": {"last": snapshot.get("last"), "quoteTimestamp": snapshot.get("quote_timestamp"), "timestamp": snapshot.get("quote_timestamp"), "source": snapshot.get("source")},
         "age_seconds": round(age,2),
         "received_at": snapshot.get("received_at"),
         "latency_ms": snapshot.get("latency_ms"),
-        "session": argentina_session_state(),
+        "session": session,
         "runtime": dict(_ARG_LIVE_STATE),
         "research_only": True,
         "no_execution_authority": True,
