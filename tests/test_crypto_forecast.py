@@ -46,7 +46,7 @@ def data():
 def test_feature_snapshot_uses_only_pit_information() -> None:
     leader, target = data()
     snap = build_detection_features(
-        leader, target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
+        target, leader[-1], 6.0, LeadLagConfig(lookback_seconds=1.0)
     )
     assert snap.leader_symbol == 'BTCUSDT'
     assert snap.target_symbol == 'ETHUSDT'
