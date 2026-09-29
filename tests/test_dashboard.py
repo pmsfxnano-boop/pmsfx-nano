@@ -63,3 +63,44 @@ def test_terminal_frontend_uses_clear_forecast_unavailable_semantics():
     assert "NOT SCORED · FORECAST UNAVAILABLE" in html
     assert "NO VALIDATED FORECAST EVIDENCE" in html
     assert "CHART CLOSE" in html
+
+
+def test_signal_without_forecast_does_not_fake_stale_data():
+    from gorila_argentum.signal_engine import build_signal
+
+    signal = build_signal(
+        symbol="GGAL",
+        state={
+            "forecast": None,
+            "evaluation": {},
+            "engine_freshness": {"age_seconds": None},
+            "market_freshness": {"age_seconds": None},
+        },
+        price_series=[
+            ("2026-09-29T14:00:00+00:00", 100.0),
+            ("2026-09-29T14:01:00+00:00", 101.0),
+        ],
+        drift=None,
+    )
+
+    assert signal["status"] == "NO_DATA"
+    assert "NO_FORECAST" in signal["risk_flags"]
+    assert "MODEL_NOT_VALIDATED" in signal["risk_flags"]
+    assert "DATA_NOT_FRESH" not in signal["risk_flags"]
+    assert "DRIFT_UNAVAILABLE" in signal["risk_flags"]
+
+
+def test_live_quote_reports_market_closed_without_live_cache(monkeypatch):
+    from gorila_argentum import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "argentina_session_state",
+        lambda: {"open": False, "timezone": "America/Argentina/Buenos_Aires"},
+    )
+    monkeypatch.setattr(app_module, "_ARG_LIVE_CACHE", {})
+
+    payload = app_module.gorila_live_quote("GGAL")
+
+    assert payload["status"] == "MARKET_CLOSED"
+    assert payload["quote"] is None
