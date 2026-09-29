@@ -135,3 +135,62 @@ def test_terminal_frontend_has_no_invalid_async_function_declaration():
     html = TERMINAL_HTML.body.decode("utf-8")
     assert "async async function" not in html
     assert "async function refreshControl" in html
+
+
+def test_live_quote_uses_event_age_not_cache_receipt_age(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from gorila_argentum import app as app_module
+
+    now = datetime.now(timezone.utc)
+    event_time = (now - timedelta(minutes=20)).isoformat()
+    received = (now - timedelta(seconds=1)).isoformat()
+
+    monkeypatch.setattr(
+        app_module,
+        "argentina_session_state",
+        lambda: {"open": True, "timezone": "America/Argentina/Buenos_Aires"},
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_ARG_LIVE_CACHE",
+        {"GGAL": {
+            "symbol": "GGAL",
+            "last": 5950.0,
+            "quote_timestamp": event_time,
+            "received_at": received,
+            "source": "BYMADATA/leading-equity",
+            "latency_ms": 100.0,
+            "updated_epoch": now.timestamp(),
+        }},
+    )
+
+    payload = app_module.gorila_live_quote("GGAL")
+
+    assert payload["status"] == "DELAYED"
+    assert payload["event_age_seconds"] >= 1199
+    assert payload["transport_age_seconds"] <= 2
+    assert payload["is_live"] is False
+
+
+def test_gorila_chart_marks_intraday_freshness(monkeypatch):
+    from datetime import datetime, timezone
+    from gorila_argentum import app as app_module
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    class FakeStore:
+        def init(self):
+            return None
+
+        def recent_series(self, symbol, field, limit=250):
+            if field == "close_1m":
+                return [(now, 5950.0)]
+            return []
+
+    monkeypatch.setattr(app_module, "Store", lambda: FakeStore())
+    monkeypatch.setattr(app_module, "_ARG_LIVE_CACHE", {})
+
+    payload = app_module.gorila_chart("GGAL", timeframe="1D")
+
+    assert payload["freshness"]["status"] == "LIVE"
+    assert payload["freshness"]["event_age_seconds"] <= 1
