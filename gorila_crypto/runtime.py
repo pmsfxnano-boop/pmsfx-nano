@@ -7,6 +7,7 @@ source freshness. It never forecasts, trades, or promotes a model.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -94,6 +95,15 @@ class ProspectiveCryptoIngestor:
         return "binance.websocket.market"
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
+        payload = {
+            "status": status,
+            "metadata": metadata or {},
+            "run_id": self.run_id,
+        }
+        print(
+            "GORILA_CAPTURE_CONNECTION " + json.dumps(payload, sort_keys=True, default=str),
+            flush=True,
+        )
         self.store.record_connection(
             source=self.source_family,
             status=status,
