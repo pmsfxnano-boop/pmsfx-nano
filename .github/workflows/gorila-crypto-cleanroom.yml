@@ -13,6 +13,8 @@ on:
       - "tests/test_crypto_event_replay.py"
       - "tests/test_crypto_replay_manifest.py"
       - "tests/test_crypto_lead_lag.py"
+      - "tests/test_crypto_forecast.py"
+      - "tests/test_crypto_forecast_shadow.py"
       - ".github/workflows/gorila-crypto-cleanroom.yml"
   pull_request:
     paths:
@@ -46,3 +48,5 @@ jobs:
           tests/test_crypto_event_replay.py
           tests/test_crypto_replay_manifest.py
           tests/test_crypto_lead_lag.py
+          tests/test_crypto_forecast.py
+          tests/test_crypto_forecast_shadow.py
