@@ -371,7 +371,7 @@ def byma_live_panel():
     source="BYMADATA/leading-equity"
     t0=time.perf_counter()
     received=now()
-    url=f"{settings.byma_open_access_base_url.rstrip('/')}\/leading-equity"
+    url=f"{settings.byma_open_access_base_url.rstrip('/')}/leading-equity"
     try:
         with _byma_client() as c:
             response=c.post(url, json={"T1": True, "page_size": 100})
