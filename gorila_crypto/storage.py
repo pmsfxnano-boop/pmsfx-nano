@@ -120,6 +120,59 @@ CREATE INDEX IF NOT EXISTS idx_crypto_replay_manifest_time
     ON crypto_replay_manifests(created_at);
 CREATE INDEX IF NOT EXISTS idx_crypto_replay_manifest_fingerprint
     ON crypto_replay_manifests(fingerprint_sha256);
+
+CREATE TABLE IF NOT EXISTS crypto_lead_lag_shadow (
+    observation_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    replay_fingerprint TEXT NOT NULL,
+    leader_symbol TEXT NOT NULL,
+    target_symbol TEXT NOT NULL,
+    leader_ledger_seq BIGINT NOT NULL,
+    leader_event_time TEXT NOT NULL,
+    leader_received_time TEXT NOT NULL,
+    delay_ms INTEGER NOT NULL,
+    leader_return_bps DOUBLE PRECISION NOT NULL,
+    target_return_bps DOUBLE PRECISION NOT NULL,
+    signed_target_response_bps DOUBLE PRECISION NOT NULL,
+    market_lag_ms DOUBLE PRECISION NOT NULL,
+    information_lag_ms DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_lead_lag_pair
+    ON crypto_lead_lag_shadow(leader_symbol,target_symbol,delay_ms,created_at);
+CREATE INDEX IF NOT EXISTS idx_crypto_lead_lag_fingerprint
+    ON crypto_lead_lag_shadow(replay_fingerprint);
+
+CREATE TABLE IF NOT EXISTS crypto_opportunity_shadow (
+    opportunity_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    replay_fingerprint TEXT NOT NULL,
+    leader_symbol TEXT NOT NULL,
+    target_symbol TEXT NOT NULL,
+    leader_ledger_seq BIGINT NOT NULL,
+    direction INTEGER NOT NULL,
+    leader_return_bps DOUBLE PRECISION NOT NULL,
+    detection_event_time TEXT NOT NULL,
+    detection_received_time TEXT NOT NULL,
+    baseline_target_price DOUBLE PRECISION NOT NULL,
+    first_reaction_event_time TEXT,
+    first_reaction_received_time TEXT,
+    convergence_event_time TEXT,
+    convergence_received_time TEXT,
+    first_reaction_market_lag_ms DOUBLE PRECISION,
+    first_reaction_information_lag_ms DOUBLE PRECISION,
+    convergence_market_lag_ms DOUBLE PRECISION,
+    convergence_information_lag_ms DOUBLE PRECISION,
+    max_favorable_excursion_bps DOUBLE PRECISION NOT NULL,
+    max_adverse_excursion_bps DOUBLE PRECISION NOT NULL,
+    status TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_pair
+    ON crypto_opportunity_shadow(leader_symbol,target_symbol,created_at);
+CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_status
+    ON crypto_opportunity_shadow(status,created_at);
+CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_fingerprint
+    ON crypto_opportunity_shadow(replay_fingerprint);
 """
 
 _SQLITE_SCHEMA = (
@@ -598,6 +651,153 @@ class CryptoStore:
                 )
             conn.commit()
             return manifest_id
+        finally:
+            conn.close()
+
+    def save_lead_lag_observations(
+        self,
+        observations: list[dict[str, Any]],
+    ) -> int:
+        self.init()
+        if not observations:
+            return 0
+        conn = self.connect()
+        inserted = 0
+        try:
+            for row in observations:
+                observation_id = str(
+                    hashlib.sha256(
+                        _json(
+                            {
+                                "fingerprint": row["replay_fingerprint"],
+                                "leader_symbol": row["leader_symbol"],
+                                "target_symbol": row["target_symbol"],
+                                "leader_ledger_seq": row["leader_ledger_seq"],
+                                "delay_ms": row["delay_ms"],
+                            }
+                        ).encode("utf-8")
+                    ).hexdigest()[:32]
+                )
+                values = (
+                    observation_id,
+                    _utc_now(),
+                    row["replay_fingerprint"],
+                    row["leader_symbol"].upper(),
+                    row["target_symbol"].upper(),
+                    int(row["leader_ledger_seq"]),
+                    row["leader_event_time"],
+                    row["leader_received_time"],
+                    int(row["delay_ms"]),
+                    float(row["leader_return_bps"]),
+                    float(row["target_return_bps"]),
+                    float(row["signed_target_response_bps"]),
+                    float(row["market_lag_ms"]),
+                    float(row["information_lag_ms"]),
+                )
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO crypto_lead_lag_shadow
+                            (observation_id,created_at,replay_fingerprint,leader_symbol,
+                             target_symbol,leader_ledger_seq,leader_event_time,
+                             leader_received_time,delay_ms,leader_return_bps,
+                             target_return_bps,signed_target_response_bps,
+                             market_lag_ms,information_lag_ms)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT(observation_id) DO NOTHING""",
+                            values,
+                        )
+                        inserted += max(cur.rowcount, 0)
+                else:
+                    cur = conn.execute(
+                        """INSERT OR IGNORE INTO crypto_lead_lag_shadow
+                        (observation_id,created_at,replay_fingerprint,leader_symbol,
+                         target_symbol,leader_ledger_seq,leader_event_time,
+                         leader_received_time,delay_ms,leader_return_bps,
+                         target_return_bps,signed_target_response_bps,
+                         market_lag_ms,information_lag_ms)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        values,
+                    )
+                    inserted += max(cur.rowcount, 0)
+            conn.commit()
+            return inserted
+        finally:
+            conn.close()
+
+    def save_opportunity_clocks(
+        self,
+        opportunities: list[dict[str, Any]],
+    ) -> int:
+        self.init()
+        if not opportunities:
+            return 0
+        conn = self.connect()
+        inserted = 0
+        try:
+            for row in opportunities:
+                values = (
+                    row["opportunity_id"],
+                    _utc_now(),
+                    row["replay_fingerprint"],
+                    row["leader_symbol"].upper(),
+                    row["target_symbol"].upper(),
+                    int(row["leader_ledger_seq"]),
+                    int(row["direction"]),
+                    float(row["leader_return_bps"]),
+                    row["detection_event_time"],
+                    row["detection_received_time"],
+                    float(row["baseline_target_price"]),
+                    row.get("first_reaction_event_time"),
+                    row.get("first_reaction_received_time"),
+                    row.get("convergence_event_time"),
+                    row.get("convergence_received_time"),
+                    row.get("first_reaction_market_lag_ms"),
+                    row.get("first_reaction_information_lag_ms"),
+                    row.get("convergence_market_lag_ms"),
+                    row.get("convergence_information_lag_ms"),
+                    float(row["max_favorable_excursion_bps"]),
+                    float(row["max_adverse_excursion_bps"]),
+                    row["status"],
+                    _json(row.get("metadata") or {}),
+                )
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO crypto_opportunity_shadow
+                            (opportunity_id,created_at,replay_fingerprint,leader_symbol,
+                             target_symbol,leader_ledger_seq,direction,leader_return_bps,
+                             detection_event_time,detection_received_time,
+                             baseline_target_price,first_reaction_event_time,
+                             first_reaction_received_time,convergence_event_time,
+                             convergence_received_time,first_reaction_market_lag_ms,
+                             first_reaction_information_lag_ms,convergence_market_lag_ms,
+                             convergence_information_lag_ms,max_favorable_excursion_bps,
+                             max_adverse_excursion_bps,status,metadata)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                    %s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT(opportunity_id) DO NOTHING""",
+                            values,
+                        )
+                        inserted += max(cur.rowcount, 0)
+                else:
+                    cur = conn.execute(
+                        """INSERT OR IGNORE INTO crypto_opportunity_shadow
+                        (opportunity_id,created_at,replay_fingerprint,leader_symbol,
+                         target_symbol,leader_ledger_seq,direction,leader_return_bps,
+                         detection_event_time,detection_received_time,
+                         baseline_target_price,first_reaction_event_time,
+                         first_reaction_received_time,convergence_event_time,
+                         convergence_received_time,first_reaction_market_lag_ms,
+                         first_reaction_information_lag_ms,convergence_market_lag_ms,
+                         convergence_information_lag_ms,max_favorable_excursion_bps,
+                         max_adverse_excursion_bps,status,metadata)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        values,
+                    )
+                    inserted += max(cur.rowcount, 0)
+            conn.commit()
+            return inserted
         finally:
             conn.close()
 
