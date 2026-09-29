@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from gorila_crypto.ledger import ReplaySpec, replay, replay_fingerprint, replay_manifest
-from gorila_crypto.storage import CryptoStore
+from gorila_crypto.storage import CryptoStore, LedgerIntegrityError
 
 
 def _store(tmp_path: Path) -> CryptoStore:
@@ -217,3 +217,28 @@ def test_replay_manifest_binds_policy_to_fingerprint(tmp_path: Path) -> None:
     assert manifest["fingerprint_sha256"] == result.fingerprint
     assert manifest["end_received_time"] == spec.end_received_time
     assert manifest["order"] == "ingest"
+
+
+def test_same_provider_identity_with_changed_payload_fails_closed(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _append(
+        store,
+        symbol="BTCUSDT",
+        event_time="2026-09-29T15:00:00+00:00",
+        received_time="2026-09-29T15:00:00+00:00",
+        sequence=55,
+        price="60000.0",
+    )
+    try:
+        _append(
+            store,
+            symbol="BTCUSDT",
+            event_time="2026-09-29T15:00:00+00:00",
+            received_time="2026-09-29T15:00:01+00:00",
+            sequence=55,
+            price="60100.0",
+        )
+    except LedgerIntegrityError:
+        pass
+    else:
+        raise AssertionError("conflicting provider identity was accepted")
