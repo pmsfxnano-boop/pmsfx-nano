@@ -189,3 +189,58 @@ def test_build_forecast_dataset_returns_empty_without_both_series() -> None:
         ForecastTargetSpec(horizon_ms=1000),
     )
     assert dataset == ()
+
+
+def test_null_benchmark_does_not_promote_without_predictive_information() -> None:
+    dataset = []
+    for i in range(180):
+        item = row(i)
+        # Remove the deterministic signal while preserving both classes and chronology.
+        value = 0.0
+        y = i % 2
+        dataset.append(
+            ForecastDatasetRow(
+                snapshot=snapshot(i, value, "ETHUSDT"),
+                label=ForecastLabel(
+                    realized_target=y,
+                    realized_signed_return_bps=1.0 if y else -1.0,
+                    baseline_target_price=100.0,
+                    future_target_price=100.01 if y else 99.99,
+                    label_event_time=BASE + timedelta(seconds=i, milliseconds=500),
+                    label_received_time=BASE + timedelta(seconds=i, milliseconds=500),
+                    label_event_id=f"null-target-{i}",
+                    horizon_ms=500,
+                ),
+            )
+        )
+
+    report = run_walk_forward_validation(
+        dataset,
+        ["leader_return_bps", "leader_abs_return_bps", "target_return_bps_lookback"],
+        WalkForwardConfig(
+            min_train_rows=60,
+            test_rows=20,
+            step_rows=20,
+            purge_ms=500,
+            embargo_ms=500,
+            ridge_alpha=0.1,
+        ),
+        EconomicPolicySpec(
+            long_threshold=0.55,
+            short_threshold=0.45,
+            round_trip_cost_bps=0.25,
+            round_trip_slippage_bps=0.25,
+        ),
+        placebo_block_size=5,
+        placebo_iterations=50,
+        stress_scenarios=(
+            StressScenario(
+                name="null_stress",
+                return_haircut=0.10,
+                cost_multiplier=2.0,
+                slippage_multiplier=2.0,
+            ),
+        ),
+    )
+    assert report.status == "OOS_EVALUATED"
+    assert report.promotion_eligible is False
