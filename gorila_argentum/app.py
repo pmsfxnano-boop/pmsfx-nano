@@ -1058,10 +1058,13 @@ def gorila_root():
     )
 
 
+RUNTIME_CONTRACT_VERSION = "gorila-runtime-2026-09-29"
+
 def build_identity() -> dict[str, Any]:
     """Expose immutable deployment identity for production E2E verification."""
     return {
         "schema_version": 1,
+        "runtime_contract": RUNTIME_CONTRACT_VERSION,
         "render": bool(os.getenv("RENDER")),
         "commit": os.getenv("RENDER_GIT_COMMIT"),
         "branch": os.getenv("RENDER_GIT_BRANCH"),
