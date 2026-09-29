@@ -17,6 +17,12 @@ from typing import Any, Iterator, Mapping, Callable
 import websocket
 
 from .binance import NormalizedMarketEvent
+from .kraken_integrity import (
+    KrakenBookState,
+    KrakenChecksumMismatch,
+    KrakenPrecision,
+    apply_and_verify,
+)
 
 
 WS_BASE = "wss://ws.kraken.com/v2"
@@ -91,7 +97,11 @@ class KrakenStreamConfig:
 
 def subscription_messages(config: KrakenStreamConfig) -> tuple[dict[str, Any], ...]:
     symbols = [_provider_symbol(symbol) for symbol in config.symbols]
-    messages: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = [{
+        "method": "subscribe",
+        "params": {"channel": "instrument", "symbol": symbols, "snapshot": True},
+        "req_id": 0,
+    }]
     if "trade" in config.streams:
         messages.append(
             {
@@ -218,6 +228,8 @@ class KrakenSpotMarketAdapter:
     ) -> None:
         self.config = config
         self.event_sink = event_sink
+        self._precisions: dict[str, KrakenPrecision] = {}
+        self._books: dict[str, KrakenBookState] = {}
 
     def connection_url(self) -> str:
         return self.config.ws_url
@@ -242,6 +254,20 @@ class KrakenSpotMarketAdapter:
         data = message.get("data")
         if message.get("success") is False or message.get("error"):
             raise KrakenAdapterError(str(message.get("error") or "Kraken subscription error"))
+        if channel == "instrument":
+            if not isinstance(data, list):
+                raise KrakenAdapterError("Kraken instrument data must be a list")
+            for row in data:
+                if not isinstance(row, Mapping):
+                    raise KrakenAdapterError("Kraken instrument row must be an object")
+                symbol = str(row.get("symbol") or "").upper()
+                price_precision = row.get("price_precision")
+                qty_precision = row.get("qty_precision")
+                if symbol and price_precision is not None and qty_precision is not None:
+                    precision = KrakenPrecision(price=int(price_precision), qty=int(qty_precision))
+                    precision.validate()
+                    self._precisions[symbol] = precision
+            return
         if channel not in {"trade", "book"} or not isinstance(data, list):
             return
         for row in data:
@@ -254,12 +280,57 @@ class KrakenSpotMarketAdapter:
                     receive_ns=receive_ns,
                 )
             else:
-                yield _book_event(
+                event = _book_event(
                     row,
                     received_time=received_time,
                     receive_ns=receive_ns,
                     message_type=message_type,
                 )
+                symbol = event.symbol.upper()
+                book = self._books.setdefault(
+                    symbol,
+                    KrakenBookState(symbol=symbol, depth=self.config.depth),
+                )
+                precision = self._precisions.get(symbol)
+                integrity = apply_and_verify(
+                    book,
+                    row,
+                    message_type=message_type,
+                    precision=precision,
+                )
+                payload = dict(event.payload)
+                payload["_derived_l1"] = dict(integrity.derived_l1)
+                payload["_integrity_status"] = integrity.status
+                payload["_integrity_reason"] = integrity.reason
+                payload["_checksum_expected"] = integrity.expected_checksum
+                payload["_checksum_computed"] = integrity.computed_checksum
+                if integrity.checksum_payload is not None:
+                    payload["_checksum_payload"] = integrity.checksum_payload
+                if precision is not None:
+                    payload["_checksum_precision"] = {
+                        "price": precision.price,
+                        "qty": precision.qty,
+                    }
+                event = NormalizedMarketEvent(
+                    symbol=event.symbol,
+                    event_type=event.event_type,
+                    event_time=event.event_time,
+                    received_time=event.received_time,
+                    source=event.source,
+                    payload=payload,
+                    provider_time=event.provider_time,
+                    sequence_start=event.sequence_start,
+                    sequence_end=event.sequence_end,
+                    sequence_kind="kraken_crc32",
+                    receive_time_ns=event.receive_time_ns,
+                    quality=integrity.status,
+                )
+                yield event
+                if integrity.status == "INTEGRITY_CHECKSUM_FAIL":
+                    raise KrakenChecksumMismatch(
+                        f"{symbol}: expected checksum {integrity.expected_checksum}, "
+                        f"computed {integrity.computed_checksum}; connection must resync"
+                    )
 
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
         for request in subscription_messages(self.config):
