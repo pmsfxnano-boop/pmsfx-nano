@@ -61,6 +61,7 @@ class WalkForwardConfig:
     step_rows: int = 50
     purge_ms: int = 1000
     embargo_ms: int = 1000
+    min_group_rows: int = 20
     ridge_alpha: float = 1.0
     max_iterations: int = 100
     convergence_tol: float = 1e-8
@@ -75,6 +76,8 @@ class WalkForwardConfig:
             raise ValueError("step_rows must be >= test_rows to avoid overlapping OOS windows")
         if self.purge_ms < 0 or self.embargo_ms < 0:
             raise ValueError("purge/embargo must be non-negative")
+        if self.min_group_rows < 1:
+            raise ValueError("min_group_rows must be positive")
         if self.ridge_alpha < 0:
             raise ValueError("ridge_alpha must be non-negative")
         if self.max_iterations < 1:
@@ -118,13 +121,14 @@ class ProbabilisticMetrics:
 
 @dataclass(frozen=True)
 class EconomicPolicySpec:
-    probability_threshold: float = 0.5
+    long_threshold: float = 0.55
+    short_threshold: float = 0.45
     round_trip_cost_bps: float = 0.0
     round_trip_slippage_bps: float = 0.0
 
     def validate(self) -> None:
-        if not 0.0 <= self.probability_threshold <= 1.0:
-            raise ValueError("probability threshold must be in [0,1]")
+        if not 0.0 <= self.short_threshold < self.long_threshold <= 1.0:
+            raise ValueError("short_threshold must be below long_threshold in [0,1]")
         if self.round_trip_cost_bps < 0 or self.round_trip_slippage_bps < 0:
             raise ValueError("costs/slippage must be non-negative")
 
@@ -488,10 +492,12 @@ def economic_metrics(
     gross_values: list[float] = []
     traded = 0
     for row, probability in zip(rows, probabilities):
-        if abs(probability - 0.5) < 1e-15:
-            action = 0
+        if probability >= policy.long_threshold:
+            action = 1
+        elif probability <= policy.short_threshold:
+            action = -1
         else:
-            action = 1 if probability >= policy.probability_threshold else -1
+            action = 0
         if action == 0:
             gross_values.append(0.0)
             net_values.append(0.0)
@@ -682,6 +688,11 @@ def run_walk_forward_validation(
     economic_positive = aggregate_economic.net_mean_bps > 0.0
     placebo_pass = placebo_p <= 0.05
     stress_pass = all(result.net_mean_bps > 0.0 for result in stress_results.values()) if stress_results else False
+    group_sample_pass = all(
+        metric.n >= config.min_group_rows
+        for metric in list(stability_by_symbol.values())
+        + list(stability_by_horizon.values())
+    )
     promotion_eligible = bool(
         minimum_fold_count
         and len(oos_labels) >= config.test_rows
@@ -689,6 +700,7 @@ def run_walk_forward_validation(
         and economic_positive
         and placebo_pass
         and stress_pass
+        and group_sample_pass
     )
     return ValidationReport(
         status="OOS_EVALUATED",
