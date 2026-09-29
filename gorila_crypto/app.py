@@ -83,13 +83,27 @@ def _heartbeat_loop() -> None:
         _stop_event.wait(settings.heartbeat_interval_seconds)
 
 
+def _required_quality_event_types() -> tuple[str, ...]:
+    event_types = ["trade"]
+    if "bookTicker" in settings.streams:
+        event_types.append("bookTicker")
+    if "depth" in settings.streams:
+        event_types.append("depthUpdate")
+    return tuple(dict.fromkeys(event_types))
+
+
 def _quality_loop() -> None:
     store = _new_store()
+    required_event_types = _required_quality_event_types()
     config = DataQualityConfig(
         min_rows_per_symbol=settings.quality_min_rows_per_symbol,
         min_duration_seconds=settings.quality_min_duration_seconds,
         max_p99_transport_latency_ms=settings.quality_max_p99_transport_latency_ms,
-        required_event_types=("trade",),
+        required_event_types=required_event_types,
+        required_event_type_min_rows={
+            event_type: settings.quality_min_rows_per_symbol
+            for event_type in required_event_types
+        },
     )
     while not _stop_event.is_set():
         try:
@@ -294,6 +308,11 @@ def config_snapshot() -> dict[str, Any]:
         "quality_min_rows_per_symbol": settings.quality_min_rows_per_symbol,
         "quality_min_duration_seconds": settings.quality_min_duration_seconds,
         "quality_max_p99_transport_latency_ms": settings.quality_max_p99_transport_latency_ms,
+        "quality_required_event_types": list(_required_quality_event_types()),
+        "quality_required_event_type_min_rows": {
+            event_type: settings.quality_min_rows_per_symbol
+            for event_type in _required_quality_event_types()
+        },
         "durable_storage_required_when_ingesting": settings.ingest_enabled,
         "storage_backend": _storage_backend_status(),
     }
