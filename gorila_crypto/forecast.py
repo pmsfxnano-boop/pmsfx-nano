@@ -180,14 +180,36 @@ def _sigmoid(value: float) -> float:
     return z / (1.0 + z)
 
 
+def model_spec_hash(model: ForecastModelSpec) -> str:
+    payload = {
+        "model_id": model.model_id,
+        "version": model.version,
+        "intercept": float(model.intercept),
+        "coefficients": {
+            name: float(model.coefficients[name])
+            for name in sorted(model.coefficients)
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def model_is_admissible(model: ForecastModelSpec) -> bool:
-    return all((
+    if not all((
         model.validated,
         model.oos_status == "PASS",
         model.economic_status == "PASS",
         model.point_in_time,
         model.stress_pass,
-    ))
+    )):
+        return False
+    if not math.isfinite(float(model.intercept)):
+        return False
+    return all(
+        math.isfinite(float(value))
+        for value in model.coefficients.values()
+    )
 
 
 def score_forecast(
@@ -210,6 +232,8 @@ def score_forecast(
             feature_set_hash=snapshot.feature_set_hash,
         )
 
+    if not all(math.isfinite(float(value)) for value in snapshot.feature_values.values()):
+        raise ValueError("non-finite feature value")
     linear = float(model.intercept)
     for name, coefficient in model.coefficients.items():
         if name not in snapshot.feature_values:
@@ -245,6 +269,7 @@ def deterministic_forecast_id(
         "leader_event_id": snapshot.leader_event_id,
         "model_id": model.model_id,
         "model_version": model.version,
+        "model_spec_hash": model_spec_hash(model),
         "target_symbol": snapshot.target_symbol,
         "horizon_ms": target.horizon_ms,
         "target_kind": target.kind,
