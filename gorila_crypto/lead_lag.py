@@ -464,6 +464,7 @@ class LeadLagShadowScan:
     observation_count: int
     pair_summary_count: int
     opportunity_count: int
+    observations: tuple[LeadLagObservation, ...]
     summaries: tuple[LeadLagSummary, ...]
     opportunities: tuple[OpportunityClockResult, ...]
 
@@ -485,6 +486,7 @@ def run_lead_lag_shadow(
         )
     )
     summaries: list[LeadLagSummary] = []
+    all_observations: list[LeadLagObservation] = []
     opportunities: list[OpportunityClockResult] = []
     observation_count = 0
 
@@ -506,6 +508,7 @@ def run_lead_lag_shadow(
                 target_symbol=target_symbol,
             )
             observation_count += len(observations)
+            all_observations.extend(observations)
             summaries.extend(pair_summaries)
             opportunities.extend(
                 build_opportunity_clock(
@@ -524,6 +527,7 @@ def run_lead_lag_shadow(
         observation_count=observation_count,
         pair_summary_count=len(summaries),
         opportunity_count=len(opportunities),
+        observations=tuple(all_observations),
         summaries=tuple(summaries),
         opportunities=tuple(opportunities),
     )
