@@ -168,3 +168,15 @@ def test_runtime_config_rejects_empty_kind() -> None:
         assert "runtime kind" in str(exc)
     else:
         raise AssertionError("empty runtime kind was accepted")
+
+
+def test_build_prospective_runtime_fails_closed_without_durable_database(monkeypatch) -> None:
+    import gorila_crypto.runtime as runtime
+
+    monkeypatch.setattr(runtime, "CRYPTO_DATABASE_URL", "")
+    try:
+        runtime.build_prospective_runtime()
+    except RuntimeError as exc:
+        assert "durable prospective ingestion" in str(exc)
+    else:
+        raise AssertionError("runtime accepted ephemeral storage")
