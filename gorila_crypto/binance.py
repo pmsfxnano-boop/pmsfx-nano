@@ -353,6 +353,61 @@ def bootstrap_order_book(
     return book, ordered
 
 
+@dataclass
+class OrderBookSyncState:
+    symbol: str
+    status: str = "AWAITING_SNAPSHOT"
+    book: OrderBook | None = None
+    buffered_events: list[Mapping[str, Any]] = field(default_factory=list)
+    resync_count: int = 0
+    last_gap: str | None = None
+
+
+class LocalOrderBookCoordinator:
+    """Explicit snapshot + diff-depth synchronization state machine."""
+
+    def __init__(self, symbol: str) -> None:
+        self.state = OrderBookSyncState(symbol=symbol.upper())
+
+    def buffer_or_apply(self, event: Mapping[str, Any]) -> str:
+        if self.state.book is None:
+            self.state.buffered_events.append(dict(event))
+            self.state.status = "BUFFERING"
+            return self.state.status
+
+        try:
+            apply_book_delta(self.state.book, event)
+        except DepthGapDetected as exc:
+            self.state.last_gap = str(exc)
+            self.state.resync_count += 1
+            self.state.book = None
+            self.state.buffered_events = [dict(event)]
+            self.state.status = "RESYNC_REQUIRED"
+            return self.state.status
+
+        self.state.status = "SYNCED"
+        return self.state.status
+
+    def install_snapshot(self, snapshot: Mapping[str, Any]) -> str:
+        try:
+            book, applied = bootstrap_order_book(
+                symbol=self.state.symbol,
+                snapshot=snapshot,
+                buffered_events=self.state.buffered_events,
+            )
+        except BinanceAdapterError as exc:
+            self.state.last_gap = str(exc)
+            self.state.resync_count += 1
+            self.state.book = None
+            self.state.status = "RESYNC_REQUIRED"
+            return self.state.status
+
+        self.state.book = book
+        self.state.buffered_events = []
+        self.state.status = "SYNCED"
+        return self.state.status
+
+
 class BinanceRestClient:
     def __init__(self, *, base_url: str = SPOT_REST_BASE, timeout_s: float = 10.0) -> None:
         self.base_url = base_url.rstrip("/")
