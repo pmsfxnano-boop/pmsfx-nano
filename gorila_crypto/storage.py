@@ -177,7 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_pair
 CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_status
     ON crypto_opportunity_shadow(status,created_at);
 CREATE INDEX IF NOT EXISTS idx_crypto_opportunity_fingerprint
-
+    ON crypto_opportunity_shadow(replay_fingerprint);
 
 CREATE TABLE IF NOT EXISTS crypto_forecast_shadow (
     forecast_id TEXT PRIMARY KEY,
@@ -218,11 +218,7 @@ CREATE TABLE IF NOT EXISTS crypto_forecast_outcomes (
     slippage_bps DOUBLE PRECISION,
     status TEXT NOT NULL,
     metadata TEXT NOT NULL DEFAULT '{}'
-);
-    ON crypto_opportunity_shadow(replay_fingerprint);
-"""
-
-_SQLITE_SCHEMA = (
+);\n\"\"\"\n\n_SQLITE_SCHEMA = (
     SCHEMA
     .replace("BIGSERIAL", "INTEGER").replace("BIGINT", "INTEGER")
     .replace("DOUBLE PRECISION", "REAL")
@@ -304,7 +300,7 @@ class CryptoStore:
                     with conn.cursor() as cur:
                         cur.execute(SCHEMA)
                     conn.commit()
-                    self.__class__._schema_ready = True
+                    self._schema_ready = True
                 except Exception:
                     conn.rollback()
                     raise
