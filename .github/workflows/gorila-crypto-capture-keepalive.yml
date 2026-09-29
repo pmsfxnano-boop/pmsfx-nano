@@ -1,0 +1,17 @@
+name: gorila-crypto-capture-keepalive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping cleanroom capture service
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 20             https://gorila-crypto-cleanroom-capture.onrender.com/api/crypto/health
+          echo
