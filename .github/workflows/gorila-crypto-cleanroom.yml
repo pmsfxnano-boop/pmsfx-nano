@@ -47,7 +47,7 @@ jobs:
           python -m pip install -r requirements-gorila.txt pytest
       - name: Compile cleanroom modules
         run: python -m compileall -q gorila_core gorila_crypto
-      - name: Run core cleanroom tests
+      - name: Run foundational cleanroom tests
         run: >-
           pytest -q
           tests/test_crypto_cleanroom_architecture.py
@@ -56,10 +56,12 @@ jobs:
           tests/test_crypto_event_replay.py
           tests/test_crypto_replay_manifest.py
           tests/test_crypto_lead_lag.py
-          tests/test_crypto_forecast.py
-          tests/test_crypto_forecast_shadow.py
+
+      - name: Run A7 forecast contract tests
+        run: pytest -q tests/test_crypto_forecast.py
+
+      - name: Run A7 forecast shadow tests
+        run: pytest -q tests/test_crypto_forecast_shadow.py
 
       - name: Run A8 validation tests
-        run: >-
-          pytest -q
-          tests/test_crypto_validation.py
+        run: pytest -q tests/test_crypto_validation.py
