@@ -148,6 +148,11 @@ class ProspectiveCryptoIngestor:
     def _ingest(self, event: NormalizedMarketEvent) -> None:
         event_time = event.event_time.astimezone(timezone.utc)
         received_time = event.received_time.astimezone(timezone.utc)
+        assessment = assess_observation(
+            event_time,
+            received_time,
+            now=self.now(),
+        )
         result = self.store.append_event(
             symbol=event.symbol,
             event_type=event.event_type,
@@ -168,6 +173,9 @@ class ProspectiveCryptoIngestor:
                 "receive_time_ns": event.receive_time_ns,
                 "runtime_run_id": self.run_id,
                 "ingest_epoch": self.sequence.epoch,
+                "event_age_seconds": assessment["event_age_seconds"],
+                "received_age_seconds": assessment["received_age_seconds"],
+                "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
 
@@ -195,11 +203,6 @@ class ProspectiveCryptoIngestor:
                 },
             )
 
-        assessment = assess_observation(
-            event_time,
-            received_time,
-            now=self.now(),
-        )
         self.store.upsert_source_health(
             source=event.source,
             status=assessment["status"],
@@ -210,15 +213,6 @@ class ProspectiveCryptoIngestor:
             rows_last_batch=1,
             error=None,
         )
-        # Keep the legacy storage column stable while preserving the true
-        # transport latency in the event's provenance metadata.
-        result_metadata = getattr(result, "metadata", None)
-        if isinstance(result_metadata, dict):
-            result_metadata.update({
-                "event_age_seconds": assessment["event_age_seconds"],
-                "received_age_seconds": assessment["received_age_seconds"],
-                "transport_latency_seconds": assessment["transport_latency_seconds"],
-            })
         self.last_event = event
 
     def stop(self) -> None:
