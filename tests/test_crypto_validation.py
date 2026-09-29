@@ -167,6 +167,8 @@ def test_full_walk_forward_validation_stays_research_only() -> None:
     assert len(report.folds) >= 3
     assert len(report.oos_labels) > 0
     assert report.placebo_p_value is not None
+    assert report.fold_baseline_pass_fraction >= 0.67
+    assert report.fold_economic_positive_fraction >= 0.67
     assert "double_costs" in report.stress_results
     assert report.promotion_eligible is True
 
@@ -294,14 +296,28 @@ def test_validation_evidence_persists_by_run_fold_and_oos_group(tmp_path) -> Non
     )
     assert saved["fold_rows"] == len(report.folds)
     assert saved["oos_rows"] == len(report.oos_labels)
+    assert saved["lineage_rows"] == len(report.oos_labels)
     conn = store.connect()
     try:
         assert conn.execute("SELECT COUNT(*) FROM crypto_validation_runs").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM crypto_validation_folds").fetchone()[0] == len(report.folds)
         assert conn.execute("SELECT COUNT(*) FROM crypto_validation_oos").fetchone()[0] == len(report.oos_labels)
+        assert conn.execute("SELECT COUNT(*) FROM crypto_validation_lineage").fetchone()[0] == len(report.oos_labels)
+        lineage = conn.execute(
+            "SELECT feature_set_hash,source_event_ids_json FROM crypto_validation_lineage LIMIT 1"
+        ).fetchone()
+        assert lineage["feature_set_hash"].startswith("hash-")
+        assert "leader-" in lineage["source_event_ids_json"]
         groups = conn.execute(
             "SELECT DISTINCT target_symbol, horizon_ms FROM crypto_validation_oos"
         ).fetchall()
         assert groups
     finally:
         conn.close()
+
+
+def test_fold_consistency_threshold_rejects_inconsistent_validation_configuration() -> None:
+    with pytest.raises(ValueError):
+        WalkForwardConfig(min_fold_pass_fraction=0.49).validate()
+    with pytest.raises(ValueError):
+        WalkForwardConfig(min_fold_pass_fraction=1.01).validate()
