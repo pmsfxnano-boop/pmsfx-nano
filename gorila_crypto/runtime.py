@@ -1,4 +1,4 @@
-"""Prospective Binance market-data ingestion for the Crypto cleanroom.
+"""Prospective multi-venue market-data ingestion for the Crypto cleanroom.
 
 A9 turns the proven adapter into a persistence-only 24/7 research feed.
 It records raw normalized events, connection lifecycle, sequence gaps, and
