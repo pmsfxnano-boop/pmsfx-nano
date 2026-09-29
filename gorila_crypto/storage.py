@@ -218,7 +218,11 @@ CREATE TABLE IF NOT EXISTS crypto_forecast_outcomes (
     slippage_bps DOUBLE PRECISION,
     status TEXT NOT NULL,
     metadata TEXT NOT NULL DEFAULT '{}'
-);\n\"\"\"\n\n_SQLITE_SCHEMA = (
+);
+
+"""
+
+_SQLITE_SCHEMA = (
     SCHEMA
     .replace("BIGSERIAL", "INTEGER").replace("BIGINT", "INTEGER")
     .replace("DOUBLE PRECISION", "REAL")
