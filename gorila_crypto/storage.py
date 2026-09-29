@@ -291,6 +291,19 @@ CREATE TABLE IF NOT EXISTS crypto_validation_lineage (
 CREATE INDEX IF NOT EXISTS idx_crypto_validation_lineage_feature
     ON crypto_validation_lineage(feature_set_hash);
 
+CREATE TABLE IF NOT EXISTS crypto_quality_reports (
+    report_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    replay_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    report_hash TEXT NOT NULL,
+    report_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crypto_quality_reports_replay
+    ON crypto_quality_reports(replay_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_crypto_quality_reports_status
+    ON crypto_quality_reports(status);
+
 """
 
 _SQLITE_SCHEMA = (
@@ -1459,6 +1472,52 @@ class CryptoStore:
                     inserted += max(cur.rowcount, 0)
             conn.commit()
             return inserted
+        finally:
+            conn.close()
+
+    def save_quality_report(self, report: dict[str, Any], report_hash: str) -> str:
+        self.init()
+        report_id = hashlib.sha256(
+            _json({
+                "replay_fingerprint": report["replay_fingerprint"],
+                "report_hash": report_hash,
+            }).encode("utf-8")
+        ).hexdigest()[:32]
+        values = (
+            report_id,
+            _utc_now(),
+            report["replay_fingerprint"],
+            report["status"],
+            report_hash,
+            _json(report),
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO crypto_quality_reports
+                        (report_id,created_at,replay_fingerprint,status,report_hash,report_json)
+                        VALUES (%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(report_id) DO UPDATE SET
+                          status=EXCLUDED.status,
+                          report_hash=EXCLUDED.report_hash,
+                          report_json=EXCLUDED.report_json""",
+                        values,
+                    )
+            else:
+                conn.execute(
+                    """INSERT INTO crypto_quality_reports
+                    (report_id,created_at,replay_fingerprint,status,report_hash,report_json)
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(report_id) DO UPDATE SET
+                      status=excluded.status,
+                      report_hash=excluded.report_hash,
+                      report_json=excluded.report_json""",
+                    values,
+                )
+            conn.commit()
+            return report_id
         finally:
             conn.close()
 
