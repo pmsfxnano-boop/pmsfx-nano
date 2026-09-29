@@ -320,6 +320,7 @@ class CryptoStore:
             conn.close()
 
     def ping(self) -> bool:
+        self.init()
         conn = self.connect()
         try:
             if self._pg:
