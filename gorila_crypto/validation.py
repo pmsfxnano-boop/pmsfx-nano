@@ -928,7 +928,6 @@ def persist_validation_report(
                     "source_event_ids": list(row.snapshot.source_event_ids),
                 }
             )
-            )
         probability_offset += len(fold.test_indices)
 
     return {
