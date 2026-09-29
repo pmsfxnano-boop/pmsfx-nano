@@ -15,8 +15,9 @@ from typing import Any, Callable
 
 from gorila_core.market_freshness import assess_observation
 
-from .binance import BinanceSpotMarketAdapter, NormalizedMarketEvent
-from .storage import CryptoStore
+from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
+from .config import settings
+from .storage import CryptoStore, CRYPTO_DATABASE_URL
 
 
 @dataclass(frozen=True)
@@ -269,3 +270,30 @@ class ProspectiveCryptoIngestor:
             "run_id": self.run_id,
             **result,
         }
+
+
+def build_prospective_runtime() -> ProspectiveCryptoIngestor:
+    """Build the production-shaped prospective runtime without starting it."""
+    if not CRYPTO_DATABASE_URL:
+        raise RuntimeError(
+            "GORILA_CRYPTO_DATABASE_URL is required for durable prospective ingestion; "
+            "refusing ephemeral SQLite accumulation"
+        )
+    adapter = BinanceSpotMarketAdapter(
+        BinanceStreamConfig(
+            symbols=settings.symbols,
+            streams=("trade", "bookTicker", "depth"),
+        )
+    )
+    return ProspectiveCryptoIngestor(
+        CryptoStore(database_url=CRYPTO_DATABASE_URL),
+        adapter,
+    )
+
+
+def main() -> None:
+    build_prospective_runtime().run()
+
+
+if __name__ == "__main__":
+    main()
