@@ -690,9 +690,41 @@ def run_walk_forward_validation(
 
     aggregate = probabilistic_metrics(oos_labels, oos_probabilities)
     aggregate_baseline = baseline_constant(oos_labels, 0.5)
+    prevalence_values = [
+        fold.model.training_positive_rate
+        for fold in fold_evaluations
+        for _ in fold.fold.test_indices
+    ]
+    aggregate_prevalence = probabilistic_metrics(oos_labels, prevalence_values)
     aggregate_economic = economic_metrics(oos_rows, oos_probabilities, policy)
     minimum_fold_count = len(folds) >= 3
-    baseline_beat = aggregate.log_loss < aggregate_baseline.log_loss and aggregate.brier < aggregate_baseline.brier
+    baseline_beat = all(
+        (
+            aggregate.log_loss < baseline.log_loss
+            and aggregate.brier < baseline.brier
+        )
+        for baseline in (aggregate_baseline, aggregate_prevalence)
+    )
+    fold_baseline_passes = [
+        (
+            fold_eval.probabilistic.log_loss < fold_eval.baseline_fifty.log_loss
+            and fold_eval.probabilistic.brier < fold_eval.baseline_fifty.brier
+            and fold_eval.probabilistic.log_loss < fold_eval.baseline_prevalence.log_loss
+            and fold_eval.probabilistic.brier < fold_eval.baseline_prevalence.brier
+        )
+        for fold_eval in fold_evaluations
+    ]
+    fold_baseline_pass_fraction = (
+        sum(fold_baseline_passes) / len(fold_baseline_passes)
+        if fold_baseline_passes
+        else 0.0
+    )
+    fold_economic_positive_fraction = (
+        sum(fold_eval.economic.net_mean_bps > 0.0 for fold_eval in fold_evaluations)
+        / len(fold_evaluations)
+        if fold_evaluations
+        else 0.0
+    )
     economic_positive = aggregate_economic.net_mean_bps > 0.0
     placebo_pass = placebo_p <= 0.05
     stress_pass = all(result.net_mean_bps > 0.0 for result in stress_results.values()) if stress_results else False
@@ -700,6 +732,10 @@ def run_walk_forward_validation(
         metric.n >= config.min_group_rows
         for metric in list(stability_by_symbol.values())
         + list(stability_by_horizon.values())
+    )
+    fold_consistency_pass = (
+        fold_baseline_pass_fraction >= config.min_fold_pass_fraction
+        and fold_economic_positive_fraction >= config.min_fold_pass_fraction
     )
     promotion_eligible = bool(
         minimum_fold_count
@@ -709,11 +745,14 @@ def run_walk_forward_validation(
         and placebo_pass
         and stress_pass
         and group_sample_pass
+        and fold_consistency_pass
     )
     return ValidationReport(
         status="OOS_EVALUATED",
         dataset_rows=len(dataset),
         folds=tuple(fold_evaluations),
+        fold_baseline_pass_fraction=fold_baseline_pass_fraction,
+        fold_economic_positive_fraction=fold_economic_positive_fraction,
         oos_probabilities=tuple(oos_probabilities),
         oos_labels=tuple(oos_labels),
         oos_returns_bps=tuple(oos_returns),
