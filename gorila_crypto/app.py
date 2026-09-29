@@ -108,6 +108,7 @@ def _quality_loop() -> None:
             event_type: settings.quality_min_rows_per_symbol
             for event_type in required_event_types
         },
+        required_integrity_event_types=("bookUpdate",) if settings.provider == "kraken" else (),
     )
     while not _stop_event.is_set():
         try:
@@ -317,6 +318,9 @@ def config_snapshot() -> dict[str, Any]:
             event_type: settings.quality_min_rows_per_symbol
             for event_type in _required_quality_event_types()
         },
+        "quality_required_integrity_event_types": (
+            ["bookUpdate"] if settings.provider == "kraken" else []
+        ),
         "durable_storage_required_when_ingesting": settings.ingest_enabled,
         "storage_backend": _storage_backend_status(),
     }
