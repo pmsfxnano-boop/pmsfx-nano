@@ -446,3 +446,74 @@ def summarize_opportunity_clock(results: Iterable[OpportunityClockResult]) -> di
         "median_mae_bps": median(x.max_adverse_excursion_bps for x in rows),
         "median_mfe_bps": median(x.max_favorable_excursion_bps for x in rows),
     }
+
+@dataclass(frozen=True)
+class LeadLagShadowScan:
+    replay_fingerprint: str
+    symbols: tuple[str, ...]
+    observation_count: int
+    pair_summary_count: int
+    opportunity_count: int
+    summaries: tuple[LeadLagSummary, ...]
+    opportunities: tuple[OpportunityClockResult, ...]
+
+
+def run_lead_lag_shadow(
+    rows: Iterable[Mapping[str, Any]],
+    replay_fingerprint: str,
+    config: LeadLagConfig,
+    *,
+    symbols: Iterable[str] | None = None,
+) -> LeadLagShadowScan:
+    """Run the descriptive pairwise scan for one exact replay slice."""
+    points = build_price_points(rows)
+    universe = tuple(
+        sorted(
+            {str(symbol).upper() for symbol in symbols}
+            if symbols is not None
+            else points.keys()
+        )
+    )
+    summaries: list[LeadLagSummary] = []
+    opportunities: list[OpportunityClockResult] = []
+    observation_count = 0
+
+    for leader_symbol in universe:
+        leader = points.get(leader_symbol) or []
+        if not leader:
+            continue
+        for target_symbol in universe:
+            if target_symbol == leader_symbol:
+                continue
+            target = points.get(target_symbol) or []
+            if not target:
+                continue
+            observations, pair_summaries = measure_lead_lag(
+                leader,
+                target,
+                config,
+                leader_symbol=leader_symbol,
+                target_symbol=target_symbol,
+            )
+            observation_count += len(observations)
+            summaries.extend(pair_summaries)
+            opportunities.extend(
+                build_opportunity_clock(
+                    leader,
+                    target,
+                    config,
+                    replay_fingerprint,
+                    leader_symbol=leader_symbol,
+                    target_symbol=target_symbol,
+                )
+            )
+
+    return LeadLagShadowScan(
+        replay_fingerprint=replay_fingerprint,
+        symbols=universe,
+        observation_count=observation_count,
+        pair_summary_count=len(summaries),
+        opportunity_count=len(opportunities),
+        summaries=tuple(summaries),
+        opportunities=tuple(opportunities),
+    )
