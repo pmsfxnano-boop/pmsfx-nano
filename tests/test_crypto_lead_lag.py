@@ -102,8 +102,8 @@ def test_opportunity_clock_tracks_reaction_convergence_and_excursions() -> None:
     target = [
         point(10, 'ETHUSDT', 0, 0, 200.00),
         point(11, 'ETHUSDT', 1200, 1200, 199.96),
-        point(12, 'ETHUSDT', 2000, 2000, 200.04),
-        point(13, 'ETHUSDT', 3000, 3000, 200.06),
+        point(12, 'ETHUSDT', 2000, 2000, 200.08),
+        point(13, 'ETHUSDT', 3000, 3000, 200.10),
     ]
     config = LeadLagConfig(
         shock_min_bps=5.0,
