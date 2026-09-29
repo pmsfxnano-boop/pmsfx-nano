@@ -1,8 +1,8 @@
 """Explicitly isolated persistence for the Crypto cleanroom.
 
-The Crypto runtime never reuses gorila_argentum.storage.Store and never reads the
-legacy DATABASE_URL / GORILA_DB_SCHEMA settings. PostgreSQL uses a dedicated
-schema; SQLite uses a dedicated file. Both paths create only crypto_* tables.
+The Crypto runtime has its own persistence contract and ignores legacy storage
+configuration. PostgreSQL uses a dedicated schema; SQLite uses a dedicated file.
+Both paths create only crypto_* tables.
 """
 
 from __future__ import annotations
