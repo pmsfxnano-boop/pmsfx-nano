@@ -126,3 +126,36 @@ def test_kraken_adapter_verifies_book_after_loading_instrument_precision() -> No
     assert events[0].quality == "INTEGRITY_VERIFIED"
     assert events[0].payload["_checksum_expected"] == checksum
     assert events[0].payload["_checksum_computed"] == checksum
+
+
+def test_kraken_wire_json_preserves_decimal_tokens_without_float_rounding() -> None:
+    from gorila_crypto.kraken import KrakenSpotMarketAdapter
+
+    class FakeWS:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.payloads = iter([
+                '{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","timestamp":"2026-09-29T20:00:00.123456Z","bids":[{"price":60000.10,"qty":1.2300}],"asks":[{"price":60001.20,"qty":0.0100}]}]}',
+                None,
+            ])
+
+        def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        def recv(self):
+            return next(self.payloads)
+
+    adapter = KrakenSpotMarketAdapter(
+        KrakenStreamConfig(
+            symbols=("BTC/USD",),
+            streams=("bookTicker",),
+            depth=10,
+            connection_max_seconds=1.0,
+        )
+    )
+    events = list(adapter.iter_events_once(ws=FakeWS()))
+    assert len(events) == 1
+    assert events[0].payload["bids"][0]["price"] == "60000.10"
+    assert events[0].payload["bids"][0]["qty"] == "1.2300"
+    assert events[0].payload["asks"][0]["price"] == "60001.20"
+    assert events[0].payload["asks"][0]["qty"] == "0.0100"
