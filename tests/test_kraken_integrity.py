@@ -16,7 +16,7 @@ def test_kraken_checksum_is_ascending_asks_then_descending_bids() -> None:
         bids={60000: 1.2, 59999: 3.4},
     )
     checksum, payload = kraken_checksum(book, KrakenPrecision(price=0, qty=1))
-    assert payload == "600011600022260000125999934"
+    assert payload == "6000111600022260000125999934"
     assert checksum == 3091858513
 
 
