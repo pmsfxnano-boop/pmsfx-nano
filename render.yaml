@@ -22,6 +22,7 @@ services:
     name: gorila-argentum-research
     runtime: python
     region: oregon
+    branch: gorila-argentum-v0-hardening
     plan: free
     buildCommand: pip install -r requirements-gorila.txt
     startCommand: uvicorn gorila_argentum.app:app --host 0.0.0.0 --port $PORT
