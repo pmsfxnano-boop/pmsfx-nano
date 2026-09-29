@@ -92,6 +92,7 @@ class NormalizedMarketEvent:
     sequence_end: int | None = None
     sequence_kind: str | None = None
     receive_time_ns: int | None = None
+    quality: str = "OK"
 
 
 @dataclass
@@ -190,6 +191,7 @@ def normalize_book_ticker(
     symbol = str(data["s"]).upper()
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_event_time_semantics"] = "RECEIVE_TIME_ONLY"
     return NormalizedMarketEvent(
         symbol=symbol,
         event_type="bookTicker",
@@ -201,6 +203,7 @@ def normalize_book_ticker(
         sequence_end=int(data["u"]),
         sequence_kind="book_update_id",
         receive_time_ns=received_ns,
+        quality="TRANSPORT_TIME_ONLY",
     )
 
 
@@ -321,9 +324,11 @@ def bootstrap_order_book(
         event for event in buffered
         if int(event["u"]) > snapshot_id
     ]
-    bridging = [event for event in filtered if int(event["U"]) <= snapshot_id + 1 <= int(event["u"])]
-    if not bridging:
-        raise BinanceAdapterError("no buffered depth event bridges the snapshot update id")
+    if not filtered:
+        raise BinanceAdapterError("buffer contains no post-snapshot depth event")
+    first_post_snapshot = filtered[0]
+    if not (int(first_post_snapshot["U"]) <= snapshot_id + 1 <= int(first_post_snapshot["u"])):
+        raise BinanceAdapterError("snapshot does not bridge the first buffered post-snapshot depth event")
 
     first_bridge = bridging[0]
     book = OrderBook(symbol=symbol.upper(), last_update_id=snapshot_id)
