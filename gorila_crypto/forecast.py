@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
 from .lead_lag import LeadLagConfig, PricePoint, _log_return_bps
@@ -109,7 +109,7 @@ def build_detection_features(
     """Build only information available at the trigger receive time."""
     decision_event = _dt(trigger.event_time)
     decision_received = _dt(trigger.received_time)
-    if decision_event - decision_received > 5.0 * 1000.0 * (datetime.now(timezone.utc) - datetime.now(timezone.utc)).total_seconds():
+    if decision_event > decision_received + timedelta(seconds=5):
         raise ValueError("invalid trigger clock ordering")
 
     historical_target = _latest_available(
@@ -120,7 +120,7 @@ def build_detection_features(
 
     prior_target_candidates = [
         point for point in target
-        if point.event_time <= decision_event - __import__("datetime").timedelta(seconds=config.lookback_seconds)
+        if point.event_time <= decision_event - timedelta(seconds=config.lookback_seconds)
         and point.received_time <= decision_received
     ]
     prior_target = prior_target_candidates[-1] if prior_target_candidates else None
