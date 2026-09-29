@@ -71,6 +71,28 @@ jobs:
           print("GORILA_DEPLOY_IDENTITY_PASS", json.dumps(d, indent=2, sort_keys=True))
           PY
 
+      - name: Verify terminal frontend and chart contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://gorila-argentum-research.onrender.com"
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 45 "$URL/" -o /tmp/gorila.html
+          grep -q 'id="priceCanvas"' /tmp/gorila.html
+          grep -q 'data-range="1D"' /tmp/gorila.html
+          grep -q 'data-range="1Y"' /tmp/gorila.html
+          curl --fail --silent --show-error --connect-timeout 15 --max-time 45             "$URL/api/gorila/chart/GGAL?timeframe=1D" -o /tmp/chart.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("/tmp/chart.json").read_text())
+          assert d["service"] == "gorila-argentum", d
+          assert d["symbol"] == "GGAL", d
+          assert d["timeframe"] == "1D", d
+          assert d["status"] in {"READY","NO_DATA"}, d
+          assert isinstance(d["rows"], list), d
+          print("GORILA_CHART_CONTRACT_PASS", json.dumps(d, indent=2, sort_keys=True))
+          PY
+
       - name: Verify validated cross-sectional predictor
         shell: bash
         run: |
