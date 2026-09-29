@@ -16,6 +16,7 @@ from typing import Any, Callable
 from gorila_core.market_freshness import assess_observation
 
 from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
+from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .config import settings
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
 
@@ -93,7 +94,7 @@ class ProspectiveCryptoIngestor:
 
     @property
     def source_family(self) -> str:
-        return "binance.websocket.market"
+        return str(getattr(self.adapter, "source_family", "crypto.websocket.market"))
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
@@ -272,21 +273,35 @@ class ProspectiveCryptoIngestor:
         }
 
 
+def build_market_adapter():
+    """Construct the configured market-data adapter without starting it."""
+    if settings.provider == "kraken":
+        return KrakenSpotMarketAdapter(
+            KrakenStreamConfig(
+                symbols=settings.symbols,
+                streams=settings.streams,
+                depth=settings.depth_speed,
+            )
+        )
+    return BinanceSpotMarketAdapter(
+        BinanceStreamConfig(
+            symbols=settings.symbols,
+            streams=("trade", "bookTicker", "depth"),
+            depth_speed=settings.depth_speed,
+        )
+    )
+
+
 def build_prospective_runtime() -> ProspectiveCryptoIngestor:
     """Build the production-shaped prospective runtime without starting it."""
     if not CRYPTO_DATABASE_URL:
         raise RuntimeError(
-            "GORILA_CRYPTO_DATABASE_URL is required for durable prospective ingestion; "
+            "GORILA_CRYPTO_DATABASE_URL or DATABASE_URL is required for durable prospective ingestion; "
             "refusing ephemeral SQLite accumulation"
         )
-    adapter = BinanceSpotMarketAdapter(
-        BinanceStreamConfig(
-            symbols=settings.symbols,
-            streams=("trade", "bookTicker", "depth"),
-        )
-    )
+    adapter = build_market_adapter()
     return ProspectiveCryptoIngestor(
-        CryptoStore(database_url=CRYPTO_DATABASE_URL),
+        CryptoStore(database_url=CRYPTO_DATABASE_URL, require_durable=True),
         adapter,
     )
 
