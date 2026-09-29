@@ -62,6 +62,14 @@ def test_forecast_shadow_persists_blocked_model_without_probability(tmp_path) ->
     assert report["automatic_promotion"] is False
     assert report["results"][0]["status"] == "BLOCKED_NO_VALIDATED_MODEL"
     assert report["results"][0]["probability_response_positive"] is None
+    conn = store.connect()
+    try:
+        manifest_count = conn.execute(
+            "SELECT COUNT(*) FROM crypto_replay_manifests"
+        ).fetchone()[0]
+        assert manifest_count == 1
+    finally:
+        conn.close()
 
 
 def test_forecast_shadow_is_blocked_on_event_time_replay(tmp_path) -> None:
