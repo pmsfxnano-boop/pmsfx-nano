@@ -206,19 +206,13 @@ def _resolve_session(
         (sorted(values)[len(values) // 2 - 1] + sorted(values)[len(values) // 2]) / 2.0
     )
     spread = 0.0 if median <= 0 else max(abs(v - median) / median for v in values)
-    latest_event = max(_parse_time(item["event_time"]) for item in candidates)
+    # Daily rows are reconciled at session-date granularity. Different
+    # vendors may encode the same Argentine session with different UTC
+    # timestamps (e.g. midnight UTC vs. 23:59:59 ART). Do not use the raw
+    # timestamp delta as a "freshness" override because that can incorrectly
+    # replace the declared primary source with a secondary vendor.
     preferred = candidates[0]
-    preferred_age = (latest_event - _parse_time(preferred["event_time"])).total_seconds() / 3600.0
-    if preferred_age > freshness_hours:
-        preferred = max(
-            candidates,
-            key=lambda item: (
-                _parse_time(item["event_time"]),
-                _parse_time(item["received_time"]),
-                -_SOURCE_PRIORITY[item["family"]],
-                item["source"],
-            ),
-        )
+    freshness_override = False
 
     cross_vendor_disagreement = spread > max_rel_spread
     primary_family = str(preferred.get("family") or "")
@@ -250,7 +244,7 @@ def _resolve_session(
         "median": median,
         "candidates": candidates,
         "candidate_hash": _candidate_hash(candidates),
-        "freshness_override": preferred["source"] != candidates[0]["source"],
+        "freshness_override": bool(freshness_override),
         "primary_family": primary_family,
         "cross_vendor_disagreement": bool(cross_vendor_disagreement),
         "cross_vendor_validation": [
