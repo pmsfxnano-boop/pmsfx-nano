@@ -25,7 +25,7 @@ from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, qu
 from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
 from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
-from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from gorila_crypto.protocol import protocol_for
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
 
 
@@ -41,19 +41,20 @@ def _new_store() -> CryptoStore:
     return QuantCryptoStore(require_durable=settings.ingest_enabled)
 
 
+def _study_protocol():
+    return protocol_for(settings.provider)
+
+
 def _safe_store_stats() -> dict[str, Any] | None:
     if not settings.ingest_enabled:
         return None
     try:
         store = _new_store()
-        if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-            session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
-            return store.scoped_stats(
-                study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-                capture_session_id=session_id,
-            )
-        return store.prospective_stats(
-            source_prefix=f"{settings.provider}.websocket.",
+        protocol = _study_protocol()
+        session_id = store.active_capture_session(protocol.study_id)
+        return store.scoped_stats(
+            study_id=protocol.study_id,
+            capture_session_id=session_id,
         )
     except RuntimeError:
         return None
@@ -95,16 +96,12 @@ def _heartbeat_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
         try:
-            if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-                session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
-                stats = store.scoped_stats(
-                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-                    capture_session_id=session_id,
-                )
-            else:
-                stats = store.prospective_stats(
-                    source_prefix=f"{settings.provider}.websocket.",
-                )
+            protocol = _study_protocol()
+            session_id = store.active_capture_session(protocol.study_id)
+            stats = store.scoped_stats(
+                study_id=protocol.study_id,
+                capture_session_id=session_id,
+            )
             print(
                 "GORILA_CAPTURE_HEARTBEAT "
                 + json.dumps(
@@ -142,8 +139,9 @@ def _required_quality_event_types() -> tuple[str, ...]:
 def _quality_loop() -> None:
     store = _new_store()
     required_event_types = _required_quality_event_types()
-    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-        quality_spec = PREREGISTERED_CRYPTO_PROTOCOL.quality_config()
+    protocol = _study_protocol()
+    if protocol is not None:
+        quality_spec = protocol.quality_config()
         config = DataQualityConfig(
             min_rows_per_symbol=int(quality_spec["min_rows_per_symbol"]),
             min_duration_seconds=float(quality_spec["min_duration_seconds"]),
@@ -165,13 +163,14 @@ def _quality_loop() -> None:
         )
     while not _stop_event.is_set():
         try:
-            if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-                session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+            protocol = _study_protocol()
+            if protocol is not None:
+                session_id = store.active_capture_session(protocol.study_id)
                 if session_id is None:
                     _stop_event.wait(settings.quality_interval_seconds)
                     continue
                 rows = store.read_scoped_events(
-                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    study_id=protocol.study_id,
                     capture_session_id=session_id,
                     source_prefix="binance.websocket.",
                     order="ingest",
@@ -378,54 +377,3 @@ def prospective_status() -> dict[str, Any]:
         health_rows = [
             row for row in store.health(source_prefix="binance.websocket.")
             if row.get("last_event_time") is not None
-        ]
-        stats = store.scoped_stats(
-            study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-            capture_session_id=session_id,
-        )
-    else:
-        health_rows = store.health(
-            source_prefix=f"{settings.provider}.websocket.",
-        )
-        stats = store.prospective_stats(
-            source_prefix=f"{settings.provider}.websocket.",
-        )
-    return {
-        "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
-        "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
-        "ledger": stats,
-        "source_health": health_rows,
-        "automatic_promotion": False,
-        "execution": False,
-    }
-
-
-@app.get("/api/crypto/config")
-def config_snapshot() -> dict[str, Any]:
-    return {
-        "environment": settings.environment,
-        "provider": settings.provider,
-        "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
-        "protocol_version": PREREGISTERED_CRYPTO_PROTOCOL.version if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
-        "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
-        "symbols": list(settings.symbols),
-        "streams": list(settings.streams),
-        "depth_speed": settings.depth_speed,
-        "ingest_enabled": settings.ingest_enabled,
-        "quality_monitor_enabled": settings.quality_monitor_enabled,
-        "quality_interval_seconds": settings.quality_interval_seconds,
-        "quality_row_limit": settings.quality_row_limit,
-        "quality_min_rows_per_symbol": settings.quality_min_rows_per_symbol,
-        "quality_min_duration_seconds": settings.quality_min_duration_seconds,
-        "quality_max_p99_transport_latency_ms": settings.quality_max_p99_transport_latency_ms,
-        "quality_required_event_types": list(_required_quality_event_types()),
-        "quality_required_event_type_min_rows": {
-            event_type: settings.quality_min_rows_per_symbol
-            for event_type in _required_quality_event_types()
-        },
-        "quality_required_integrity_event_types": (
-            ["bookUpdate"] if settings.provider == "kraken" else []
-        ),
-        "durable_storage_required_when_ingesting": settings.ingest_enabled,
-        "storage_backend": _storage_backend_status(),
-    }
