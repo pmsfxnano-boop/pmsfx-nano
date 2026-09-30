@@ -1,82 +1,3 @@
-"""Prospective multi-venue market-data ingestion for the Crypto cleanroom.
-
-A9 turns the proven adapter into a persistence-only 24/7 research feed.
-It records raw normalized events, connection lifecycle, sequence gaps, and
-source freshness. It never forecasts, trades, or promotes a model.
-"""
-
-from __future__ import annotations
-
-import json
-import os
-import threading
-import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
-
-from gorila_core.market_freshness import assess_observation
-
-from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
-from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
-from .config import settings
-from .protocol import protocol_for
-from .quant_store import QuantCryptoStore
-from .storage import CryptoStore, CRYPTO_DATABASE_URL
-
-
-class MarketAdapterProtocol(Protocol):
-    config: Any
-    source_family: str
-
-    def iter_forever(
-        self,
-        *,
-        stop_event=None,
-        on_connection: Callable[[str, dict[str, Any]], None] | None = None,
-        initial_backoff_s: float = 1.0,
-        max_backoff_s: float = 60.0,
-    ):
-        ...
-
-
-@dataclass(frozen=True)
-class IngestRuntimeConfig:
-    kind: str = "PROSPECTIVE_MARKET_INGEST"
-    gap_status: str = "GAP_DETECTED"
-    health_status: str = "HEALTHY"
-    error_status: str = "DEGRADED"
-    health_flush_interval_seconds: float = 1.0
-
-    def validate(self) -> None:
-        if not self.kind.strip():
-            raise ValueError("runtime kind cannot be empty")
-        if not self.gap_status.strip() or not self.health_status.strip():
-            raise ValueError("runtime statuses cannot be empty")
-        if self.health_flush_interval_seconds <= 0:
-            raise ValueError("health flush interval must be positive")
-
-
-class SequenceContinuityMonitor:
-    """Detect in-connection sequence gaps without inferring missing history."""
-
-    def __init__(self) -> None:
-        self.epoch = 0
-        self._previous: dict[tuple[str, str], int] = {}
-
-    def new_connection(self) -> None:
-        self.epoch += 1
-        self._previous.clear()
-
-    def observe(self, event: NormalizedMarketEvent) -> tuple[int, int] | None:
-        if event.sequence_start is None or event.sequence_end is None:
-            return None
-        if event.event_type != "depthUpdate":
-            return None
-
-        key = (event.symbol.upper(), event.event_type)
-        previous = self._previous.get(key)
-        current_start = int(event.sequence_start)
         current_end = int(event.sequence_end)
 
         if previous is not None and current_start > previous + 1:
@@ -145,7 +66,10 @@ class ProspectiveCryptoIngestor:
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
         if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
-            self.store.heartbeat_runtime_run(self.run_id)
+            alive = self.store.heartbeat_runtime_run(self.run_id)
+            if not alive:
+                self.stop_event.set()
+                raise RuntimeError("runtime_lease_lost")
             self._last_runtime_heartbeat = time.monotonic()
         if status == "CONNECTED":
             self.sequence.new_connection()
@@ -293,13 +217,12 @@ class ProspectiveCryptoIngestor:
             stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
             self.store.register_study(self.protocol)
 
-            # Rolling Render deploys briefly overlap old and new instances.
-            # Wait for the single active study session to close before claiming it.
-            handoff_deadline = time.monotonic() + 90.0
-            while self.store.active_capture_session(self.protocol.study_id) is not None:
-                if time.monotonic() >= handoff_deadline:
-                    raise RuntimeError("capture_session_handoff_timeout")
-                time.sleep(2.0)
+            # Render rolling deploys can overlap workers. The new worker fences
+            # the previous single-writer cohort atomically before claiming it.
+            fenced = self.store.fence_active_study_session(
+                study_id=self.protocol.study_id,
+                reason="REPLACED_BY_NEW_WORKER",
+            )
 
             self.session_id = self.store.start_capture_session(
                 study_id=self.protocol.study_id,
@@ -311,7 +234,10 @@ class ProspectiveCryptoIngestor:
                 region=os.getenv("RENDER_REGION"),
                 instance_id=os.getenv("RENDER_INSTANCE_ID"),
                 code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-                metadata={"stale_runs_reconciled": stale},
+                metadata={
+                    "stale_runs_reconciled": stale,
+                    "fenced_previous_sessions": fenced,
+                },
             )
             self.run_id = self.store.start_runtime_run_scoped(
                 kind=self.config.kind,
@@ -346,7 +272,10 @@ class ProspectiveCryptoIngestor:
                 self._ingest(event)
                 now_monotonic = time.monotonic()
                 if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
-                    self.store.heartbeat_runtime_run(self.run_id)
+                    alive = self.store.heartbeat_runtime_run(self.run_id)
+                    if not alive:
+                        self.stop_event.set()
+                        raise RuntimeError("runtime_lease_lost")
                     self._last_runtime_heartbeat = now_monotonic
                 if self.stop_event.is_set():
                     status = "STOPPED"
