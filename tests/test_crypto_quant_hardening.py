@@ -150,3 +150,26 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
         ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
     )
     assert len(scoped.rows) == 1
+
+def test_validation_label_keeps_backward_compatible_horizon_diagnostics() -> None:
+    from gorila_crypto.validation import ForecastLabel
+
+    label = ForecastLabel(
+        realized_target=1,
+        realized_signed_return_bps=4.0,
+        baseline_target_price=100.0,
+        future_target_price=100.04,
+        label_event_time=datetime(2026, 9, 30, tzinfo=timezone.utc),
+        label_received_time=datetime(2026, 9, 30, tzinfo=timezone.utc),
+        label_event_id="legacy",
+        horizon_ms=500,
+    )
+    assert label.actual_event_horizon_ms is None
+    assert label.actual_receive_horizon_ms is None
+
+
+def test_holm_correction_uses_distinct_pvalues() -> None:
+    from gorila_crypto.research_gates import holm_bonferroni
+
+    adjusted = holm_bonferroni([0.001, 0.02, 0.20])
+    assert adjusted[0] < adjusted[1] < adjusted[2]
