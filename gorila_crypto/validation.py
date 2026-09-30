@@ -986,7 +986,7 @@ def run_walk_forward_validation(
     # a distinct predeclared research hypothesis; Holm controls FWER under
     # arbitrary dependence.
     hypothesis_p_values: list[float] = [placebo_p] if placebo_p is not None else []
-    oos_rows = [dataset[i] for fold in folds for i in fold.fold.test_indices]
+    oos_rows = [dataset[i] for fold in folds for i in fold.test_indices]
     by_symbol_labels: dict[str, list[int]] = {}
     by_symbol_probs: dict[str, list[float]] = {}
     by_horizon_labels: dict[int, list[int]] = {}
