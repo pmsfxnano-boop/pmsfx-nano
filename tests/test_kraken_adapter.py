@@ -135,7 +135,8 @@ def test_kraken_wire_json_preserves_decimal_tokens_without_float_rounding() -> N
         def __init__(self) -> None:
             self.sent: list[str] = []
             self.payloads = iter([
-                '{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","timestamp":"2026-09-29T20:00:00.123456Z","bids":[{"price":60000.10,"qty":1.2300}],"asks":[{"price":60001.20,"qty":0.0100}]}]}',
+                '{"channel":"instrument","type":"snapshot","data":[{"symbol":"BTC/USD","price_precision":2,"qty_precision":4}]}',
+                '{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/USD","timestamp":"2026-09-29T20:00:00.123456Z","bids":[{"price":60000.10,"qty":1.2300}],"asks":[{"price":60001.20,"qty":0.0100}],"checksum":414416340}]}',
                 None,
             ])
 
@@ -155,10 +156,12 @@ def test_kraken_wire_json_preserves_decimal_tokens_without_float_rounding() -> N
     )
     events = list(adapter.iter_events_once(ws=FakeWS()))
     assert len(events) == 1
+    assert events[0].quality == "INTEGRITY_VERIFIED"
     assert str(events[0].payload["bids"][0]["price"]) == "60000.10"
     assert str(events[0].payload["bids"][0]["qty"]) == "1.2300"
     assert str(events[0].payload["asks"][0]["price"]) == "60001.20"
     assert str(events[0].payload["asks"][0]["qty"]) == "0.0100"
+    assert events[0].payload["_checksum_expected"] == 414416340
 
 
 def test_kraken_rejects_incremental_book_update_before_fresh_snapshot() -> None:
