@@ -1566,21 +1566,33 @@ class CryptoStore:
         finally:
             conn.close()
 
-    def read_data_gaps(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+    def read_data_gaps(
+        self,
+        *,
+        source_prefix: str | None = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
         self.init()
         if limit < 1:
             raise ValueError("limit must be positive")
         conn = self.connect()
         try:
+            placeholder = "%s" if self._pg else "?"
+            params: list[Any] = []
+            where = ""
+            if source_prefix is not None:
+                where = f" WHERE source LIKE {placeholder}"
+                params.append(source_prefix.rstrip("%") + "%")
             query = (
                 "SELECT gap_id,detected_at,symbol,source,expected_sequence,"
-                "observed_sequence,status,metadata FROM crypto_data_gaps "
-                "ORDER BY detected_at DESC LIMIT "
+                "observed_sequence,status,metadata FROM crypto_data_gaps"
+                + where
+                + " ORDER BY detected_at DESC LIMIT "
                 + str(int(limit))
             )
             if self._pg:
                 with conn.cursor() as cur:
-                    cur.execute(query)
+                    cur.execute(query, params)
                     rows = cur.fetchall()
                     keys = [
                         "gap_id","detected_at","symbol","source",
@@ -1591,7 +1603,7 @@ class CryptoStore:
                          for key, value in zip(keys, row)}
                         for row in rows
                     ]
-            rows = conn.execute(query).fetchall()
+            rows = conn.execute(query, params).fetchall()
             return [
                 {
                     **dict(row),
@@ -1602,10 +1614,20 @@ class CryptoStore:
         finally:
             conn.close()
 
-    def prospective_stats(self) -> dict[str, Any]:
+    def prospective_stats(
+        self,
+        *,
+        source_prefix: str | None = None,
+    ) -> dict[str, Any]:
         self.init()
         conn = self.connect()
         try:
+            placeholder = "%s" if self._pg else "?"
+            params: list[Any] = []
+            event_where = ""
+            if source_prefix is not None:
+                event_where = f" WHERE source LIKE {placeholder}"
+                params.append(source_prefix.rstrip("%") + "%")
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -1614,9 +1636,11 @@ class CryptoStore:
                            MAX(event_time) AS last_event_time,
                            MIN(received_time) AS first_received_time,
                            MAX(received_time) AS last_received_time
-                        FROM crypto_events
-                        GROUP BY symbol,event_type
-                        ORDER BY symbol,event_type"""
+                        FROM crypto_events"""
+                        + event_where
+                        + """ GROUP BY symbol,event_type
+                           ORDER BY symbol,event_type""",
+                        params,
                     )
                     counts = [
                         {
@@ -1630,7 +1654,13 @@ class CryptoStore:
                         }
                         for row in cur.fetchall()
                     ]
-                    cur.execute("SELECT COUNT(*) FROM crypto_data_gaps")
+                    if source_prefix is not None:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM crypto_data_gaps WHERE source LIKE " + placeholder,
+                            [source_prefix.rstrip("%") + "%"],
+                        )
+                    else:
+                        cur.execute("SELECT COUNT(*) FROM crypto_data_gaps")
                     gap_count = int(cur.fetchone()[0])
                     cur.execute(
                         "SELECT status,created_at,result FROM crypto_runtime_runs "
@@ -1646,13 +1676,23 @@ class CryptoStore:
                            MAX(event_time) AS last_event_time,
                            MIN(received_time) AS first_received_time,
                            MAX(received_time) AS last_received_time
-                        FROM crypto_events
-                        GROUP BY symbol,event_type
-                        ORDER BY symbol,event_type"""
+                        FROM crypto_events"""
+                        + event_where
+                        + """ GROUP BY symbol,event_type
+                           ORDER BY symbol,event_type""",
+                        params,
                     ).fetchall()
                 ]
+                gap_query = (
+                    "SELECT COUNT(*) FROM crypto_data_gaps WHERE source LIKE ?"
+                    if source_prefix is not None
+                    else "SELECT COUNT(*) FROM crypto_data_gaps"
+                )
                 gap_count = int(
-                    conn.execute("SELECT COUNT(*) FROM crypto_data_gaps").fetchone()[0]
+                    conn.execute(
+                        gap_query,
+                        [source_prefix.rstrip("%") + "%"] if source_prefix is not None else [],
+                    ).fetchone()[0]
                 )
                 runtime_row = conn.execute(
                     "SELECT status,created_at,result FROM crypto_runtime_runs "
