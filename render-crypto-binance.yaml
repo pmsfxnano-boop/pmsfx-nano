@@ -5,7 +5,7 @@ services:
   - type: web
     name: gorila-crypto-cleanroom-binance-capture
     runtime: python
-    region: oregon
+    region: frankfurt
     plan: free
     branch: gorila-crypto-binance-parallel
     buildCommand: pip install -r requirements-gorila.txt
