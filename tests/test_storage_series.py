@@ -175,3 +175,65 @@ def test_live_primary_beats_delayed_secondary():
     assert role == "primary"
     assert freshness["status"] == "LIVE"
 
+
+
+def test_primary_bymadata_history_survives_vendor_disagreement():
+    from gorila_argentum.canonical_data import _resolve_session
+
+    candidates = [
+        {
+            "family": "BYMADATA",
+            "source": "BYMADATA/GGAL/historical",
+            "value": 6760.0,
+            "event_time": "2026-09-16T03:00:00+00:00",
+            "received_time": "2026-09-28T15:49:16.927142+00:00",
+        },
+        {
+            "family": "Rava",
+            "source": "RavaPublic/GGAL",
+            "value": 6705.0,
+            "event_time": "2026-09-17T02:59:59+00:00",
+            "received_time": "2026-09-29T20:15:18.739585+00:00",
+        },
+    ]
+
+    status, resolution = _resolve_session(
+        candidates,
+        max_rel_spread=0.0025,
+        freshness_hours=12.0,
+    )
+
+    assert status == "ACCEPTED_PRIMARY_SOURCE"
+    assert resolution["source"] == "BYMADATA/GGAL/historical"
+    assert resolution["cross_vendor_disagreement"] is True
+    assert resolution["cross_vendor_validation"][1]["source"] == "RavaPublic/GGAL"
+
+
+def test_non_primary_vendor_disagreement_remains_quarantined():
+    from gorila_argentum.canonical_data import _resolve_session
+
+    candidates = [
+        {
+            "family": "Rava",
+            "source": "RavaPublic/GGAL",
+            "value": 100.0,
+            "event_time": "2026-09-16T02:59:59+00:00",
+            "received_time": "2026-09-17T20:00:00+00:00",
+        },
+        {
+            "family": "TwelveData",
+            "source": "TwelveData/GGAL",
+            "value": 101.0,
+            "event_time": "2026-09-16T03:00:00+00:00",
+            "received_time": "2026-09-17T20:00:00+00:00",
+        },
+    ]
+
+    status, resolution = _resolve_session(
+        candidates,
+        max_rel_spread=0.0025,
+        freshness_hours=12.0,
+    )
+
+    assert status == "QUARANTINED_SOURCE_DISAGREEMENT"
+    assert resolution["spread"] > 0.0025
