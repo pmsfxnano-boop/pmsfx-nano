@@ -13,5 +13,5 @@ jobs:
       - name: Ping cleanroom capture service
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 20             https://gorila-crypto-cleanroom-binance.onrender.com/api/crypto/health
+          curl --fail --silent --show-error --max-time 20             https://gorila-crypto-cleanroom-binance.onrender.com/api/crypto/readiness
           echo
