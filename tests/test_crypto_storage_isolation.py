@@ -112,6 +112,42 @@ def test_crypto_storage_rewrites_cross_region_postgres_endpoint_with_tls(
     )
 
 
+def test_crypto_read_events_can_scope_source_and_skip_payload(tmp_path: Path) -> None:
+    db = tmp_path / "crypto.sqlite3"
+    store = CryptoStore(sqlite_path=str(db))
+    store.record_event(
+        symbol="BTCUSDT",
+        event_type="trade",
+        event_time="2026-09-29T15:00:00+00:00",
+        received_time="2026-09-29T15:00:00.050000+00:00",
+        provider_time="2026-09-29T15:00:00+00:00",
+        source="binance.websocket.trade",
+        sequence_start=1,
+        sequence_end=1,
+        payload={"p": "60000.0"},
+    )
+    store.record_event(
+        symbol="BTC/USD",
+        event_type="trade",
+        event_time="2026-09-29T15:00:01+00:00",
+        received_time="2026-09-29T15:00:01.050000+00:00",
+        provider_time="2026-09-29T15:00:01+00:00",
+        source="kraken.websocket.trade",
+        sequence_start=2,
+        sequence_end=2,
+        payload={"p": "60000.1"},
+    )
+
+    rows = store.read_events(
+        source_prefix="binance.websocket.",
+        include_payload=False,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "binance.websocket.trade"
+    assert rows[0]["payload"] is None
+
+
 def test_crypto_storage_rejects_legacy_sqlite_path_reuse(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
