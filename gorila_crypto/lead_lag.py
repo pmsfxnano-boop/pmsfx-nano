@@ -61,6 +61,7 @@ class LeadLagConfig:
     max_response_seconds: float = 10.0
     reaction_threshold_bps: float = 2.0
     convergence_fraction: float = 0.70
+    refractory_seconds: float = 1.0
 
     def validate(self) -> None:
         if self.lookback_seconds <= 0:
@@ -75,6 +76,8 @@ class LeadLagConfig:
             raise ValueError("reaction_threshold_bps must be positive")
         if not 0 < self.convergence_fraction <= 1:
             raise ValueError("convergence_fraction must be in (0,1]")
+        if self.refractory_seconds <= 0:
+            raise ValueError("refractory_seconds must be positive")
 
 
 @dataclass(frozen=True)
@@ -268,6 +271,8 @@ def detect_leader_impulses(
 ) -> list[tuple[PricePoint, float]]:
     config.validate()
     impulses: list[tuple[PricePoint, float]] = []
+    last_impulse_time = None
+    refractory = config.refractory_seconds
     for point in series:
         reference = _past_available_price(
             series, point.event_time, point.received_time, config.lookback_seconds
@@ -277,7 +282,13 @@ def detect_leader_impulses(
         leader_return = _log_return_bps(point.price, reference.price)
         if abs(leader_return) < config.shock_min_bps:
             continue
+        if (
+            last_impulse_time is not None
+            and (point.event_time - last_impulse_time).total_seconds() < refractory
+        ):
+            continue
         impulses.append((point, leader_return))
+        last_impulse_time = point.event_time
     return impulses
 
 

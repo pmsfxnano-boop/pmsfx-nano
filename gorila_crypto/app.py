@@ -36,17 +36,24 @@ _capture_block_reason: str | None = None
 
 
 def _new_store() -> CryptoStore:
-    return CryptoStore(require_durable=settings.ingest_enabled)
+    return QuantCryptoStore(require_durable=settings.ingest_enabled)
 
 
 def _safe_store_stats() -> dict[str, Any] | None:
     if not settings.ingest_enabled:
         return None
     try:
-        return _new_store().prospective_stats(
+        store = _new_store()
+        if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+            session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+            return store.scoped_stats(
+                study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                capture_session_id=session_id,
+            )
+        return store.prospective_stats(
             source_prefix=f"{settings.provider}.websocket.",
         )
-    except RuntimeError as exc:
+    except RuntimeError:
         return None
 
 
@@ -103,35 +110,61 @@ def _required_quality_event_types() -> tuple[str, ...]:
 def _quality_loop() -> None:
     store = _new_store()
     required_event_types = _required_quality_event_types()
-    config = DataQualityConfig(
-        min_rows_per_symbol=settings.quality_min_rows_per_symbol,
-        min_duration_seconds=settings.quality_min_duration_seconds,
-        max_p99_transport_latency_ms=settings.quality_max_p99_transport_latency_ms,
-        required_event_types=required_event_types,
-        required_event_type_min_rows={
-            event_type: settings.quality_min_rows_per_symbol
-            for event_type in required_event_types
-        },
-        required_integrity_event_types=("bookUpdate",) if settings.provider == "kraken" else (),
-    )
+    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+        quality_spec = PREREGISTERED_CRYPTO_PROTOCOL.quality_config()
+        config = DataQualityConfig(
+            min_rows_per_symbol=int(quality_spec["min_rows_per_symbol"]),
+            min_duration_seconds=float(quality_spec["min_duration_seconds"]),
+            max_p99_transport_latency_ms=float(quality_spec["max_p99_transport_latency_ms"]),
+            required_event_types=tuple(quality_spec["required_event_types"]),
+            required_event_type_min_rows=dict(quality_spec["required_event_type_min_rows"]),
+        )
+    else:
+        config = DataQualityConfig(
+            min_rows_per_symbol=settings.quality_min_rows_per_symbol,
+            min_duration_seconds=settings.quality_min_duration_seconds,
+            max_p99_transport_latency_ms=settings.quality_max_p99_transport_latency_ms,
+            required_event_types=required_event_types,
+            required_event_type_min_rows={
+                event_type: settings.quality_min_rows_per_symbol
+                for event_type in required_event_types
+            },
+            required_integrity_event_types=("bookUpdate",) if settings.provider == "kraken" else (),
+        )
     while not _stop_event.is_set():
         try:
-            rows = store.read_events(
-                source_prefix=f"{settings.provider}.websocket.",
-                order="ingest",
-                limit=settings.quality_row_limit,
-                include_payload=False,
-            )
+            if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+                session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+                if session_id is None:
+                    _stop_event.wait(settings.quality_interval_seconds)
+                    continue
+                rows = store.read_scoped_events(
+                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    capture_session_id=session_id,
+                    source_prefix="binance.websocket.",
+                    order="ingest",
+                    limit=settings.quality_row_limit,
+                    include_payload=False,
+                )
+                gap_rows = store.read_data_gaps(limit=10000)
+            else:
+                rows = store.read_events(
+                    source_prefix=f"{settings.provider}.websocket.",
+                    order="ingest",
+                    limit=settings.quality_row_limit,
+                    include_payload=False,
+                )
+                gap_rows = store.read_data_gaps(
+                    source_prefix=f"{settings.provider}.websocket.",
+                    limit=10000,
+                )
             if rows:
                 replay_fp = compute_replay_fingerprint(rows)
                 report = evaluate_replay_quality(
                     rows,
                     replay_fingerprint=replay_fp,
                     config=config,
-                    gap_rows=store.read_data_gaps(
-                        source_prefix=f"{settings.provider}.websocket.",
-                        limit=10000,
-                    ),
+                    gap_rows=gap_rows,
                     reference_time=datetime.now(timezone.utc),
                 )
                 report_json = asdict(report)
