@@ -150,3 +150,14 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
         ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
     )
     assert len(scoped.rows) == 1
+
+def test_release_gate_v4_current_tree_contracts() -> None:
+    from gorila_crypto.binance import BinanceStreamConfig, build_ws_url
+    from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+
+    cfg = BinanceStreamConfig(
+        symbols=PREREGISTERED_CRYPTO_PROTOCOL.symbols,
+        streams=PREREGISTERED_CRYPTO_PROTOCOL.streams,
+    )
+    assert cfg.streams == ("trade", "bookTicker")
+    assert build_ws_url(cfg).startswith("wss://data-stream.binance.vision:443/stream?")
