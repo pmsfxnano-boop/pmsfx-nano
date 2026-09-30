@@ -292,9 +292,10 @@ class ProspectiveCryptoIngestor:
                 raise RuntimeError("runtime_does_not_match_preregistered_protocol")
             stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
             self.store.register_study(self.protocol)
+            effective_protocol_hash = self.store.get_study_protocol_hash(self.protocol.study_id)
             self.session_id = self.store.start_capture_session(
                 study_id=self.protocol.study_id,
-                protocol_hash=self.protocol.protocol_hash,
+                protocol_hash=effective_protocol_hash,
                 provider=settings.provider,
                 venue=self.protocol.venue,
                 symbols=tuple(self.adapter.config.symbols),
@@ -311,7 +312,7 @@ class ProspectiveCryptoIngestor:
             self._record_connection("RUN_STARTED", {
                 "symbols": list(self.adapter.config.symbols),
                 "study_id": self.protocol.study_id,
-                "protocol_hash": self.protocol.protocol_hash,
+                "protocol_hash": effective_protocol_hash,
                 "capture_session_id": self.session_id,
             })
         else:
