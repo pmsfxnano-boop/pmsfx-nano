@@ -279,6 +279,10 @@ def health() -> dict[str, Any]:
         },
         "storage_backend": _storage_backend_status(),
         "health_contract": "lightweight_no_ledger_scan",
+        "forecast": {
+            "automatic_promotion": False,
+            "execution": False,
+        },
     }
     if capture_enabled and not worker_alive:
         payload["status"] = "CAPTURE_WORKER_DEAD"
