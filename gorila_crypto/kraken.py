@@ -234,6 +234,10 @@ class KrakenSpotMarketAdapter:
         self._precisions: dict[str, KrakenPrecision] = {}
         self._books: dict[str, KrakenBookState] = {}
         self._book_snapshots_seen: set[str] = set()
+        self._pending_book_rows: dict[
+            str,
+            list[tuple[Mapping[str, Any], str, datetime, int]],
+        ] = {}
 
     def connection_url(self) -> str:
         return self.config.ws_url
@@ -245,6 +249,75 @@ class KrakenSpotMarketAdapter:
             ping_interval=self.config.ping_interval_s,
             enable_multithread=True,
         )
+
+    def _book_events_from_row(
+        self,
+        row: Mapping[str, Any],
+        *,
+        received_time: datetime,
+        receive_ns: int,
+        message_type: str,
+    ) -> Iterator[NormalizedMarketEvent]:
+        event = _book_event(
+            row,
+            received_time=received_time,
+            receive_ns=receive_ns,
+            message_type=message_type,
+        )
+        symbol = event.symbol.upper()
+        book = self._books.setdefault(
+            symbol,
+            KrakenBookState(symbol=symbol, depth=self.config.depth),
+        )
+        if message_type != "snapshot" and symbol not in self._book_snapshots_seen:
+            raise KrakenAdapterError(
+                f"{symbol}: book update arrived before a snapshot; refusing to extend stale state"
+            )
+        precision = self._precisions.get(symbol)
+        if precision is None:
+            raise KrakenAdapterError(
+                f"{symbol}: instrument precision missing while processing book row"
+            )
+        integrity = apply_and_verify(
+            book,
+            row,
+            message_type=message_type,
+            precision=precision,
+        )
+        payload = dict(event.payload)
+        payload["_derived_l1"] = dict(integrity.derived_l1)
+        payload["_integrity_status"] = integrity.status
+        payload["_integrity_reason"] = integrity.reason
+        payload["_checksum_expected"] = integrity.expected_checksum
+        payload["_checksum_computed"] = integrity.computed_checksum
+        if integrity.checksum_payload is not None:
+            payload["_checksum_payload"] = integrity.checksum_payload
+        payload["_checksum_precision"] = {
+            "price": precision.price,
+            "qty": precision.qty,
+        }
+        event = NormalizedMarketEvent(
+            symbol=event.symbol,
+            event_type=event.event_type,
+            event_time=event.event_time,
+            received_time=event.received_time,
+            source=event.source,
+            payload=payload,
+            provider_time=event.provider_time,
+            sequence_start=event.sequence_start,
+            sequence_end=event.sequence_end,
+            sequence_kind="kraken_crc32",
+            receive_time_ns=event.receive_time_ns,
+            quality=integrity.status,
+        )
+        if message_type == "snapshot":
+            self._book_snapshots_seen.add(symbol)
+        yield event
+        if integrity.status == "INTEGRITY_CHECKSUM_FAIL":
+            raise KrakenChecksumMismatch(
+                f"{symbol}: expected checksum {integrity.expected_checksum}, "
+                f"computed {integrity.computed_checksum}; connection must resync"
+            )
 
     def _events_from_message(
         self,
@@ -271,6 +344,14 @@ class KrakenSpotMarketAdapter:
                     precision = KrakenPrecision(price=int(price_precision), qty=int(qty_precision))
                     precision.validate()
                     self._precisions[symbol] = precision
+                    pending = self._pending_book_rows.pop(symbol, [])
+                    for pending_row, pending_type, pending_received_time, pending_receive_ns in pending:
+                        yield from self._book_events_from_row(
+                            pending_row,
+                            received_time=pending_received_time,
+                            receive_ns=pending_receive_ns,
+                            message_type=pending_type,
+                        )
             return
         if channel not in {"trade", "book"} or not isinstance(data, list):
             return
@@ -284,63 +365,20 @@ class KrakenSpotMarketAdapter:
                     receive_ns=receive_ns,
                 )
             else:
-                event = _book_event(
+                symbol = str(row.get("symbol") or "").upper()
+                if not symbol:
+                    raise KrakenAdapterError("book event missing symbol")
+                if symbol not in self._precisions:
+                    self._pending_book_rows.setdefault(symbol, []).append(
+                        (dict(row), message_type, received_time, receive_ns)
+                    )
+                    continue
+                yield from self._book_events_from_row(
                     row,
                     received_time=received_time,
                     receive_ns=receive_ns,
                     message_type=message_type,
                 )
-                symbol = event.symbol.upper()
-                book = self._books.setdefault(
-                    symbol,
-                    KrakenBookState(symbol=symbol, depth=self.config.depth),
-                )
-                if message_type != "snapshot" and symbol not in self._book_snapshots_seen:
-                    raise KrakenAdapterError(
-                        f"{symbol}: book update arrived before a snapshot; refusing to extend stale state"
-                    )
-                precision = self._precisions.get(symbol)
-                integrity = apply_and_verify(
-                    book,
-                    row,
-                    message_type=message_type,
-                    precision=precision,
-                )
-                payload = dict(event.payload)
-                payload["_derived_l1"] = dict(integrity.derived_l1)
-                payload["_integrity_status"] = integrity.status
-                payload["_integrity_reason"] = integrity.reason
-                payload["_checksum_expected"] = integrity.expected_checksum
-                payload["_checksum_computed"] = integrity.computed_checksum
-                if integrity.checksum_payload is not None:
-                    payload["_checksum_payload"] = integrity.checksum_payload
-                if precision is not None:
-                    payload["_checksum_precision"] = {
-                        "price": precision.price,
-                        "qty": precision.qty,
-                    }
-                event = NormalizedMarketEvent(
-                    symbol=event.symbol,
-                    event_type=event.event_type,
-                    event_time=event.event_time,
-                    received_time=event.received_time,
-                    source=event.source,
-                    payload=payload,
-                    provider_time=event.provider_time,
-                    sequence_start=event.sequence_start,
-                    sequence_end=event.sequence_end,
-                    sequence_kind="kraken_crc32",
-                    receive_time_ns=event.receive_time_ns,
-                    quality=integrity.status,
-                )
-                if message_type == "snapshot":
-                    self._book_snapshots_seen.add(symbol)
-                yield event
-                if integrity.status == "INTEGRITY_CHECKSUM_FAIL":
-                    raise KrakenChecksumMismatch(
-                        f"{symbol}: expected checksum {integrity.expected_checksum}, "
-                        f"computed {integrity.computed_checksum}; connection must resync"
-                    )
 
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
         # Every connection starts from an empty local book. A fresh snapshot is
@@ -349,6 +387,7 @@ class KrakenSpotMarketAdapter:
         self._precisions.clear()
         self._books.clear()
         self._book_snapshots_seen.clear()
+        self._pending_book_rows.clear()
         for request in subscription_messages(self.config):
             ws.send(json.dumps(request, separators=(",", ":")))
 
