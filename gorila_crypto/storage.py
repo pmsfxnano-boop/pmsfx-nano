@@ -15,6 +15,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 CRYPTO_DB_SCHEMA = os.getenv("GORILA_CRYPTO_DB_SCHEMA", "gorila_crypto").strip()
 if not CRYPTO_DB_SCHEMA.replace("_", "").isalnum():
@@ -328,6 +329,30 @@ def _pg_identifier(value: str) -> str:
     return value.replace('"', '""')
 
 
+def _rewrite_database_url_for_external_host(
+    database_url: str,
+    external_host: str | None = None,
+) -> str:
+    """Rewrite only the network endpoint for controlled cross-region Postgres use.
+
+    Render's `fromDatabase.connectionString` is private-network scoped. A Frankfurt
+    consumer must use the database's external endpoint with TLS. Credentials remain
+    entirely inside the original URL/env var and are never written to source control.
+    """
+    override = (external_host or os.getenv("GORILA_CRYPTO_DATABASE_HOST_OVERRIDE", "")).strip()
+    if not override:
+        return database_url
+    parsed = urlsplit(database_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.netloc:
+        raise ValueError("invalid_postgres_database_url_for_external_host_override")
+    userinfo = parsed.netloc.rsplit("@", 1)[0] if "@" in parsed.netloc else ""
+    port = parsed.port or 5432
+    netloc = f"{userinfo}@{override}:{port}" if userinfo else f"{override}:{port}"
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["sslmode"] = "require"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
 class LedgerIntegrityError(RuntimeError):
     """Raised when the same provider identity is delivered with different content."""
 
@@ -344,9 +369,10 @@ class CryptoStore:
         sqlite_path: str | None = None,
         require_durable: bool = False,
     ) -> None:
-        self.database_url = (
+        raw_database_url = (
             database_url if database_url is not None else CRYPTO_DATABASE_URL
         ).strip()
+        self.database_url = _rewrite_database_url_for_external_host(raw_database_url)
         self.require_durable = bool(require_durable)
         if self.require_durable and not self.database_url:
             raise RuntimeError(
