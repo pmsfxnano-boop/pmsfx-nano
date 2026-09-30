@@ -1,8 +1,8 @@
 """Deterministic Kraken Spot v2 L2 book integrity primitives.
 
-Kraken v2 book messages carry no sequence number. The venue integrity mechanism is
-an unsigned CRC32 over the ten best asks followed by the ten best bids, rendered
-at the pair's instrument precision with decimal points removed. The local book
+Kraken v2 book messages carry no sequence number. The venue integrity mechanism is an unsigned CRC32 over the ten best asks followed
+by the ten best bids, rendered at the pair's instrument precision as
+`price:qty,price:qty,...` in deterministic price order. The local book
 must therefore be reconstructed exactly before the checksum is evaluated.
 """
 
