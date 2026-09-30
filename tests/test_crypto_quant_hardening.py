@@ -150,3 +150,25 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
         ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
     )
     assert len(scoped.rows) == 1
+
+def test_dsr_expected_max_null_sharpe_is_scaled_by_effective_sample_size() -> None:
+    from gorila_crypto.research_gates import deflated_sharpe_p_value
+
+    result = deflated_sharpe_p_value([0.001] * 100, n_trials=36)
+    assert result.status == "DEGENERATE_RETURNS"
+    varying = [0.001 * ((i % 5) - 2) for i in range(120)]
+    result = deflated_sharpe_p_value(varying, n_trials=36)
+    assert result.status == "ESTIMATED"
+    assert result.expected_max_null_sharpe is not None
+    assert result.expected_max_null_sharpe < 0.5
+
+
+def test_pbo_rejects_partial_group_partition_instead_of_dropping_observations() -> None:
+    from gorila_crypto.research_gates import combinatorial_pbo
+
+    result = combinatorial_pbo(
+        [[0.1] * 11, [0.2] * 11],
+        groups=6,
+        test_groups=3,
+    )
+    assert result.status == "INSUFFICIENT_DATA"
