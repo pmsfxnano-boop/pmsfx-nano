@@ -142,24 +142,8 @@ class ProspectiveCryptoIngestor:
             self.sequence.new_connection()
             self.last_error = None
             self._record_connection(status, metadata)
-            self.store.upsert_source_health(
-                source=self.source_family,
-                status="LIVE",
-                last_event_time=(
-                    self.last_event.event_time.isoformat()
-                    if self.last_event is not None
-                    else None
-                ),
-                last_received_time=(
-                    self.last_event.received_time.isoformat()
-                    if self.last_event is not None
-                    else None
-                ),
-                event_age_seconds=None,
-                transport_age_seconds=None,
-                rows_last_batch=0,
-                error=None,
-            )
+            # Connection state belongs in crypto_connection_events.
+            # Source health is reserved for actual market-data observations.
             return
 
         self._record_connection(status, metadata)
@@ -236,6 +220,8 @@ class ProspectiveCryptoIngestor:
                 status=self.config.gap_status,
                 metadata={
                     "run_id": self.run_id,
+                    "capture_session_id": self.session_id,
+                    "crypto_study_id": self.protocol.study_id,
                     "event_type": event.event_type,
                     "ingest_epoch": self.sequence.epoch,
                     "message": "Continuity gap detected within one connection epoch; "
