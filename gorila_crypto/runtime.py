@@ -283,6 +283,7 @@ class ProspectiveCryptoIngestor:
                 result=result,
             )
             self._record_connection("RUN_FINISHED", result)
+            self.store.close()
 
         return {
             "status": status,
