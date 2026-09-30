@@ -126,23 +126,32 @@ class QuantCryptoStore(CryptoStore):
                         """
                         INSERT INTO crypto_studies(study_id,protocol_hash,created_at,status,protocol_json)
                         VALUES(%s,%s,%s,'REGISTERED',%s)
-                        ON CONFLICT(study_id) DO UPDATE SET
-                            protocol_hash=EXCLUDED.protocol_hash,
-                            protocol_json=EXCLUDED.protocol_json
+                        ON CONFLICT(study_id) DO NOTHING
                         """,
                         (protocol.study_id, protocol.protocol_hash, _utc_now(), payload),
                     )
+                    cur.execute(
+                        "SELECT protocol_hash FROM crypto_studies WHERE study_id=%s",
+                        (protocol.study_id,),
+                    )
+                    row = cur.fetchone()
+                    if row is None or str(row[0]) != protocol.protocol_hash:
+                        raise RuntimeError("protocol_hash_conflict")
             else:
                 conn.execute(
                     """
                     INSERT INTO crypto_studies(study_id,protocol_hash,created_at,status,protocol_json)
                     VALUES(?,?,?,?,?)
-                    ON CONFLICT(study_id) DO UPDATE SET
-                        protocol_hash=excluded.protocol_hash,
-                        protocol_json=excluded.protocol_json
+                    ON CONFLICT(study_id) DO NOTHING
                     """,
                     (protocol.study_id, protocol.protocol_hash, _utc_now(), "REGISTERED", payload),
                 )
+                row = conn.execute(
+                    "SELECT protocol_hash FROM crypto_studies WHERE study_id=?",
+                    (protocol.study_id,),
+                ).fetchone()
+                if row is None or str(row[0]) != protocol.protocol_hash:
+                    raise RuntimeError("protocol_hash_conflict")
             conn.commit()
         finally:
             conn.close()
@@ -163,6 +172,26 @@ class QuantCryptoStore(CryptoStore):
         metadata: Mapping[str, Any] | None = None,
     ) -> str:
         self.init()
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT protocol_hash FROM crypto_studies WHERE study_id=%s",
+                        (study_id,),
+                    )
+                    study_row = cur.fetchone()
+            else:
+                study_row = conn.execute(
+                    "SELECT protocol_hash FROM crypto_studies WHERE study_id=?",
+                    (study_id,),
+                ).fetchone()
+            if study_row is None:
+                raise RuntimeError("study_not_registered")
+            if str(study_row[0]) != protocol_hash:
+                raise RuntimeError("protocol_hash_conflict")
+        finally:
+            conn.close()
         session_id = str(uuid.uuid4())
         values = (
             session_id,
@@ -436,6 +465,65 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
         return int(count)
+
+    def read_scoped_data_gaps(
+        self,
+        *,
+        study_id: str,
+        capture_session_id: str | None = None,
+        source_prefix: str | None = None,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        self.init()
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        params: list[Any] = [study_id]
+        placeholder = "%s" if self._pg else "?"
+        clauses = [
+            "metadata::jsonb->>'crypto_study_id'=%s"
+            if self._pg
+            else "json_extract(metadata, '$.crypto_study_id')=?"
+        ]
+        if capture_session_id is not None:
+            clauses.append(
+                "metadata::jsonb->>'capture_session_id'=%s"
+                if self._pg
+                else "json_extract(metadata, '$.capture_session_id')=?"
+            )
+            params.append(capture_session_id)
+        if source_prefix is not None:
+            clauses.append(f"source LIKE {placeholder}")
+            params.append(source_prefix.rstrip("%") + "%")
+        where = " AND ".join(clauses)
+        query = (
+            "SELECT gap_id,detected_at,symbol,source,expected_sequence,"
+            f"observed_sequence,status,metadata FROM crypto_data_gaps WHERE {where} "
+            "ORDER BY detected_at DESC LIMIT " + str(int(limit))
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+                keys = [
+                    "gap_id","detected_at","symbol","source",
+                    "expected_sequence","observed_sequence","status","metadata"
+                ]
+                return [
+                    {
+                        key: (json.loads(value) if key == "metadata" else value)
+                        for key, value in zip(keys, row)
+                    }
+                    for row in rows
+                ]
+            rows = conn.execute(query, params).fetchall()
+            return [
+                {**dict(row), "metadata": json.loads(row["metadata"] or "{}")}
+                for row in rows
+            ]
+        finally:
+            conn.close()
 
     def active_capture_session(self, study_id: str) -> str | None:
         self.init()
