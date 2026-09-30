@@ -37,7 +37,24 @@ def test_capture_health_fails_closed_when_worker_dies(monkeypatch) -> None:
     else:
         raise AssertionError("capture health accepted a dead ingest worker")
 
-def test_capture_health_fails_closed_on_stale_required_symbol(monkeypatch) -> None:
+def test_capture_health_is_liveness_only_when_symbols_are_stale(monkeypatch) -> None:
+    monkeypatch.setattr(app_module, "settings", replace(settings, ingest_enabled=True))
+    monkeypatch.setattr(app_module, "_capture_block_reason", None)
+    monkeypatch.setattr(app_module, "_runtime_thread", SimpleNamespace(is_alive=lambda: True))
+    monkeypatch.setattr(
+        app_module,
+        "_runtime",
+        SimpleNamespace(symbol_health=lambda: [
+            {"symbol": "BTCUSDT", "status": "LIVE", "healthy": True},
+            {"symbol": "ETHUSDT", "status": "DELAYED", "healthy": False},
+        ]),
+    )
+
+    payload = app_module.health()
+    assert payload["symbols_live"] is False
+
+
+def test_capture_readiness_fails_closed_on_stale_required_symbol(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "settings", replace(settings, ingest_enabled=True))
     monkeypatch.setattr(app_module, "_capture_block_reason", None)
     monkeypatch.setattr(app_module, "_runtime_thread", SimpleNamespace(is_alive=lambda: True))
@@ -51,13 +68,13 @@ def test_capture_health_fails_closed_on_stale_required_symbol(monkeypatch) -> No
     )
 
     try:
-        app_module.health()
+        app_module.readiness()
     except HTTPException as exc:
         assert exc.status_code == 503
         assert exc.detail["status"] == "CAPTURE_DATA_STALE"
         assert exc.detail["symbols_live"] is False
     else:
-        raise AssertionError("capture health accepted stale required-symbol data")
+        raise AssertionError("capture readiness accepted stale required-symbol data")
 
 
 def test_prospective_status_route_exists_without_starting_network_worker() -> None:
