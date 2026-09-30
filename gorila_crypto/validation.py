@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping, Sequence
 
@@ -858,22 +858,16 @@ def run_walk_forward_validation(
     oos_probabilities: list[float] = []
     oos_labels: list[int] = []
     oos_returns: list[float] = []
-    candidate_family = tuple(float(x) for x in PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas)
-    candidate_oos_net: dict[float, list[float]] = {alpha: [] for alpha in candidate_family}
 
     for fold in folds:
-        candidate_models = {
-            alpha: fit_ridge_logistic(
-                dataset,
-                fold.train_indices,
-                feature_names,
-                replace(config, ridge_alpha=alpha),
-                model_id=model_id,
-                version=f"{model_version}.alpha{alpha}.fold{fold.fold_id}",
-            )
-            for alpha in candidate_family
-        }
-        model = candidate_models[1.0]
+        model = fit_ridge_logistic(
+            dataset,
+            fold.train_indices,
+            feature_names,
+            config,
+            model_id=model_id,
+            version=f"{model_version}.fold{fold.fold_id}",
+        )
         test_rows = [dataset[i] for i in fold.test_indices]
         probabilities = [predict_probability(model, row.snapshot) for row in test_rows]
         labels = [row.label.realized_target for row in test_rows]
@@ -881,26 +875,6 @@ def run_walk_forward_validation(
         baseline_fifty = baseline_constant(labels, 0.5)
         baseline_prevalence = baseline_constant(labels, model.training_positive_rate)
         economic = economic_metrics(test_rows, probabilities, policy)
-
-        for alpha, candidate_model in candidate_models.items():
-            candidate_probabilities = [
-                predict_probability(candidate_model, row.snapshot)
-                for row in test_rows
-            ]
-            for row, probability in zip(test_rows, candidate_probabilities):
-                if probability >= policy.long_threshold:
-                    action = 1
-                elif probability <= policy.short_threshold:
-                    action = -1
-                else:
-                    action = 0
-                if action == 0:
-                    candidate_oos_net[alpha].append(0.0)
-                else:
-                    gross = float(row.label.realized_signed_return_bps) * action
-                    candidate_oos_net[alpha].append(
-                        gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
-                    )
 
         fold_evaluations.append(
             FoldEvaluation(
@@ -915,11 +889,6 @@ def run_walk_forward_validation(
         oos_probabilities.extend(probabilities)
         oos_labels.extend(labels)
         oos_returns.extend(row.label.realized_signed_return_bps for row in test_rows)
-
-    if not candidate_strategy_returns:
-        candidate_strategy_returns = tuple(
-            candidate_oos_net[alpha] for alpha in candidate_family
-        )
 
     stability_by_symbol, stability_by_horizon = stability_metrics(
         [dataset[i] for fold in folds for i in fold.test_indices],
@@ -1119,8 +1088,6 @@ def validation_run_id(
 ) -> str:
     identity = {
         "replay_fingerprint": replay_fingerprint,
-        "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash,
-        "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id,
         "model_id": model_id,
         "model_version": model_version,
         "target_horizon_ms": target_spec.horizon_ms,
@@ -1231,3 +1198,69 @@ def persist_validation_report(
         fold_rows.append(
             {
                 "run_id": run_id,
+                "fold_id": fold.fold_id,
+                "train_start": fold.train_start.isoformat(),
+                "train_end": fold.train_end.isoformat(),
+                "test_start": fold.test_start.isoformat(),
+                "test_end": fold.test_end.isoformat(),
+                "train_rows": len(fold.train_indices),
+                "test_rows": len(fold.test_indices),
+                "model_spec_hash": fold_eval.model.spec_hash,
+                "probabilistic": asdict(fold_eval.probabilistic),
+                "baseline_fifty": asdict(fold_eval.baseline_fifty),
+                "baseline_prevalence": asdict(fold_eval.baseline_prevalence),
+                "economic": asdict(fold_eval.economic),
+            }
+        )
+        for local_index, dataset_index in enumerate(fold.test_indices):
+            row = dataset[dataset_index]
+            probability = report.oos_probabilities[probability_offset + local_index]
+            if probability >= policy.long_threshold:
+                action = 1
+            elif probability <= policy.short_threshold:
+                action = -1
+            else:
+                action = 0
+            signed = float(row.label.realized_signed_return_bps) * action
+            cost = (
+                policy.round_trip_cost_bps
+                + policy.round_trip_slippage_bps
+                if action
+                else 0.0
+            )
+            oos_rows.append(
+                {
+                    "run_id": run_id,
+                    "fold_id": fold.fold_id,
+                    "row_index": local_index,
+                    "leader_event_id": row.snapshot.leader_event_id,
+                    "target_symbol": row.snapshot.target_symbol,
+                    "horizon_ms": row.label.horizon_ms,
+                    "decision_event_time": row.snapshot.decision_event_time.isoformat(),
+                    "decision_received_time": row.snapshot.decision_received_time.isoformat(),
+                    "label_event_time": row.label.label_event_time.isoformat(),
+                    "label_received_time": row.label.label_received_time.isoformat(),
+                    "probability": probability,
+                    "realized_target": row.label.realized_target,
+                    "realized_signed_return_bps": row.label.realized_signed_return_bps,
+                    "net_return_bps": signed - cost,
+                }
+            )
+            lineage_rows.append(
+                {
+                    "run_id": run_id,
+                    "fold_id": fold.fold_id,
+                    "row_index": local_index,
+                    "feature_set_hash": row.snapshot.feature_set_hash,
+                    "source_event_ids": list(row.snapshot.source_event_ids),
+                }
+            )
+        probability_offset += len(fold.test_indices)
+
+    return {
+        "run_id": run_id,
+        "fold_rows": store.save_validation_folds(fold_rows),
+        "oos_rows": store.save_validation_oos(oos_rows),
+        "lineage_rows": store.save_validation_lineage(lineage_rows),
+        "promotion_eligible": report.promotion_eligible,
+    }
