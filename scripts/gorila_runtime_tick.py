@@ -215,6 +215,11 @@ def _persist_learning_registry(learning_results: list[dict[str, Any]]) -> dict[s
     for result in learning_results:
         if result.get("reused"):
             continue
+        status = str(result.get("status") or "")
+        # The registry represents actual trained candidates, not failed or
+        # insufficient-data learning attempts.
+        if status in {"INSUFFICIENT_DATA", "ERROR"}:
+            continue
         validation = result.get("validation") or {}
         model_hash = str(result.get("model_hash") or "")
         learner_id = str(result.get("learner_id") or "unknown")
