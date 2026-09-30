@@ -9,27 +9,28 @@ not converted into a PASS.
 
 ## 1. Controlled Binance capture
 
-**Status: PASS_DURABLE_STORAGE_LINK; LIVE_CAPTURE_EXTERNAL_451_BLOCKED**
+**Status: PASS_DURABLE_STORAGE_LINK; LIVE_CAPTURE_CONNECTED; FRESHNESS_GATE_BLOCKED**
 
-The isolated Render service `gorila-crypto-cleanroom-binance-capture` was successfully
-updated by Blueprint sync from `render-crypto-binance.yaml`. The deploy is live and the
-runtime heartbeat explicitly reports `backend=postgres`.
+The Frankfurt replacement service `gorila-crypto-cleanroom-binance-frankfurt-capture`
+successfully reaches the existing Oregon Render Postgres through the external TLS endpoint;
+the database secret is not written into source control.
 
-The Blueprint creates `DATABASE_URL` for the isolated Binance service from the existing
-Render Postgres resource `pmsf-nano-db`; no database secret is written into source
-control or injected as plaintext.
+The Render runtime has also reached a successful Binance WebSocket connection from
+Frankfurt. The deployment history retains earlier failed location/network attempts, but
+the current connection is no longer blocked at the WebSocket handshake layer.
 
 Post-deploy evidence:
-- Blueprint-triggered deploy `dep-dau5sijncjis73asrt30` reached `live`.
-- The process started successfully and exposed the health endpoint.
-- The runtime emitted a durable-storage heartbeat with `backend=postgres`.
-- There is no `GORILA_CAPTURE_BLOCKED` durable-storage error in the post-sync evidence.
+- Frankfurt runtime instance `srv-dau6fjqd0e5s73eet9r0` reached a running state with
+  Postgres-backed ingestion.
+- The runtime starts and records connection lifecycle events.
+- The shared Postgres database is reachable from Frankfurt through the configured external
+  hostname with TLS required by the application.
 
 The storage-link blocker is therefore resolved.
 
 ## 2. Binance invariants
 
-**Status: PASS_CODE_AND_REST_SANITY; LIVE_WSS_BLOCKED_BY_PROVIDER_451**
+**Status: PASS_CODE_AND_REST_SANITY; LIVE_WSS_CONNECTED; EVENT_FRESHNESS_UNACCEPTABLE**
 
 The adapter has deterministic tests for:
 - explicit symbol identity;
@@ -41,19 +42,25 @@ The adapter has deterministic tests for:
 - hard gap detection;
 - resynchronization after a gap.
 
-The isolated Render runtime starts with the Binance provider path, but its WebSocket
-handshake is rejected with HTTP status 451 and Binance's response states that the service is
-unavailable from the restricted location under its eligibility terms.
+The Frankfurt runtime now establishes a Binance WebSocket connection using the
+market-data-only endpoint `data-stream.binance.vision`. This removes the previous 451
+handshake blocker for the current Frankfurt service, but it does **not** establish an
+acceptable capture yet.
+
+Observed live evidence from the current session shows:
+- `bookTicker` events continue to arrive with near-current provider and receive times;
+- `trade` and `depthUpdate` events were initially arriving materially behind current
+  receive time, indicating an ingestion/backpressure bottleneck rather than an absent
+  socket;
+- the application was opening short-lived Postgres connections on the hot event path,
+  and the latest branch hardening replaces this with a reusable writer connection and
+  throttles source-health persistence.
 
 Therefore:
-- the Binance code path is running;
-- durable Postgres is reachable;
-- live Binance WebSocket capture is **not** currently established from this Render
-  region;
-- no WebSocket ledger evidence is promoted to OOS evidence.
-
-Independent live Binance Spot REST sanity checks from earlier work remain valid evidence for
-market availability, but are not a substitute for persisted WebSocket sequence evidence.
+- WebSocket connectivity is **established** from Frankfurt;
+- fresh, low-latency trade/depth capture is still **not** established;
+- no Binance WebSocket slice is promoted to OOS evidence;
+- the next gate is a sustained freshness/integrity run after the hot-path changes deploy.
 
 ## 3. Kraken timestamp anomaly
 
@@ -127,11 +134,11 @@ stress scenarios and persisted run/fold/OOS/lineage evidence.
 
 No model promotion or execution is enabled.
 
-The current Render heartbeat shows existing Postgres rows for symbols such as BTC/USD,
-ETH/USD and SOL/USD. Those rows are not sufficient evidence of a Binance prospective
-ledger because they include prior shared-database observations and the new Binance
-WebSocket session is currently blocked by HTTP 451. The current quality/OOS gate therefore
-remains closed rather than treating shared or historical rows as fresh Binance OOS data.
+The current Render heartbeat has historically exposed shared Postgres rows across venues;
+provider-scoped heartbeat, quality, gap, source-health and prospective-status reads are now
+implemented so Binance telemetry cannot be contaminated by Kraken rows. The current
+quality/OOS gate remains closed until Binance trade/book/depth freshness and sequence
+integrity are sustained over the required observation window.
 
 The current Render Postgres instance is available, but its free-plan expiry is
 2026-10-18 and therefore must be treated as an operational continuity deadline for the
@@ -139,22 +146,20 @@ ledger.
 
 ## Overall disposition
 
-The durable-storage blocker has been resolved and verified in the live Render service.
-The remaining external capture blocker is the Binance WebSocket HTTP 451 location
-restriction from the current Render region.
-
-The remaining empirical blocker is sufficient **valid prospective** Binance data that passes
-the quality and replay gates. Neither blocker is bypassed with synthetic or inferred
-evidence.
+Durable storage and Frankfurt WebSocket connectivity are established. The active empirical
+blocker is now **ingestion freshness/throughput for trade and depth**, followed by the full
+quality/replay gate. No blocker is bypassed with synthetic or inferred evidence.
 
 ## Latest hardening delta
 
-The latest operational change adds two verified points:
-1. The isolated Binance Blueprint was synced against the existing Postgres resource and the
-   live service now reports `backend=postgres`.
-2. The live Binance WebSocket handshake is explicitly observed as HTTP 451 from Render's
-   current region; this is recorded as an external capture blocker rather than converted
-   into a data-quality pass.
+The latest operational changes add four verified engineering points:
+1. Frankfurt uses the Binance market-data-only WebSocket/REST endpoints.
+2. Cross-region Postgres access is performed through the external endpoint with TLS rather
+   than Render's region-local private hostname.
+3. Provider-scoped telemetry prevents Kraken observations from contaminating Binance
+   heartbeat/quality/gap/source-health views.
+4. The hot ingestion path now reuses a durable writer connection, throttles source-health
+   writes, and fails the HTTP health check when the ingest worker is dead.
 
 Current Kraken Render evidence continues to show durable Postgres ingestion while provider
 event time trails receive time by many minutes. That backlog remains unresolved at the
