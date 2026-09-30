@@ -347,7 +347,7 @@ def build_prospective_runtime() -> ProspectiveCryptoIngestor:
         )
     adapter = build_market_adapter()
     return ProspectiveCryptoIngestor(
-        CryptoStore(database_url=CRYPTO_DATABASE_URL, require_durable=True),
+        QuantCryptoStore(database_url=CRYPTO_DATABASE_URL, require_durable=True),
         adapter,
     )
 
