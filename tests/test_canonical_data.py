@@ -46,7 +46,7 @@ def test_same_session_collision_is_one_reconciled_row(tmp_path, monkeypatch):
     assert canonical_daily_series(store, "GGAL") == [("2026-09-25", 100.0)]
 
 
-def test_disagreement_goes_to_quarantine(tmp_path, monkeypatch):
+def test_non_primary_vendor_disagreement_goes_to_quarantine(tmp_path, monkeypatch):
     store = _store(
         tmp_path,
         monkeypatch,
@@ -57,7 +57,7 @@ def test_disagreement_goes_to_quarantine(tmp_path, monkeypatch):
                 "value": 100.0,
                 "event_time": "2026-09-25T03:00:00+00:00",
                 "received_time": "2026-09-28T12:00:00+00:00",
-                "source": "BYMADATA/GGAL/historical",
+                "source": "Rava/GGAL",
             },
             {
                 "symbol": "GGAL",
@@ -65,7 +65,7 @@ def test_disagreement_goes_to_quarantine(tmp_path, monkeypatch):
                 "value": 101.0,
                 "event_time": "2026-09-25T04:00:00+00:00",
                 "received_time": "2026-09-28T12:00:01+00:00",
-                "source": "Rava/GGAL",
+                "source": "TwelveData/GGAL",
             },
         ],
     )
@@ -75,7 +75,7 @@ def test_disagreement_goes_to_quarantine(tmp_path, monkeypatch):
     assert canonical_daily_series(store, "GGAL") == []
 
 
-def test_fresh_source_can_override_stale_priority_source(tmp_path, monkeypatch):
+def test_daily_session_keeps_declared_primary_source(tmp_path, monkeypatch):
     store = _store(
         tmp_path,
         monkeypatch,
@@ -99,7 +99,7 @@ def test_fresh_source_can_override_stale_priority_source(tmp_path, monkeypatch):
         ],
     )
     reconcile_daily_symbol(store, "GGAL")
-    assert canonical_daily_series(store, "GGAL") == [("2026-09-25", 100.1)]
+    assert canonical_daily_series(store, "GGAL") == [("2026-09-25", 100.0)]
 
 
 def test_yahoo_is_excluded_from_model_fabric(tmp_path, monkeypatch):
@@ -171,7 +171,7 @@ def test_canonical_content_hash_changes_with_accepted_value(tmp_path, monkeypatc
         "value": 101.0,
         "event_time": "2026-09-25T04:00:00+00:00",
         "received_time": "2026-09-28T12:01:00+00:00",
-        "source": "Rava/GGAL",
+        "source": "BYMADATA/GGAL/historical",
     }])
     reconcile_daily_symbol(store, "GGAL")
     second = canonical_content_hash(store, "GGAL")
