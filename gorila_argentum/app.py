@@ -86,6 +86,9 @@ _ARG_E2E_TASK: asyncio.Task | None = None
 _PRODUCTION_E2E_TASK: asyncio.Task | None = None
 _DB_STATE: dict[str, Any] = {"status":"STARTING","ready":False,"error":None,"updated_at":None}
 _ARG_LIVE_CACHE: dict[str, dict[str, Any]] = {}
+_ARG_LIVE_FALLBACK_CACHE: dict[str, dict[str, Any]] = {}
+_ARG_LIVE_FALLBACK_LAST_ATTEMPT: dict[str, float] = {}
+_ARG_LIVE_FALLBACK_MIN_INTERVAL_SECONDS = max(30.0, float(os.getenv("GORILA_LIVE_FALLBACK_MIN_INTERVAL_SECONDS", "60")))
 _ARG_SIGNAL_SNAPSHOTS: dict[str, dict[str, Any]] = {}
 _ARG_LIVE_STATE: dict[str, Any] = {"status":"STARTING","updated_at":None,"last_cycle_ms":None,"updated_symbols":0,"errors":[]}
 _SIGNAL_MATRIX_CACHE: tuple[float, dict[str, Any]] | None = None
@@ -273,16 +276,31 @@ async def _argentina_live_loop() -> None:
             fallback_rows_by_symbol: dict[str, dict[str, Any]] = {}
             if fallback_provider != "none":
                 stale_or_missing = []
+                now_epoch = time.time()
                 for symbol in settings.core_symbols:
                     primary = primary_by_symbol.get(symbol)
-                    if primary is None:
-                        stale_or_missing.append(symbol)
+                    primary_is_live = False
+                    if primary is not None:
+                        primary_is_live = (
+                            assess_observation(
+                                primary.get("event_time"),
+                                primary.get("received_time"),
+                            )["status"] == "LIVE"
+                        )
+                    if primary_is_live:
                         continue
-                    primary_freshness = assess_observation(
-                        primary.get("event_time"),
-                        primary.get("received_time"),
-                    )
-                    if primary_freshness["status"] != "LIVE":
+
+                    cached_secondary = _ARG_LIVE_FALLBACK_CACHE.get(symbol)
+                    if cached_secondary is not None:
+                        cached_freshness = assess_observation(
+                            cached_secondary.get("event_time"),
+                            cached_secondary.get("received_time"),
+                        )
+                        if cached_freshness["status"] in {"LIVE", "DELAYED"}:
+                            fallback_rows_by_symbol[symbol] = cached_secondary
+
+                    last_attempt = _ARG_LIVE_FALLBACK_LAST_ATTEMPT.get(symbol, 0.0)
+                    if now_epoch - last_attempt >= _ARG_LIVE_FALLBACK_MIN_INTERVAL_SECONDS:
                         stale_or_missing.append(symbol)
 
                 if stale_or_missing:
@@ -298,16 +316,20 @@ async def _argentina_live_loop() -> None:
                             ]
                         )
                     )
-                    for fallback in fallback_results:
+                    now_epoch = time.time()
+                    for symbol, fallback in zip(stale_or_missing, fallback_results):
+                        _ARG_LIVE_FALLBACK_LAST_ATTEMPT[symbol] = now_epoch
                         if fallback.rows:
                             latest = max(
                                 fallback.rows,
                                 key=lambda row: str(row.get("event_time") or ""),
                             )
-                            fallback_rows_by_symbol[str(latest.get("symbol") or "").upper()] = latest
+                            latest_symbol = str(latest.get("symbol") or symbol).upper()
+                            _ARG_LIVE_FALLBACK_CACHE[latest_symbol] = latest
+                            fallback_rows_by_symbol[latest_symbol] = latest
                         else:
                             errors.append({
-                                "symbol": str(getattr(fallback, "source", "TwelveDataLive")).split("/")[-1],
+                                "symbol": symbol,
                                 "error": fallback.error or "FALLBACK_NO_ROWS",
                             })
 
