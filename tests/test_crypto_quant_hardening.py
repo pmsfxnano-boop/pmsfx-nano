@@ -150,3 +150,34 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
         ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
     )
     assert len(scoped.rows) == 1
+
+def test_provider_protocol_registry_keeps_binance_and_kraken_isolated() -> None:
+    from gorila_crypto.protocol import (
+        BINANCE_CRYPTO_PROTOCOL,
+        KRAKEN_CRYPTO_PROTOCOL,
+        protocol_for,
+    )
+
+    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL
+    assert protocol_for("kraken") is KRAKEN_CRYPTO_PROTOCOL
+    assert BINANCE_CRYPTO_PROTOCOL.study_id != KRAKEN_CRYPTO_PROTOCOL.study_id
+    assert BINANCE_CRYPTO_PROTOCOL.protocol_hash != KRAKEN_CRYPTO_PROTOCOL.protocol_hash
+    assert BINANCE_CRYPTO_PROTOCOL.symbols == ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+    assert KRAKEN_CRYPTO_PROTOCOL.symbols == ("BTC/USD", "ETH/USD", "SOL/USD")
+    assert BINANCE_CRYPTO_PROTOCOL.normalized_event_types == ("trade", "bookTicker")
+    assert KRAKEN_CRYPTO_PROTOCOL.normalized_event_types == ("trade", "bookUpdate")
+
+
+def test_kraken_protocol_matches_only_explicit_kraken_pairs() -> None:
+    from gorila_crypto.protocol import KRAKEN_CRYPTO_PROTOCOL
+
+    assert KRAKEN_CRYPTO_PROTOCOL.matches_runtime(
+        provider="kraken",
+        symbols=("BTC/USD", "ETH/USD", "SOL/USD"),
+        streams=("trade", "bookTicker"),
+    )
+    assert not KRAKEN_CRYPTO_PROTOCOL.matches_runtime(
+        provider="kraken",
+        symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+        streams=("trade", "bookTicker"),
+    )
