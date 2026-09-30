@@ -57,6 +57,32 @@ def _normal_ppf(probability: float) -> float:
         raise ValueError("probability must be strictly between 0 and 1")
     return float(NormalDist().inv_cdf(probability))
 
+def _effective_observation_count(returns: Sequence[float]) -> float:
+    values = [float(x) for x in returns]
+    n = len(values)
+    if n < 3:
+        return float(n)
+    mean = sum(values) / n
+    variance = sum((x - mean) ** 2 for x in values) / (n - 1)
+    if variance <= 1e-18:
+        return float(n)
+    # Bartlett-weighted autocorrelation adjustment. This makes the DSR gate
+    # conservative when returns are serially dependent rather than pretending
+    # every event is an independent draw.
+    max_lag = min(50, n // 4)
+    rho_sum = 0.0
+    for lag in range(1, max_lag + 1):
+        numerator = sum(
+            (values[t] - mean) * (values[t - lag] - mean)
+            for t in range(lag, n)
+        )
+        rho = numerator / max(1, (n - lag) * variance)
+        weight = 1.0 - lag / (max_lag + 1.0)
+        rho_sum += weight * rho
+    variance_inflation = max(1.0, 1.0 + 2.0 * rho_sum)
+    return float(max(1.0, min(float(n), n / variance_inflation)))
+
+
 def deflated_sharpe_p_value(
     returns: Sequence[float],
     *,
@@ -71,16 +97,31 @@ def deflated_sharpe_p_value(
     variance = sum((float(x) - mean) ** 2 for x in returns) / max(1, n - 1)
     if variance <= 1e-18:
         return DSRResult("DEGENERATE_RETURNS", None, None, None, n, n_trials)
+
     std = math.sqrt(variance)
     sharpe = mean / std
     skew = sum(((float(x) - mean) / std) ** 3 for x in returns) / n
     kurtosis_excess = sum(((float(x) - mean) / std) ** 4 for x in returns) / n - 3.0
-    expected_max = _normal_ppf(1.0 - 1.0 / float(n_trials))
-    variance_sr = (
-        1.0 - skew * sharpe + ((kurtosis_excess + 2.0) / 4.0) * sharpe * sharpe
-    ) / n
-    se = math.sqrt(max(1e-18, variance_sr))
-    z = (sharpe - expected_max) / se
+
+    n_eff = _effective_observation_count(returns)
+    se_sharpe = math.sqrt(
+        max(
+            1e-18,
+            (
+                1.0
+                - skew * sharpe
+                + ((kurtosis_excess + 2.0) / 4.0) * sharpe * sharpe
+            )
+            / n_eff,
+        )
+    )
+
+    # Under the null, the maximum of N approximately-standardized Sharpe
+    # estimates has an expected level proportional to 1/sqrt(T_eff), not 1.
+    z_max = _normal_ppf(1.0 - 1.0 / float(n_trials))
+    expected_max = z_max / math.sqrt(n_eff)
+
+    z = (sharpe - expected_max) / se_sharpe
     p_value = 1.0 - _normal_cdf(z)
     return DSRResult(
         "ESTIMATED",
@@ -111,6 +152,8 @@ def combinatorial_pbo(
         return PBOResult("INSUFFICIENT_CANDIDATES", None, 0)
     n_obs = len(candidates[0])
     if n_obs < groups or any(len(row) != n_obs for row in candidates):
+        return PBOResult("INSUFFICIENT_DATA", None, 0)
+    if n_obs % groups != 0:
         return PBOResult("INSUFFICIENT_DATA", None, 0)
     if groups < 4 or groups % 2 or test_groups != groups // 2:
         raise ValueError("groups must be even and test_groups must be half of groups")
