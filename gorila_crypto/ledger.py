@@ -102,16 +102,21 @@ def replay(
         rows = store.read_scoped_events(
             study_id=spec.study_id,
             capture_session_id=spec.capture_session_id,
-            source_prefix=(f"{spec.source}" if spec.source and spec.source.endswith(".") else None),
+            symbol=spec.symbol,
+            source=spec.source,
+            start_received_time=spec.start_received_time,
+            end_received_time=spec.end_received_time,
+            start_event_time=spec.start_event_time,
+            end_event_time=spec.end_event_time,
             order=spec.order,
             limit=spec.limit,
         )
     else:
         rows = store.read_events(
             symbol=spec.symbol,
-        source=spec.source,
-        start_received_time=spec.start_received_time,
-        end_received_time=spec.end_received_time,
+            source=spec.source,
+            start_received_time=spec.start_received_time,
+            end_received_time=spec.end_received_time,
             start_event_time=spec.start_event_time,
             end_event_time=spec.end_event_time,
             order=spec.order,
