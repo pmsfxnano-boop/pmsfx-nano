@@ -64,3 +64,55 @@ def test_persistence_roundtrip_uses_fresh_connection(tmp_path, monkeypatch):
     assert proof["verified"] is True
     assert proof["backend"] == "sqlite-fallback"
     assert proof["heartbeat_id"]
+
+def test_model_registry_serializes_datetime_metadata(monkeypatch):
+    import json
+    from datetime import datetime, timezone
+    from contextlib import contextmanager
+
+    import quant.db as db
+
+    captured = {}
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params):
+            captured["params"] = params
+
+        def fetchone(self):
+            return (42,)
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            pass
+
+    @contextmanager
+    def fake_connection():
+        yield FakeConnection()
+
+    monkeypatch.setattr(db, "database_url", lambda: "postgresql://unit-test")
+    monkeypatch.setattr(db, "connection", fake_connection)
+
+    registered_at = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    record_id = db.record_model_registry(
+        {
+            "registered_at": registered_at,
+            "model_id": "test-model",
+            "version": "v1",
+            "status": "CANDIDATE_REJECTED",
+            "dataset_version": "dataset-test",
+        }
+    )
+
+    assert record_id == 42
+    metadata = json.loads(captured["params"]["metadata"])
+    assert metadata["registered_at"] == registered_at.isoformat()
+
