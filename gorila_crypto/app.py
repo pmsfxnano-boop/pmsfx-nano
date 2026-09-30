@@ -155,7 +155,12 @@ def _quality_loop() -> None:
                     limit=settings.quality_row_limit,
                     include_payload=False,
                 )
-                gap_rows = store.read_data_gaps(limit=10000)
+                gap_rows = store.read_scoped_data_gaps(
+                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    capture_session_id=session_id,
+                    source_prefix="binance.websocket.",
+                    limit=10000,
+                )
             else:
                 rows = store.read_events(
                     source_prefix=f"{settings.provider}.websocket.",
@@ -347,7 +352,10 @@ def prospective_status() -> dict[str, Any]:
     store = _new_store()
     if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
         session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
-        health_rows = store.health(source_prefix="binance.websocket.")
+        health_rows = [
+            row for row in store.health(source_prefix="binance.websocket.")
+            if row.get("last_event_time") is not None
+        ]
         stats = store.scoped_stats(
             study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
             capture_session_id=session_id,
@@ -378,23 +386,3 @@ def config_snapshot() -> dict[str, Any]:
         "protocol_version": PREREGISTERED_CRYPTO_PROTOCOL.version if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
         "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
         "symbols": list(settings.symbols),
-        "streams": list(settings.streams),
-        "depth_speed": settings.depth_speed,
-        "ingest_enabled": settings.ingest_enabled,
-        "quality_monitor_enabled": settings.quality_monitor_enabled,
-        "quality_interval_seconds": settings.quality_interval_seconds,
-        "quality_row_limit": settings.quality_row_limit,
-        "quality_min_rows_per_symbol": settings.quality_min_rows_per_symbol,
-        "quality_min_duration_seconds": settings.quality_min_duration_seconds,
-        "quality_max_p99_transport_latency_ms": settings.quality_max_p99_transport_latency_ms,
-        "quality_required_event_types": list(_required_quality_event_types()),
-        "quality_required_event_type_min_rows": {
-            event_type: settings.quality_min_rows_per_symbol
-            for event_type in _required_quality_event_types()
-        },
-        "quality_required_integrity_event_types": (
-            ["bookUpdate"] if settings.provider == "kraken" else []
-        ),
-        "durable_storage_required_when_ingesting": settings.ingest_enabled,
-        "storage_backend": _storage_backend_status(),
-    }
