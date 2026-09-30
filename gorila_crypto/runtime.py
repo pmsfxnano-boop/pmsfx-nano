@@ -292,6 +292,15 @@ class ProspectiveCryptoIngestor:
                 raise RuntimeError("runtime_does_not_match_preregistered_protocol")
             stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
             self.store.register_study(self.protocol)
+
+            # Rolling Render deploys briefly overlap old and new instances.
+            # Wait for the single active study session to close before claiming it.
+            handoff_deadline = time.monotonic() + 90.0
+            while self.store.active_capture_session(self.protocol.study_id) is not None:
+                if time.monotonic() >= handoff_deadline:
+                    raise RuntimeError("capture_session_handoff_timeout")
+                time.sleep(2.0)
+
             self.session_id = self.store.start_capture_session(
                 study_id=self.protocol.study_id,
                 protocol_hash=self.protocol.protocol_hash,
