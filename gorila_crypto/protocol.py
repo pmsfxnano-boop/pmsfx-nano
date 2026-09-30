@@ -108,7 +108,13 @@ class CryptoStudyProtocol:
 
     def canonical_dict(self) -> dict[str, Any]:
         self.validate()
-        return asdict(self)
+        payload = asdict(self)
+        # v2 was registered before normalized_event_types became an explicit
+        # quality/runtime field. Preserve the immutable v2 study identity rather
+        # than silently changing its protocol hash after data capture began.
+        if self.version == "2":
+            payload.pop("normalized_event_types", None)
+        return payload
 
     @property
     def protocol_hash(self) -> str:
