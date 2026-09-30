@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any
 
 import psycopg
@@ -152,6 +152,13 @@ def database_url() -> str | None:
 
 def database_connect_kwargs() -> dict[str, Any]:
     return {"sslmode": "require", "connect_timeout": 10}
+
+
+def _json_default(value: Any) -> str:
+    """Serialize date/time values deterministically for JSONB metadata."""
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 @contextmanager
@@ -551,7 +558,7 @@ def record_model_registry(record: dict[str, Any]) -> int | None:
     """
     row = dict(record)
     row["regime"] = json.dumps(record.get("regime") or {})
-    row["metadata"] = json.dumps(record)
+    row["metadata"] = json.dumps(record, default=_json_default, sort_keys=True)
     with connection() as conn:
         if conn is None:
             return None
