@@ -20,7 +20,7 @@ from gorila_core.market_freshness import assess_observation
 from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .config import settings
-from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .protocol import protocol_for
 from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
 
@@ -111,7 +111,7 @@ class ProspectiveCryptoIngestor:
         self.gaps_detected = 0
         self.last_error: str | None = None
         self.last_event: NormalizedMarketEvent | None = None
-        self.protocol = PREREGISTERED_CRYPTO_PROTOCOL
+        self.protocol = protocol_for(settings.provider)
         self.session_id: str | None = None
         self._last_runtime_heartbeat = 0.0
         self._health_last_persist_monotonic: dict[str, float] = {}
@@ -378,64 +378,3 @@ class ProspectiveCryptoIngestor:
             if production_scoped:
                 self.store.finish_runtime_run_scoped(
                     run_id=self.run_id,
-                    session_id=self.session_id,
-                    status=status,
-                    result=result,
-                )
-                if self.session_id is not None:
-                    self.store.set_capture_session_status(self.session_id, status)
-            else:
-                self.store.finish_runtime_run(
-                    run_id=self.run_id,
-                    status=status,
-                    result=result,
-                )
-            self._record_connection("RUN_FINISHED", result)
-            self.store.close()
-
-        return {
-            "status": status,
-            "run_id": self.run_id,
-            **result,
-        }
-
-
-def build_market_adapter():
-    """Construct the configured market-data adapter without starting it."""
-    if settings.provider == "kraken":
-        return KrakenSpotMarketAdapter(
-            KrakenStreamConfig(
-                symbols=settings.symbols,
-                streams=settings.streams,
-                depth=10,
-            )
-        )
-    return BinanceSpotMarketAdapter(
-        BinanceStreamConfig(
-            symbols=settings.symbols,
-            streams=tuple(settings.streams),
-            depth_speed=settings.depth_speed,
-        )
-    )
-
-
-def build_prospective_runtime() -> ProspectiveCryptoIngestor:
-    """Build the production-shaped prospective runtime without starting it."""
-    if not CRYPTO_DATABASE_URL:
-        raise RuntimeError(
-            "GORILA_CRYPTO_DATABASE_URL or DATABASE_URL is required for durable prospective ingestion; "
-            "refusing ephemeral SQLite accumulation"
-        )
-    adapter = build_market_adapter()
-    return ProspectiveCryptoIngestor(
-        QuantCryptoStore(database_url=CRYPTO_DATABASE_URL, require_durable=True),
-        adapter,
-    )
-
-
-def main() -> None:
-    build_prospective_runtime().run()
-
-
-if __name__ == "__main__":
-    main()
