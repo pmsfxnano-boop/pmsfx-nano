@@ -9,12 +9,15 @@ from __future__ import annotations
 import json
 import os
 import time
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .protocol import CryptoStudyProtocol
 from .storage import CryptoStore
+
+_SCHEMA_LOCK = threading.Lock()
 
 
 def _utc_now() -> str:
