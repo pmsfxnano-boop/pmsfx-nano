@@ -302,7 +302,10 @@ class ProspectiveCryptoIngestor:
                 region=os.getenv("RENDER_REGION"),
                 instance_id=os.getenv("RENDER_INSTANCE_ID"),
                 code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-                metadata={"stale_runs_reconciled": stale},
+                metadata={
+                    "stale_runs_reconciled": stale,
+                    "instrument_specs": [list(item) for item in self.protocol.instrument_specs],
+                },
             )
             self.run_id = self.store.start_runtime_run_scoped(
                 kind=self.config.kind,
