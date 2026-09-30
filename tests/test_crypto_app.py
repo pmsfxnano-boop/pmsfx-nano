@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -22,7 +24,7 @@ def test_capture_is_disabled_in_cleanroom_default() -> None:
 
 
 def test_capture_health_fails_closed_when_worker_dies(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "ingest_enabled", True)
+    monkeypatch.setattr(app_module, "settings", replace(settings, ingest_enabled=True))
     monkeypatch.setattr(app_module, "_capture_block_reason", None)
     monkeypatch.setattr(app_module, "_runtime_thread", None)
 
