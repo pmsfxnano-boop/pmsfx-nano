@@ -150,9 +150,6 @@ class CryptoStudyProtocol:
             "required_event_type_min_rows": min_rows,
         }
 
-PREREGISTERED_CRYPTO_PROTOCOL = CryptoStudyProtocol()
-PREREGISTERED_CRYPTO_PROTOCOL.validate()
-
 BINANCE_CRYPTO_PROTOCOL = CryptoStudyProtocol(
     study_id="crypto-binance-spot-prospective-v2",
     version="2",
