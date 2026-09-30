@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
@@ -42,12 +43,15 @@ class IngestRuntimeConfig:
     gap_status: str = "GAP_DETECTED"
     health_status: str = "HEALTHY"
     error_status: str = "DEGRADED"
+    health_flush_interval_seconds: float = 1.0
 
     def validate(self) -> None:
         if not self.kind.strip():
             raise ValueError("runtime kind cannot be empty")
         if not self.gap_status.strip() or not self.health_status.strip():
             raise ValueError("runtime statuses cannot be empty")
+        if self.health_flush_interval_seconds <= 0:
+            raise ValueError("health flush interval must be positive")
 
 
 class SequenceContinuityMonitor:
@@ -104,6 +108,9 @@ class ProspectiveCryptoIngestor:
         self.gaps_detected = 0
         self.last_error: str | None = None
         self.last_event: NormalizedMarketEvent | None = None
+        self._health_last_persist_monotonic: dict[str, float] = {}
+        self._health_last_status: dict[str, str] = {}
+        self._health_pending_rows: dict[str, int] = {}
 
         self.config.validate()
 
@@ -218,16 +225,29 @@ class ProspectiveCryptoIngestor:
                 },
             )
 
-        self.store.upsert_source_health(
-            source=event.source,
-            status=assessment["status"],
-            last_event_time=assessment["event_time"],
-            last_received_time=assessment["received_time"],
-            event_age_seconds=assessment["event_age_seconds"],
-            transport_age_seconds=assessment["transport_age_seconds"],
-            rows_last_batch=1,
-            error=None,
+        source = event.source
+        self._health_pending_rows[source] = self._health_pending_rows.get(source, 0) + 1
+        now_monotonic = time.monotonic()
+        last_persisted = self._health_last_persist_monotonic.get(source, 0.0)
+        previous_status = self._health_last_status.get(source)
+        should_persist_health = (
+            previous_status != assessment["status"]
+            or now_monotonic - last_persisted >= self.config.health_flush_interval_seconds
         )
+        if should_persist_health:
+            self.store.upsert_source_health(
+                source=source,
+                status=assessment["status"],
+                last_event_time=assessment["event_time"],
+                last_received_time=assessment["received_time"],
+                event_age_seconds=assessment["event_age_seconds"],
+                transport_age_seconds=assessment["transport_age_seconds"],
+                rows_last_batch=self._health_pending_rows[source],
+                error=None,
+            )
+            self._health_last_persist_monotonic[source] = now_monotonic
+            self._health_last_status[source] = assessment["status"]
+            self._health_pending_rows[source] = 0
         self.last_event = event
 
     def stop(self) -> None:
@@ -241,6 +261,9 @@ class ProspectiveCryptoIngestor:
         self.events_duplicate = 0
         self.gaps_detected = 0
         self.last_error = None
+        self._health_last_persist_monotonic.clear()
+        self._health_last_status.clear()
+        self._health_pending_rows.clear()
 
         status = "STOPPED"
         result: dict[str, Any] = {}
