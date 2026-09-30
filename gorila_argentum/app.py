@@ -461,10 +461,47 @@ async def _argentina_live_loop() -> None:
         await asyncio.sleep(_ARG_LIVE_INTERVAL_SECONDS)
 
 
+def _repair_canonical_history_if_needed() -> dict[str, Any]:
+    """Rebuild the model-facing daily fabric when legacy quarantine emptied it."""
+    if os.getenv("GORILA_CANONICAL_REPAIR_ON_STARTUP", "1").strip().lower() not in {"1", "true", "yes"}:
+        return {"status": "DISABLED"}
+
+    from .canonical_data import canonical_daily_series, reconcile_all
+
+    store = Store()
+    store.init()
+    counts = {
+        symbol: len(canonical_daily_series(store, symbol, "close", limit=2500))
+        for symbol in settings.core_symbols
+    }
+    threshold = max(65 + 5 + 1, int(os.getenv("GORILA_CANONICAL_REPAIR_MIN_ROWS", "100")))
+    if counts and min(counts.values()) >= threshold:
+        return {"status": "HEALTHY", "counts": counts, "threshold": threshold}
+
+    repaired = reconcile_all(
+        store,
+        settings.core_symbols,
+        field="close",
+        limit_sessions=2500,
+    )
+    post_counts = {
+        symbol: len(canonical_daily_series(store, symbol, "close", limit=2500))
+        for symbol in settings.core_symbols
+    }
+    return {
+        "status": "REBUILT",
+        "before": counts,
+        "after": post_counts,
+        "threshold": threshold,
+        "symbols": len(repaired),
+    }
+
+
 async def _init_store_background() -> None:
     started = time.perf_counter()
     try:
-        await asyncio.to_thread(Store().init)
+        canonical_repair = await asyncio.to_thread(_repair_canonical_history_if_needed)
+        _LOGGER.info("GORILA_CANONICAL_REPAIR %s", json.dumps(canonical_repair, sort_keys=True, default=str))
         _DB_STATE.update({
             "status": "READY",
             "ready": True,
