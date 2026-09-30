@@ -233,3 +233,10 @@ def test_order_book_coordinator_requires_a_new_snapshot_after_gap() -> None:
     assert coordinator.buffer_or_apply(
         {"U": 104, "u": 104, "b": [], "a": []}
     ) == "SYNCED"
+
+def test_market_data_defaults_use_official_market_data_only_endpoints() -> None:
+    from gorila_crypto.binance import BinanceStreamConfig
+
+    config = BinanceStreamConfig(symbols=("BTCUSDT",), streams=("trade", "bookTicker"))
+    assert config.ws_base_url == "wss://data-stream.binance.vision:443/stream"
+    assert config.rest_base_url == "https://data-api.binance.vision"
