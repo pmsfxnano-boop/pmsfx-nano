@@ -393,6 +393,76 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         return int(count)
 
+    def active_capture_session(self, study_id: str) -> str | None:
+        self.init()
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT session_id FROM crypto_capture_sessions "
+                        "WHERE study_id=%s AND status='RUNNING' ORDER BY started_at DESC LIMIT 1",
+                        (study_id,),
+                    )
+                    row = cur.fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT session_id FROM crypto_capture_sessions "
+                    "WHERE study_id=? AND status='RUNNING' ORDER BY started_at DESC LIMIT 1",
+                    (study_id,),
+                ).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            conn.close()
+
+    def scoped_stats(self, *, study_id: str, capture_session_id: str | None = None) -> dict[str, Any]:
+        self.init()
+        params: list[Any] = [study_id]
+        clauses = ["e.metadata::jsonb->>'crypto_study_id'=%s"] if self._pg else [
+            "json_extract(e.metadata, '$.crypto_study_id')=?"
+        ]
+        if capture_session_id is not None:
+            clauses.append(
+                "e.metadata::jsonb->>'capture_session_id'=%s"
+                if self._pg
+                else "json_extract(e.metadata, '$.capture_session_id')=?"
+            )
+            params.append(capture_session_id)
+        where = " AND ".join(clauses)
+        query = (
+            "SELECT e.symbol,e.event_type,count(*) AS rows,"
+            "min(e.event_time) AS first_event,max(e.event_time) AS last_event "
+            f"FROM crypto_events e WHERE {where} "
+            "GROUP BY e.symbol,e.event_type ORDER BY e.symbol,e.event_type"
+        )
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+            else:
+                rows = conn.execute(query, params).fetchall()
+            grouped = [
+                {
+                    "symbol": str(row[0]),
+                    "event_type": str(row[1]),
+                    "rows": int(row[2]),
+                    "first_event": str(row[3]),
+                    "last_event": str(row[4]),
+                }
+                for row in rows
+            ]
+            return {
+                "study_id": study_id,
+                "capture_session_id": capture_session_id,
+                "backend": self.backend,
+                "event_counts": grouped,
+                "total_rows": sum(item["rows"] for item in grouped),
+            }
+        finally:
+            conn.close()
+
     def read_scoped_events(
         self,
         *,
