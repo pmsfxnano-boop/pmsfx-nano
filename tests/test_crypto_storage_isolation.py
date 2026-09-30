@@ -96,6 +96,22 @@ def test_crypto_storage_ignores_legacy_database_env(
     assert store.database_url == ""
 
 
+def test_crypto_storage_rewrites_cross_region_postgres_endpoint_with_tls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "GORILA_CRYPTO_DATABASE_HOST_OVERRIDE",
+        "dpg-example-a.oregon-postgres.render.com",
+    )
+    store = CryptoStore(
+        database_url="postgresql://user:pa%40ss@internal-host:5432/dbname"
+    )
+    assert (
+        store.database_url
+        == "postgresql://user:pa%40ss@dpg-example-a.oregon-postgres.render.com:5432/dbname?sslmode=require"
+    )
+
+
 def test_crypto_storage_rejects_legacy_sqlite_path_reuse(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
