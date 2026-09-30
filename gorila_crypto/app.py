@@ -340,9 +340,17 @@ def health() -> dict[str, Any]:
     if capture_enabled and not worker_alive:
         payload["status"] = "CAPTURE_WORKER_DEAD"
         raise HTTPException(status_code=503, detail=payload)
-    if capture_enabled and not symbols_live:
+    return payload
+
+
+@app.get("/api/crypto/readiness")
+def readiness() -> dict[str, Any]:
+    payload = health()
+    capture_enabled = settings.ingest_enabled and not _capture_block_reason
+    if capture_enabled and not payload.get("symbols_live"):
         payload["status"] = "CAPTURE_DATA_STALE"
         raise HTTPException(status_code=503, detail=payload)
+    payload["status"] = "CAPTURE_READY"
     return payload
 
 
