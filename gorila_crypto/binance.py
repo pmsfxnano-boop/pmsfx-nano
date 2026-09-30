@@ -21,15 +21,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Iterator, Mapping
-from urllib.parse import urlencode
 
 import httpx
 import websocket
 
 
-# Binance's official market-data-only endpoints.
-SPOT_WS_BASE = "wss://data-stream.binance.vision:443/stream"
-SPOT_REST_BASE = "https://data-api.binance.vision"
+SPOT_WS_BASE = "wss://stream.binance.com:9443/stream"
+SPOT_REST_BASE = "https://api.binance.com"
 DEFAULT_DEPTH_SPEED = "100ms"
 DEFAULT_DEPTH_LIMIT = 5000
 
@@ -137,8 +135,9 @@ def build_stream_names(config: BinanceStreamConfig) -> tuple[str, ...]:
 
 
 def build_ws_url(config: BinanceStreamConfig) -> str:
-    query = urlencode({"streams": "/".join(build_stream_names(config))})
-    return f"{config.ws_base_url}?{query}"
+    # Preserve Binance's documented combined-stream separators and '@' tokens.
+    streams = "/".join(build_stream_names(config))
+    return f"{config.ws_base_url}?streams={streams}"
 
 
 def unwrap_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -466,12 +465,14 @@ class BinanceSpotMarketAdapter:
         }
 
     def connect(self):
-        return websocket.create_connection(
-            self.connection_url(),
+        ws = websocket.create_connection(
+            self.config.ws_base_url,
             timeout=self.config.recv_timeout_s,
             ping_interval=self.config.ping_interval_s,
             enable_multithread=True,
         )
+        ws.send(json.dumps(self.subscription_request(), separators=(",", ":")))
+        return ws
 
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
         connected_ns = time.time_ns()
@@ -492,6 +493,9 @@ class BinanceSpotMarketAdapter:
                 raise InvalidMarketEvent("Binance websocket payload is not valid JSON") from exc
             if not isinstance(message, Mapping):
                 raise InvalidMarketEvent("Binance websocket message must be an object")
+            if "result" in message and "id" in message:
+                # Binance control-plane acknowledgement, not market data.
+                continue
             event = normalize_market_message(
                 message,
                 received_ns=received_ns,
@@ -519,9 +523,8 @@ class BinanceSpotMarketAdapter:
     ) -> Iterator[NormalizedMarketEvent]:
         """Reconnect with bounded exponential backoff.
 
-        The stream URL embeds the subscription, so no extra SUBSCRIBE control
-        message is necessary after connect. A controlled reconnect is also the
-        normal path before Binance's documented 24-hour connection boundary.
+        The socket connects to the public stream endpoint and sends an explicit
+        SUBSCRIBE request for the preregistered stream set.
         """
         backoff = max(0.1, float(initial_backoff_s))
         while stop_event is None or not stop_event.is_set():
@@ -533,7 +536,17 @@ class BinanceSpotMarketAdapter:
                 ws = self.connect()
                 backoff = max(0.1, float(initial_backoff_s))
                 if on_connection:
-                    on_connection("CONNECTED", {"at": datetime.now(timezone.utc).isoformat()})
+                    on_connection(
+                        "SUBSCRIBE_SENT",
+                        {
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "streams": list(build_stream_names(self.config)),
+                        },
+                    )
+                    on_connection(
+                        "CONNECTED",
+                        {"at": datetime.now(timezone.utc).isoformat()},
+                    )
                 for event in self.iter_events_once(ws=ws):
                     yield event
                     if stop_event is not None and stop_event.is_set():
