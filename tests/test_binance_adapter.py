@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -42,9 +43,11 @@ def test_stream_names_are_deterministic_and_lowercase() -> None:
     )
     url = build_ws_url(config)
     assert url.startswith("wss://data-stream.binance.vision:443/stream?")
-    assert "streams=btcusdt@trade/btcusdt@bookTicker/btcusdt@depth@100ms/ethusdt@trade/ethusdt@bookTicker/ethusdt@depth@100ms" in url
-    assert "%40" not in url
-    assert "%2F" not in url
+    query = parse_qs(urlparse(url).query)
+    assert query["streams"][0] == (
+        "btcusdt@trade/btcusdt@bookTicker/btcusdt@depth@100ms/"
+        "ethusdt@trade/ethusdt@bookTicker/ethusdt@depth@100ms"
+    )
 
 
 def test_trade_normalization_preserves_event_and_trade_time() -> None:
