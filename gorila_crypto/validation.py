@@ -1030,13 +1030,16 @@ def run_walk_forward_validation(
     else:
         adjusted_placebo_values = holm_bonferroni(hypothesis_p_values)
     adjusted_placebo = (
-        min(adjusted_placebo_values)
+        max(adjusted_placebo_values)
         if adjusted_placebo_values
         else None
     )
     multiple_testing_pass = (
         adjusted_placebo is not None
-        and adjusted_placebo <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+        and all(
+            value <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+            for value in adjusted_placebo_values
+        )
         and len(hypothesis_sample_sizes) >= 1
     )
 
@@ -1213,6 +1216,8 @@ def persist_validation_report(
     run_row = {
         "run_id": run_id,
         "replay_fingerprint": replay_fingerprint,
+        "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+        "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash,
         "model_id": model_id,
         "model_version": model_version,
         "target_kind": target_spec.kind,
