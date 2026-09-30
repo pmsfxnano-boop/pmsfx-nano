@@ -159,3 +159,36 @@ def test_kraken_wire_json_preserves_decimal_tokens_without_float_rounding() -> N
     assert str(events[0].payload["bids"][0]["qty"]) == "1.2300"
     assert str(events[0].payload["asks"][0]["price"]) == "60001.20"
     assert str(events[0].payload["asks"][0]["qty"]) == "0.0100"
+
+
+def test_kraken_rejects_incremental_book_update_before_fresh_snapshot() -> None:
+    from gorila_crypto.kraken import KrakenSpotMarketAdapter
+
+    adapter = KrakenSpotMarketAdapter(
+        KrakenStreamConfig(
+            symbols=("BTC/USD",),
+            streams=("bookTicker",),
+            depth=10,
+        )
+    )
+    update = {
+        "channel": "book",
+        "type": "update",
+        "data": [{
+            "symbol": "BTC/USD",
+            "timestamp": "2026-09-29T20:00:00.123456Z",
+            "bids": [{"price": "60000.0", "qty": "1.2"}],
+            "asks": [{"price": "60001.0", "qty": "1.1"}],
+            "checksum": 123,
+        }],
+    }
+    try:
+        list(adapter._events_from_message(
+            update,
+            received_time=datetime(2026, 9, 29, 20, 0, 0, 130000, tzinfo=timezone.utc),
+            receive_ns=123,
+        ))
+    except KrakenAdapterError as exc:
+        assert "before a snapshot" in str(exc)
+    else:
+        raise AssertionError("pre-snapshot Kraken book update was accepted")
