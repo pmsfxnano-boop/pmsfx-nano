@@ -303,6 +303,10 @@ def root_head() -> None:
 def health() -> dict[str, Any]:
     worker_alive = bool(_runtime_thread and _runtime_thread.is_alive())
     capture_enabled = settings.ingest_enabled and not _capture_block_reason
+    symbol_health = _runtime.symbol_health() if _runtime is not None else []
+    symbols_live = bool(symbol_health) and all(
+        row.get("status") == "LIVE" for row in symbol_health
+    )
     payload = {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -320,6 +324,8 @@ def health() -> dict[str, Any]:
         "heartbeat_alive": bool(_heartbeat_thread and _heartbeat_thread.is_alive()),
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
+        "symbol_health": symbol_health,
+        "symbols_live": symbols_live,
         "freshness_contract": {
             "live_max_age_seconds": LIVE_MAX_AGE_SECONDS,
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
@@ -333,6 +339,9 @@ def health() -> dict[str, Any]:
     }
     if capture_enabled and not worker_alive:
         payload["status"] = "CAPTURE_WORKER_DEAD"
+        raise HTTPException(status_code=503, detail=payload)
+    if capture_enabled and not symbols_live:
+        payload["status"] = "CAPTURE_DATA_STALE"
         raise HTTPException(status_code=503, detail=payload)
     return payload
 
@@ -350,6 +359,7 @@ def prospective_status() -> dict[str, Any]:
             "execution": False,
         }
     store = _new_store()
+    symbol_health = _runtime.symbol_health() if _runtime is not None else []
     if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
         session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
         health_rows = [
@@ -372,6 +382,10 @@ def prospective_status() -> dict[str, Any]:
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
         "ledger": stats,
         "source_health": health_rows,
+        "symbol_health": symbol_health,
+        "symbols_live": bool(symbol_health) and all(
+            row.get("status") == "LIVE" for row in symbol_health
+        ),
         "automatic_promotion": False,
         "execution": False,
     }
