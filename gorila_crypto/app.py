@@ -43,7 +43,9 @@ def _safe_store_stats() -> dict[str, Any] | None:
     if not settings.ingest_enabled:
         return None
     try:
-        return _new_store().prospective_stats()
+        return _new_store().prospective_stats(
+            source_prefix=f"{settings.provider}.websocket.",
+        )
     except RuntimeError as exc:
         return None
 
@@ -61,7 +63,9 @@ def _heartbeat_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
         try:
-            stats = store.prospective_stats()
+            stats = store.prospective_stats(
+                source_prefix=f"{settings.provider}.websocket.",
+            )
             print(
                 "GORILA_CAPTURE_HEARTBEAT "
                 + json.dumps(
@@ -124,7 +128,10 @@ def _quality_loop() -> None:
                     rows,
                     replay_fingerprint=replay_fp,
                     config=config,
-                    gap_rows=store.read_data_gaps(limit=10000),
+                    gap_rows=store.read_data_gaps(
+                        source_prefix=f"{settings.provider}.websocket.",
+                        limit=10000,
+                    ),
                     reference_time=datetime.now(timezone.utc),
                 )
                 report_json = asdict(report)
