@@ -9,13 +9,15 @@ not converted into a PASS.
 
 ## 1. Controlled Binance capture
 
-**Status: BLOCKED_DURABLE_STORAGE_LINK**
+**Status: BLOCKED_DURABLE_STORAGE_LINK; BLUEPRINT_READY**
 
 The isolated Render service is live on the Binance branch with ingestion enabled, but it
-fails closed because no durable `DATABASE_URL` is available to the service. The Render
-configuration contains a Blueprint service-reference definition for the database; the
-hosted connector does not expose a safe Blueprint-sync operation. No database secret is
-written into source control or injected as plaintext.
+fails closed because no durable `DATABASE_URL` is available to the service. The Blueprint
+now references the existing Render Postgres instance directly through `fromDatabase`
+rather than copying the Kraken service's secret. This is the correct durable wiring, but
+the hosted Render connector still does not expose a safe Blueprint-sync operation, so the
+reference is not yet applied to the running service. No database secret is written into
+source control or injected as plaintext.
 
 Safety result: no ephemeral accumulation and no hidden fallback to SQLite.
 
@@ -81,8 +83,9 @@ The isolated branch now:
 - requires a fresh book snapshot on every WebSocket connection before accepting
   incremental updates.
 
-Checksum logic, decimal-preservation behavior, and adapter integration have deterministic
-tests. The live Kraken service
+Checksum logic, decimal-preservation behavior, adapter integration, snapshot-before-update
+ordering, and the pre-snapshot rejection path have deterministic tests. The latest branch
+commit passed all three repository CI workflows. The live Kraken service
 continues to run from the original cleanroom branch and has not been changed by this
 work.
 
@@ -115,7 +118,9 @@ stress scenarios and persisted run/fold/OOS/lineage evidence.
 No model promotion or execution is enabled.
 
 The live OOS stage cannot truthfully be evaluated until the Binance durable-capture link is
-configured and a sufficiently long prospective ledger exists.
+configured and a sufficiently long prospective ledger exists. The current Render Postgres
+instance is available, but its free-plan expiry is 2026-10-18 and therefore must be treated
+as an operational continuity deadline for the ledger.
 
 ## Overall disposition
 
@@ -130,11 +135,18 @@ Neither blocker is bypassed with synthetic or inferred evidence.
 
 ## Latest hardening delta
 
-Commit chain after the CRC32-format correction adds two non-negotiable integrity controls:
+Commit chain after the CRC32-format correction adds four non-negotiable controls:
 1. Kraken JSON numeric tokens are decoded with `Decimal`, preventing IEEE-754 conversion
    from altering checksum-relevant price/quantity values.
 2. Every Kraken connection clears local state and refuses a book update until a fresh
    snapshot has been observed, eliminating stale-book carryover across reconnects.
+3. Incremental book updates are rejected before buffering when no fresh snapshot exists,
+   including the case where instrument precision has not arrived yet.
+4. Binance durable wiring is defined directly against the existing Postgres resource via
+   Blueprint `fromDatabase`, removing unnecessary secret propagation through the Kraken
+   service.
 
-These controls do not resolve the observed historical timestamp backlog; that remains a
-prospective forensic question requiring raw live frames.
+Current Kraken Render evidence continues to show durable Postgres ingestion while provider
+event time trails receive time by many minutes. That backlog remains unresolved at the
+venue/transport layer and is not converted into a quality pass. The latest code state is
+CI-green, but empirical OOS remains blocked until valid prospective Binance data exists.
