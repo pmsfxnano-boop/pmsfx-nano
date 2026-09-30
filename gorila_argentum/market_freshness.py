@@ -114,3 +114,51 @@ def aggregate_status(assessments: list[dict[str, Any]]) -> dict[str, Any]:
         "median_event_age_seconds": round(sorted(ages)[len(ages) // 2], 3) if ages else None,
         "max_event_age_seconds": round(max(ages), 3) if ages else None,
     }
+
+def choose_fresher_observation(
+    primary: dict[str, Any] | None,
+    secondary: dict[str, Any] | None,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """Select the freshest valid market observation without fabricating freshness.
+
+    A LIVE observation always outranks DELAYED/STALE data; within the same
+    validity class, the smallest event age wins. Ties preserve the primary
+    source. INVALID_TIMESTAMP observations are rejected unless no valid
+    candidate exists.
+    """
+    candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+    for role, row in (("primary", primary), ("secondary", secondary)):
+        if not row:
+            continue
+        assessment = assess_observation(
+            row.get("event_time"),
+            row.get("received_time"),
+            now=now,
+        )
+        if assessment["status"] == "INVALID_TIMESTAMP":
+            continue
+        candidates.append((row, assessment, role))
+
+    if not candidates:
+        fallback = primary or secondary
+        if fallback is None:
+            return None, None, None
+        assessment = assess_observation(
+            fallback.get("event_time"),
+            fallback.get("received_time"),
+            now=now,
+        )
+        return fallback, assessment, "primary" if fallback is primary else "secondary"
+
+    priority = {"LIVE": 0, "DELAYED": 1, "STALE": 2}
+    candidates.sort(
+        key=lambda item: (
+            priority.get(item[1]["status"], 99),
+            float(item[1]["event_age_seconds"] or 1e30),
+            0 if item[2] == "primary" else 1,
+        )
+    )
+    row, assessment, role = candidates[0]
+    return row, assessment, role
+
