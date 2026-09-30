@@ -148,6 +148,49 @@ def test_crypto_read_events_can_scope_source_and_skip_payload(tmp_path: Path) ->
     assert rows[0]["payload"] is None
 
 
+def test_crypto_provider_scoping_excludes_other_venue_rows_and_gaps(tmp_path: Path) -> None:
+    db = tmp_path / "crypto.sqlite3"
+    store = CryptoStore(sqlite_path=str(db))
+    for source, symbol in (
+        ("binance.websocket.trade", "BTCUSDT"),
+        ("kraken.websocket.trade", "BTC/USD"),
+    ):
+        store.record_event(
+            symbol=symbol,
+            event_type="trade",
+            event_time="2026-09-29T15:00:00+00:00",
+            received_time="2026-09-29T15:00:00.050000+00:00",
+            provider_time="2026-09-29T15:00:00+00:00",
+            source=source,
+            sequence_start=1,
+            sequence_end=1,
+            payload={"source": source},
+        )
+
+    store.record_gap(
+        symbol="BTCUSDT",
+        source="binance.websocket.depth",
+        expected_sequence=10,
+        observed_sequence=20,
+        status="GAP_DETECTED",
+    )
+    store.record_gap(
+        symbol="BTC/USD",
+        source="kraken.websocket.book",
+        expected_sequence=30,
+        observed_sequence=40,
+        status="GAP_DETECTED",
+    )
+
+    stats = store.prospective_stats(source_prefix="binance.websocket.")
+    gaps = store.read_data_gaps(source_prefix="binance.websocket.")
+
+    assert {row["symbol"] for row in stats["event_counts"]} == {"BTCUSDT"}
+    assert stats["gap_count"] == 1
+    assert len(gaps) == 1
+    assert gaps[0]["source"] == "binance.websocket.depth"
+
+
 def test_crypto_storage_rejects_legacy_sqlite_path_reuse(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
