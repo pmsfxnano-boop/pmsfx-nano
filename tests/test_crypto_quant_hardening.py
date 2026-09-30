@@ -237,3 +237,10 @@ def test_fencing_replaces_active_study_without_leaving_a_running_lease(tmp_path)
     )
     assert new_session != session_id
     assert store.active_capture_session(study.study_id) == new_session
+
+def test_release_v4_quant_store_is_complete() -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    assert hasattr(QuantCryptoStore, "fence_active_study_session")
+    assert hasattr(QuantCryptoStore, "reconcile_stale_runtime_runs")
+    assert hasattr(QuantCryptoStore, "start_runtime_run_scoped")
