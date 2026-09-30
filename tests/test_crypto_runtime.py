@@ -176,6 +176,34 @@ def test_ingestor_does_not_infer_continuity_across_reconnect_boundary(tmp_path) 
     assert result["events_inserted"] == 2
 
 
+def test_symbol_health_requires_fresh_data_for_every_required_symbol(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / "symbol-health.sqlite3"))
+    adapter = FakeAdapter([event(symbol="BTCUSDT", trade_id=1)])
+    adapter.config = BinanceStreamConfig(
+        symbols=("BTCUSDT", "ETHUSDT"),
+        streams=("trade",),
+    )
+    clock = {"now": BASE}
+    ingestor = ProspectiveCryptoIngestor(
+        store,
+        adapter,
+        now=lambda: clock["now"],
+    )
+    ingestor._ingest(event(symbol="BTCUSDT", trade_id=1))
+
+    live = ingestor.symbol_health()
+    assert live[0]["symbol"] == "BTCUSDT"
+    assert live[0]["status"] == "LIVE"
+    assert live[1]["symbol"] == "ETHUSDT"
+    assert live[1]["status"] == "STARTING"
+
+    clock["now"] = BASE.replace(minute=2, second=1)
+    stale = ingestor.symbol_health()
+    assert stale[0]["status"] == "DELAYED"
+    assert stale[1]["status"] == "NO_DATA"
+    assert not all(row["healthy"] for row in stale)
+
+
 def test_runtime_config_rejects_empty_kind() -> None:
     config = IngestRuntimeConfig(kind="   ")
     try:
