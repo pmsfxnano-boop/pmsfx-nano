@@ -142,6 +142,24 @@ class ProspectiveCryptoIngestor:
             self.sequence.new_connection()
             self.last_error = None
             self._record_connection(status, metadata)
+            self.store.upsert_source_health(
+                source=self.source_family,
+                status="LIVE",
+                last_event_time=(
+                    self.last_event.event_time.isoformat()
+                    if self.last_event is not None
+                    else None
+                ),
+                last_received_time=(
+                    self.last_event.received_time.isoformat()
+                    if self.last_event is not None
+                    else None
+                ),
+                event_age_seconds=None,
+                transport_age_seconds=None,
+                rows_last_batch=0,
+                error=None,
+            )
             return
 
         self._record_connection(status, metadata)
