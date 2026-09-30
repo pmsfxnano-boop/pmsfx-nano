@@ -71,6 +71,8 @@ def depth_event(*, first_id: int, final_id: int, second: int = 0) -> NormalizedM
 
 
 class FakeAdapter:
+    source_family = "binance.websocket.market"
+
     def __init__(self, events: list[NormalizedMarketEvent], *, reconnect_events: list[list[NormalizedMarketEvent]] | None = None) -> None:
         self.config = BinanceStreamConfig(symbols=("BTCUSDT",), streams=("trade",))
         self._events = events
