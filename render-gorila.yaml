@@ -11,10 +11,20 @@ services:
     plan: free
     buildCommand: pip install -r requirements-gorila.txt
     startCommand: uvicorn gorila_argentum.app:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /
+    healthCheckPath: /api/gorila/health
     autoDeployTrigger: commit
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: pmsfx-nano-db
           property: connectionString
+      - key: GORILA_DB_SCHEMA
+        value: "gorila_argentum"
+      - key: GORILA_REQUIRE_DURABLE_STORAGE
+        value: "1"
+      - key: GORILA_MACRO_INTERVAL_SECONDS
+        value: "900"
+      - key: GORILA_SIGNAL_INTERVAL_SECONDS
+        value: "10"
+      - key: GORILA_LIVE_INTERVAL_SECONDS
+        value: "15"
