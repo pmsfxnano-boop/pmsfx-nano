@@ -117,6 +117,10 @@ class ProspectiveCryptoIngestor:
         self._health_last_persist_monotonic: dict[str, float] = {}
         self._health_last_status: dict[str, str] = {}
         self._health_pending_rows: dict[str, int] = {}
+        self._symbol_lock = threading.Lock()
+        self._symbol_first_received: dict[str, datetime] = {}
+        self._symbol_last_received: dict[str, datetime] = {}
+        self._capture_started_at = self.now()
 
         self.config.validate()
 
@@ -275,7 +279,63 @@ class ProspectiveCryptoIngestor:
             self._health_last_persist_monotonic[source] = now_monotonic
             self._health_last_status[source] = assessment["status"]
             self._health_pending_rows[source] = 0
+        with self._symbol_lock:
+            symbol = event.symbol.upper()
+            self._symbol_first_received.setdefault(symbol, received_time)
+            self._symbol_last_received[symbol] = received_time
         self.last_event = event
+
+    def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Report readiness of every required symbol from observed receive times.
+
+        A live worker is not enough for production readiness: every preregistered
+        symbol must actually produce market-data events within the configured
+        freshness window. Missing symbols remain STARTING only during the initial
+        live-age grace period; after that they are NO_DATA.
+        """
+        reference = now or self.now()
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        reference = reference.astimezone(timezone.utc)
+
+        with self._symbol_lock:
+            first = dict(self._symbol_first_received)
+            last = dict(self._symbol_last_received)
+            capture_started = self._capture_started_at
+
+        startup_age = max(0.0, (reference - capture_started).total_seconds())
+        rows: list[dict[str, Any]] = []
+        for symbol in tuple(self.adapter.config.symbols):
+            normalized = str(symbol).upper()
+            first_received = first.get(normalized)
+            last_received = last.get(normalized)
+            if last_received is None:
+                age = startup_age
+                status = (
+                    "STARTING"
+                    if startup_age <= settings.event_live_max_age_seconds
+                    else "NO_DATA"
+                )
+            else:
+                age = max(0.0, (reference - last_received).total_seconds())
+                if age <= settings.event_live_max_age_seconds:
+                    status = "LIVE"
+                elif age <= settings.event_delayed_max_age_seconds:
+                    status = "DELAYED"
+                else:
+                    status = "STALE"
+            rows.append(
+                {
+                    "symbol": normalized,
+                    "status": status,
+                    "first_received_time": first_received.isoformat() if first_received else None,
+                    "last_received_time": last_received.isoformat() if last_received else None,
+                    "age_seconds": round(age, 3) if last_received is not None or startup_age else None,
+                    "required": True,
+                    "healthy": status == "LIVE",
+                }
+            )
+        return rows
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -327,6 +387,10 @@ class ProspectiveCryptoIngestor:
         self._health_last_persist_monotonic.clear()
         self._health_last_status.clear()
         self._health_pending_rows.clear()
+        with self._symbol_lock:
+            self._symbol_first_received.clear()
+            self._symbol_last_received.clear()
+            self._capture_started_at = self.now()
 
         status = "STOPPED"
         result: dict[str, Any] = {}
