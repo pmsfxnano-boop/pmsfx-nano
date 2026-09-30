@@ -155,7 +155,7 @@ def test_kraken_wire_json_preserves_decimal_tokens_without_float_rounding() -> N
     )
     events = list(adapter.iter_events_once(ws=FakeWS()))
     assert len(events) == 1
-    assert events[0].payload["bids"][0]["price"] == "60000.10"
-    assert events[0].payload["bids"][0]["qty"] == "1.2300"
-    assert events[0].payload["asks"][0]["price"] == "60001.20"
-    assert events[0].payload["asks"][0]["qty"] == "0.0100"
+    assert str(events[0].payload["bids"][0]["price"]) == "60000.10"
+    assert str(events[0].payload["bids"][0]["qty"]) == "1.2300"
+    assert str(events[0].payload["asks"][0]["price"]) == "60001.20"
+    assert str(events[0].payload["asks"][0]["qty"]) == "0.0100"
