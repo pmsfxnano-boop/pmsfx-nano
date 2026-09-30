@@ -42,6 +42,8 @@ class DataQualityConfig:
     required_event_types: tuple[str, ...] = ("trade",)
     future_tolerance_seconds: float = 5.0
     required_event_type_min_rows: Mapping[str, int] = field(default_factory=dict)
+    required_event_type_min_rows_per_symbol: Mapping[str, int] = field(default_factory=dict)
+    required_event_type_min_duration_seconds: Mapping[str, float] = field(default_factory=dict)
     required_integrity_event_types: tuple[str, ...] = ()
 
     def validate(self) -> None:
@@ -61,11 +63,19 @@ class DataQualityConfig:
             raise ValueError("future_tolerance_seconds must be non-negative")
         if not self.required_event_types:
             raise ValueError("required_event_types cannot be empty")
-        unknown = set(self.required_event_type_min_rows) - set(self.required_event_types)
+        unknown = (
+            set(self.required_event_type_min_rows)
+            | set(self.required_event_type_min_rows_per_symbol)
+            | set(self.required_event_type_min_duration_seconds)
+        ) - set(self.required_event_types)
         if unknown:
-            raise ValueError(f"event-type minima specified for non-required types: {sorted(unknown)}")
+            raise ValueError(f"event-type constraints specified for non-required types: {sorted(unknown)}")
         if any(int(value) < 1 for value in self.required_event_type_min_rows.values()):
             raise ValueError("required event-type minimum rows must be positive")
+        if any(int(value) < 1 for value in self.required_event_type_min_rows_per_symbol.values()):
+            raise ValueError("required per-symbol event-type minimum rows must be positive")
+        if any(float(value) < 0 for value in self.required_event_type_min_duration_seconds.values()):
+            raise ValueError("required event-type minimum durations must be non-negative")
         if not set(self.required_integrity_event_types).issubset(set(self.required_event_types)):
             raise ValueError("required integrity event types must be required event types")
 
@@ -95,6 +105,9 @@ class DataQualityReport:
     negative_transport_latency_count: int
     required_source_gap_count: int
     event_type_counts: Mapping[str, int]
+    event_type_durations_seconds: Mapping[str, float]
+    event_type_symbol_counts: Mapping[str, Mapping[str, int]]
+    event_type_symbol_durations_seconds: Mapping[str, Mapping[str, float]]
     event_quality_counts: Mapping[str, Mapping[str, int]]
     symbol_stats: Mapping[str, QualitySymbolStats]
     reasons: tuple[str, ...]
@@ -140,6 +153,9 @@ def evaluate_replay_quality(
     negative_transport_latency_count = 0
     event_type_counts: dict[str, int] = {}
     event_quality_counts: dict[str, dict[str, int]] = {}
+    by_event_type_times: dict[str, list[datetime]] = {}
+    by_event_type_symbol_rows: dict[str, dict[str, int]] = {}
+    by_event_type_symbol_times: dict[str, dict[str, list[datetime]]] = {}
 
     previous_receive: dict[tuple[str, str, int], datetime] = {}
     for row in ordered:
@@ -237,6 +253,46 @@ def evaluate_replay_quality(
         if observed < minimum:
             reasons.append(f"EVENT_TYPE_INSUFFICIENT:{event_type}:{observed}<{minimum}")
 
+        symbol_minimum = config.required_event_type_min_rows_per_symbol.get(event_type)
+        if symbol_minimum is not None:
+            for symbol in sorted(by_symbol):
+                observed_symbol = int(
+                    (by_event_type_symbol_rows.get(event_type) or {}).get(symbol, 0)
+                )
+                if observed_symbol < int(symbol_minimum):
+                    reasons.append(
+                        f"EVENT_TYPE_SYMBOL_INSUFFICIENT:{symbol}:{event_type}:"
+                        f"{observed_symbol}<{int(symbol_minimum)}"
+                    )
+
+        duration_minimum = config.required_event_type_min_duration_seconds.get(event_type)
+        if duration_minimum is not None:
+            event_times = by_event_type_times.get(event_type) or []
+            duration = (
+                max(event_times).timestamp() - min(event_times).timestamp()
+                if len(event_times) >= 2
+                else 0.0
+            )
+            if duration < float(duration_minimum):
+                reasons.append(
+                    f"EVENT_TYPE_DURATION_INSUFFICIENT:{event_type}:"
+                    f"{duration:.3f}<{float(duration_minimum):.3f}"
+                )
+            for symbol in sorted(by_symbol):
+                symbol_times = (
+                    (by_event_type_symbol_times.get(event_type) or {}).get(symbol) or []
+                )
+                symbol_duration = (
+                    max(symbol_times).timestamp() - min(symbol_times).timestamp()
+                    if len(symbol_times) >= 2
+                    else 0.0
+                )
+                if symbol_duration < float(duration_minimum):
+                    reasons.append(
+                        f"EVENT_TYPE_SYMBOL_DURATION_INSUFFICIENT:{symbol}:{event_type}:"
+                        f"{symbol_duration:.3f}<{float(duration_minimum):.3f}"
+                    )
+
     for event_type in config.required_integrity_event_types:
         verified = int((event_quality_counts.get(event_type) or {}).get("INTEGRITY_VERIFIED", 0))
         failures = sum(
@@ -265,6 +321,25 @@ def evaluate_replay_quality(
         negative_transport_latency_count=negative_transport_latency_count,
         required_source_gap_count=required_source_gap_count,
         event_type_counts=dict(sorted(event_type_counts.items())),
+        event_type_durations_seconds={
+            event_type: float(
+                max(times).timestamp() - min(times).timestamp()
+            ) if len(times) >= 2 else 0.0
+            for event_type, times in sorted(by_event_type_times.items())
+        },
+        event_type_symbol_counts={
+            event_type: dict(sorted(symbol_counts.items()))
+            for event_type, symbol_counts in sorted(by_event_type_symbol_rows.items())
+        },
+        event_type_symbol_durations_seconds={
+            event_type: {
+                symbol: float(
+                    max(times).timestamp() - min(times).timestamp()
+                ) if len(times) >= 2 else 0.0
+                for symbol, times in sorted(symbol_times.items())
+            }
+            for event_type, symbol_times in sorted(by_event_type_symbol_times.items())
+        },
         event_quality_counts={
             event_type: dict(sorted(qualities.items()))
             for event_type, qualities in sorted(event_quality_counts.items())
