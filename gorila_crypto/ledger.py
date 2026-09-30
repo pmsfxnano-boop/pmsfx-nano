@@ -23,6 +23,8 @@ from .storage import CryptoStore, CRYPTO_SCHEMA_VERSION
 
 @dataclass(frozen=True)
 class ReplaySpec:
+    study_id: str | None = None
+    capture_session_id: str | None = None
     symbol: str | None = None
     source: str | None = None
     start_received_time: str | None = None
@@ -96,16 +98,30 @@ def replay(
     imply the information was available to the strategy at that time.
     """
     spec.validate()
-    rows = store.read_events(
-        symbol=spec.symbol,
-        source=spec.source,
-        start_received_time=spec.start_received_time,
-        end_received_time=spec.end_received_time,
-        start_event_time=spec.start_event_time,
-        end_event_time=spec.end_event_time,
-        order=spec.order,
-        limit=spec.limit,
-    )
+    if spec.study_id is not None and hasattr(store, "read_scoped_events"):
+        rows = store.read_scoped_events(
+            study_id=spec.study_id,
+            capture_session_id=spec.capture_session_id,
+            symbol=spec.symbol,
+            source=spec.source,
+            start_received_time=spec.start_received_time,
+            end_received_time=spec.end_received_time,
+            start_event_time=spec.start_event_time,
+            end_event_time=spec.end_event_time,
+            order=spec.order,
+            limit=spec.limit,
+        )
+    else:
+        rows = store.read_events(
+            symbol=spec.symbol,
+            source=spec.source,
+            start_received_time=spec.start_received_time,
+            end_received_time=spec.end_received_time,
+            start_event_time=spec.start_event_time,
+            end_event_time=spec.end_event_time,
+            order=spec.order,
+            limit=spec.limit,
+        )
     state = initial_state
     if reducer is not None:
         for row in rows:
@@ -138,6 +154,8 @@ def replay_manifest(spec: ReplaySpec, result: ReplayResult) -> dict[str, Any]:
         "code_version": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION") or "unknown",
         "manifest_created_at": datetime.now(timezone.utc).isoformat(),
         "order": spec.order,
+        "study_id": spec.study_id,
+        "capture_session_id": spec.capture_session_id,
         "symbol": spec.symbol,
         "source": spec.source,
         "start_received_time": spec.start_received_time,

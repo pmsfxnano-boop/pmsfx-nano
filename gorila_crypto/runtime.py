@@ -8,6 +8,7 @@ source freshness. It never forecasts, trades, or promotes a model.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from gorila_core.market_freshness import assess_observation
 from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .config import settings
+from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
 
 
@@ -108,6 +111,9 @@ class ProspectiveCryptoIngestor:
         self.gaps_detected = 0
         self.last_error: str | None = None
         self.last_event: NormalizedMarketEvent | None = None
+        self.protocol = PREREGISTERED_CRYPTO_PROTOCOL
+        self.session_id: str | None = None
+        self._last_runtime_heartbeat = 0.0
         self._health_last_persist_monotonic: dict[str, float] = {}
         self._health_last_status: dict[str, str] = {}
         self._health_pending_rows: dict[str, int] = {}
@@ -138,6 +144,9 @@ class ProspectiveCryptoIngestor:
         )
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
+        if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
+            self.store.heartbeat_runtime_run(self.run_id)
+            self._last_runtime_heartbeat = time.monotonic()
         if status == "CONNECTED":
             self.sequence.new_connection()
             self.last_error = None
@@ -177,7 +186,11 @@ class ProspectiveCryptoIngestor:
             received_time,
             now=self.now(),
         )
-        result = self.store.append_event(
+        if self.session_id is None:
+            raise RuntimeError("capture_session_not_started")
+        result = self.store.append_scoped_event(
+            study_id=self.protocol.study_id,
+            capture_session_id=self.session_id,
             symbol=event.symbol,
             event_type=event.event_type,
             event_time=event_time.isoformat(),
@@ -258,9 +271,39 @@ class ProspectiveCryptoIngestor:
         self.stop_event.set()
 
     def run(self) -> dict[str, Any]:
-        """Run until stop_event, adapter failure, or external interruption."""
-        self.run_id = self.store.start_runtime_run(kind=self.config.kind)
-        self._record_connection("RUN_STARTED", {"symbols": list(self.adapter.config.symbols)})
+        """Run one immutable preregistered capture session until shutdown."""
+        if not self.protocol.matches_runtime(
+            provider=settings.provider,
+            symbols=tuple(self.adapter.config.symbols),
+            streams=tuple(settings.streams),
+        ):
+            raise RuntimeError("runtime_does_not_match_preregistered_protocol")
+        if not isinstance(self.store, QuantCryptoStore):
+            raise TypeError("preregistered crypto runtime requires QuantCryptoStore")
+        stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
+        self.store.register_study(self.protocol)
+        self.session_id = self.store.start_capture_session(
+            study_id=self.protocol.study_id,
+            protocol_hash=self.protocol.protocol_hash,
+            provider=settings.provider,
+            venue=self.protocol.venue,
+            symbols=tuple(self.adapter.config.symbols),
+            streams=tuple(settings.streams),
+            region=os.getenv("RENDER_REGION"),
+            instance_id=os.getenv("RENDER_INSTANCE_ID"),
+            code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
+            metadata={"stale_runs_reconciled": stale},
+        )
+        self.run_id = self.store.start_runtime_run_scoped(
+            kind=self.config.kind,
+            session_id=self.session_id,
+        )
+        self._record_connection("RUN_STARTED", {
+            "symbols": list(self.adapter.config.symbols),
+            "study_id": self.protocol.study_id,
+            "protocol_hash": self.protocol.protocol_hash,
+            "capture_session_id": self.session_id,
+        })
         self.events_inserted = 0
         self.events_duplicate = 0
         self.gaps_detected = 0
@@ -277,6 +320,10 @@ class ProspectiveCryptoIngestor:
                 on_connection=self._on_connection,
             ):
                 self._ingest(event)
+                now_monotonic = time.monotonic()
+                if now_monotonic - self._last_runtime_heartbeat >= 5.0:
+                    self.store.heartbeat_runtime_run(self.run_id)
+                    self._last_runtime_heartbeat = now_monotonic
                 if self.stop_event.is_set():
                     status = "STOPPED"
                     break
@@ -304,11 +351,14 @@ class ProspectiveCryptoIngestor:
                 "forecast": False,
                 "execution": False,
             }
-            self.store.finish_runtime_run(
+            self.store.finish_runtime_run_scoped(
                 run_id=self.run_id,
+                session_id=self.session_id,
                 status=status,
                 result=result,
             )
+            if self.session_id is not None:
+                self.store.set_capture_session_status(self.session_id, status)
             self._record_connection("RUN_FINISHED", result)
             self.store.close()
 
