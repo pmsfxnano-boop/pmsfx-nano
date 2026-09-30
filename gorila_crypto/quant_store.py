@@ -167,6 +167,107 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         return protocol.study_id
 
+    def fence_active_study_session(
+        self,
+        *,
+        study_id: str,
+        reason: str = "REPLACED_BY_NEW_WORKER",
+    ) -> int:
+        """Atomically revoke the current single-writer cohort before takeover."""
+        self.init()
+        now = _utc_now()
+        conn = self.connect()
+        revoked = 0
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE crypto_runtime_leases
+                        SET status='ABORTED_REPLACED', heartbeat_at=%s
+                        WHERE status='RUNNING'
+                          AND session_id IN (
+                              SELECT session_id
+                              FROM crypto_capture_sessions
+                              WHERE study_id=%s AND status='RUNNING'
+                          )
+                        RETURNING run_id,session_id
+                        """,
+                        (now, study_id),
+                    )
+                    revoked = cur.rowcount
+                    cur.execute(
+                        """
+                        UPDATE crypto_runtime_runs
+                        SET status='ABORTED_REPLACED',
+                            completed_at=%s,
+                            result=%s
+                        WHERE status='RUNNING'
+                          AND run_id IN (
+                              SELECT l.run_id
+                              FROM crypto_runtime_leases l
+                              JOIN crypto_capture_sessions s
+                                ON s.session_id=l.session_id
+                              WHERE s.study_id=%s
+                                AND l.status='ABORTED_REPLACED'
+                          )
+                        """,
+                        (now, json.dumps({"reason": reason}, sort_keys=True)),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE crypto_capture_sessions
+                        SET status='ABORTED_REPLACED', ended_at=%s
+                        WHERE study_id=%s AND status='RUNNING'
+                        """,
+                        (now, study_id),
+                    )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE crypto_runtime_leases
+                    SET status='ABORTED_REPLACED', heartbeat_at=?
+                    WHERE status='RUNNING'
+                      AND session_id IN (
+                          SELECT session_id
+                          FROM crypto_capture_sessions
+                          WHERE study_id=? AND status='RUNNING'
+                      )
+                    """,
+                    (now, study_id),
+                )
+                revoked = cur.rowcount
+                conn.execute(
+                    """
+                    UPDATE crypto_runtime_runs
+                    SET status='ABORTED_REPLACED',
+                        completed_at=?,
+                        result=?
+                    WHERE status='RUNNING'
+                      AND run_id IN (
+                          SELECT l.run_id
+                          FROM crypto_runtime_leases l
+                          JOIN crypto_capture_sessions s
+                            ON s.session_id=l.session_id
+                          WHERE s.study_id=?
+                            AND l.status='ABORTED_REPLACED'
+                      )
+                    """,
+                    (now, json.dumps({"reason": reason}, sort_keys=True)),
+                )
+                conn.execute(
+                    """
+                    UPDATE crypto_capture_sessions
+                    SET status='ABORTED_REPLACED', ended_at=?
+                    WHERE study_id=? AND status='RUNNING'
+                    """,
+                    (now, study_id),
+                )
+            conn.commit()
+            return int(revoked)
+        finally:
+            conn.close()
+
     def start_capture_session(
         self,
         *,
@@ -327,7 +428,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         return run_id
 
-    def heartbeat_runtime_run(self, run_id: str) -> None:
+    def heartbeat_runtime_run(self, run_id: str) -> bool:
         self.init()
         heartbeat = _utc_now()
         conn = self.connect()
@@ -335,15 +436,18 @@ class QuantCryptoStore(CryptoStore):
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE crypto_runtime_leases SET heartbeat_at=%s,status='RUNNING' WHERE run_id=%s",
+                        "UPDATE crypto_runtime_leases SET heartbeat_at=%s WHERE run_id=%s AND status='RUNNING'",
                         (heartbeat, run_id),
                     )
+                    alive = cur.rowcount == 1
             else:
-                conn.execute(
-                    "UPDATE crypto_runtime_leases SET heartbeat_at=?,status='RUNNING' WHERE run_id=?",
+                cur = conn.execute(
+                    "UPDATE crypto_runtime_leases SET heartbeat_at=? WHERE run_id=? AND status='RUNNING'",
                     (heartbeat, run_id),
                 )
+                alive = cur.rowcount == 1
             conn.commit()
+            return bool(alive)
         finally:
             conn.close()
 
@@ -355,10 +459,26 @@ class QuantCryptoStore(CryptoStore):
         status: str,
         result: Mapping[str, Any],
     ) -> None:
-        super().finish_runtime_run(run_id=run_id, status=status, result=dict(result))
         self.init()
         conn = self.connect()
         try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT status FROM crypto_runtime_leases WHERE run_id=%s",
+                        (run_id,),
+                    )
+                    lease = cur.fetchone()
+            else:
+                lease = conn.execute(
+                    "SELECT status FROM crypto_runtime_leases WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+            if lease is not None and str(lease[0]) != "RUNNING":
+                conn.close()
+                return
+            super().finish_runtime_run(run_id=run_id, status=status, result=dict(result))
+
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
