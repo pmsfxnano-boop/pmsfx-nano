@@ -461,7 +461,7 @@ class CryptoStore:
 
     def ping(self) -> bool:
         self.init()
-        conn = self._write_connection()
+        conn = self.connect()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -536,7 +536,7 @@ class CryptoStore:
             _json(metadata or {}),
             recorded_at,
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -784,7 +784,7 @@ class CryptoStore:
             reason,
             _json(metadata or {}),
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -803,8 +803,12 @@ class CryptoStore:
                 )
             conn.commit()
             return connection_id
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def save_replay_manifest(self, manifest: dict[str, Any]) -> str:
         self.init()
