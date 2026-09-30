@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -22,23 +21,22 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_SCHEMA_LOCK = threading.Lock()
-_SCHEMA_READY = False
-
-
 class QuantCryptoStore(CryptoStore):
     """CryptoStore with experiment scoping and runtime lease semantics."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._quant_schema_ready = False
+
     def init(self) -> None:
-        global _SCHEMA_READY
-        if _SCHEMA_READY:
+        if self._quant_schema_ready:
             return
-        with _SCHEMA_LOCK:
-            if _SCHEMA_READY:
+        super().init()
+        with self._schema_lock:
+            if self._quant_schema_ready:
                 return
-            super().init()
             conn = self.connect()
-        try:
+            try:
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -122,9 +120,9 @@ class QuantCryptoStore(CryptoStore):
                     """
                 )
                 conn.commit()
-        finally:
-            conn.close()
-        _SCHEMA_READY = True
+            finally:
+                conn.close()
+            self._quant_schema_ready = True
 
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
         protocol.validate()
@@ -287,7 +285,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
 
     def append_scoped_event(self, *, study_id: str, capture_session_id: str, **kwargs: Any) -> dict[str, Any]:
-        metadata = dict(kwargs.pop("metadata", None) or {})
+        metadata = dict(kwargs.pop("metadata") or {})
         metadata.update(
             {
                 "crypto_study_id": study_id,
@@ -510,7 +508,7 @@ class QuantCryptoStore(CryptoStore):
         query = (
             "SELECT gap_id,detected_at,symbol,source,expected_sequence,"
             f"observed_sequence,status,metadata FROM crypto_data_gaps WHERE {where} "
-            "ORDER BY detected_at DESC LIMIT " + str(int(limit))
+            f"ORDER BY detected_at DESC LIMIT {int(limit)}"
         )
         conn = self.connect()
         try:
@@ -518,13 +516,13 @@ class QuantCryptoStore(CryptoStore):
                 with conn.cursor() as cur:
                     cur.execute(query, params)
                     rows = cur.fetchall()
-                keys = [
+                keys = (
                     "gap_id","detected_at","symbol","source",
                     "expected_sequence","observed_sequence","status","metadata"
-                ]
+                )
                 return [
                     {
-                        key: (json.loads(value) if key == "metadata" else value)
+                        key: json.loads(value) if key == "metadata" else value
                         for key, value in zip(keys, row)
                     }
                     for row in rows
