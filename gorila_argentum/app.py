@@ -24,7 +24,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 from .audit import build_audit_state
 from .config import settings
-from .market_freshness import assess_observation, aggregate_status
+from .market_freshness import assess_observation, aggregate_status, choose_fresher_observation
 from .control import build_control_state
 from .coupling import current_coupling_state
 from .dashboard_terminal import HTML as DASHBOARD_HTML
@@ -260,77 +260,150 @@ async def _argentina_live_loop() -> None:
             continue
         try:
             result = await asyncio.to_thread(byma_live_panel)
-            if result.rows:
-                for latest in result.rows:
-                    symbol = str(latest.get("symbol") or "").upper()
-                    if symbol not in settings.core_symbols:
+            primary_by_symbol: dict[str, dict[str, Any]] = {}
+            for latest in result.rows or []:
+                symbol = str(latest.get("symbol") or "").upper()
+                if symbol not in settings.core_symbols:
+                    continue
+                current = primary_by_symbol.get(symbol)
+                if current is None or str(latest.get("event_time") or "") > str(current.get("event_time") or ""):
+                    primary_by_symbol[symbol] = latest
+
+            fallback_results = []
+            fallback_rows_by_symbol: dict[str, dict[str, Any]] = {}
+            if fallback_provider != "none":
+                stale_or_missing = []
+                for symbol in settings.core_symbols:
+                    primary = primary_by_symbol.get(symbol)
+                    if primary is None:
+                        stale_or_missing.append(symbol)
                         continue
-                    freshness = assess_observation(
-                        latest.get("event_time"),
-                        latest.get("received_time"),
+                    primary_freshness = assess_observation(
+                        primary.get("event_time"),
+                        primary.get("received_time"),
                     )
-                    latest["quality"] = freshness["status"]
-                    metadata = dict(latest.get("metadata") or {})
-                    metadata["freshness"] = freshness
-                    latest["metadata"] = metadata
-                    _ARG_LIVE_CACHE[symbol] = {
-                        "symbol": symbol,
-                        "last": float(latest["value"]),
-                        "quote_timestamp": str(latest.get("event_time")),
-                        "received_at": str(latest.get("received_time")),
-                        "source": result.source,
-                        "latency_ms": round(float(result.latency_ms or 0), 2),
-                        "updated_epoch": time.time(),
-                        "event_quality": freshness,
-                    }
-                    rows_to_store.append(latest)
-                    assessments.append(freshness)
-                    updated += 1
+                    if primary_freshness["status"] != "LIVE":
+                        stale_or_missing.append(symbol)
+
+                if stale_or_missing:
+                    fallback_results = list(
+                        await asyncio.gather(
+                            *[
+                                asyncio.to_thread(
+                                    twelve_data_live_quote,
+                                    symbol,
+                                    "1min",
+                                )
+                                for symbol in stale_or_missing
+                            ]
+                        )
+                    )
+                    for fallback in fallback_results:
+                        if fallback.rows:
+                            latest = max(
+                                fallback.rows,
+                                key=lambda row: str(row.get("event_time") or ""),
+                            )
+                            fallback_rows_by_symbol[str(latest.get("symbol") or "").upper()] = latest
+                        else:
+                            errors.append({
+                                "symbol": str(getattr(fallback, "source", "TwelveDataLive")).split("/")[-1],
+                                "error": fallback.error or "FALLBACK_NO_ROWS",
+                            })
+
+            now_utc = datetime.now(timezone.utc)
+            selected_sources: set[str] = set()
+            for symbol in settings.core_symbols:
+                primary = primary_by_symbol.get(symbol)
+                secondary = fallback_rows_by_symbol.get(symbol)
+                latest, freshness, selected_role = choose_fresher_observation(
+                    primary,
+                    secondary,
+                    now=now_utc,
+                )
+                if latest is None or freshness is None:
+                    errors.append({"symbol": symbol, "error": result.error or "NO_VALID_LIVE_OBSERVATION"})
+                    continue
+
+                source = str(latest.get("source") or result.source)
+                selected_sources.add(source)
+                latest["quality"] = freshness["status"]
+                metadata = dict(latest.get("metadata") or {})
+                metadata["freshness"] = freshness
+                metadata["selection"] = {
+                    "selected_role": selected_role,
+                    "primary_source": result.source,
+                    "secondary_source": next(
+                        (
+                            item.source
+                            for item in fallback_results
+                            if item.rows and str(item.rows[0].get("source") or "") != result.source
+                        ),
+                        None,
+                    ),
+                }
+                latest["metadata"] = metadata
+                source_result = result
+                for fallback in fallback_results:
+                    if fallback.source == source:
+                        source_result = fallback
+                        break
+                _ARG_LIVE_CACHE[symbol] = {
+                    "symbol": symbol,
+                    "last": float(latest["value"]),
+                    "quote_timestamp": str(latest.get("event_time")),
+                    "received_at": str(latest.get("received_time")),
+                    "source": source,
+                    "latency_ms": round(float(source_result.latency_ms or 0), 2),
+                    "updated_epoch": time.time(),
+                    "event_quality": freshness,
+                }
+                rows_to_store.append(latest)
+                assessments.append(freshness)
+                updated += 1
+
             if not result.rows:
                 errors.append({"symbol":"*","error": result.error or "BYMA_NO_ROWS"})
-                if fallback_provider != "none":
-                    for symbol in settings.core_symbols:
-                        fallback = await asyncio.to_thread(twelve_data_live_quote, symbol, "1min")
-                        if not fallback.rows:
-                            errors.append({"symbol":symbol,"error":fallback.error or "FALLBACK_NO_ROWS"})
-                            continue
-                        latest = max(fallback.rows, key=lambda row: str(row.get("event_time") or ""))
-                        freshness = assess_observation(latest.get("event_time"), latest.get("received_time"))
-                        latest["quality"] = freshness["status"]
-                        metadata = dict(latest.get("metadata") or {})
-                        metadata["freshness"] = freshness
-                        latest["metadata"] = metadata
-                        _ARG_LIVE_CACHE[symbol] = {
-                            "symbol": symbol,
-                            "last": float(latest["value"]),
-                            "quote_timestamp": str(latest.get("event_time")),
-                            "received_at": str(latest.get("received_time")),
-                            "source": fallback.source,
-                            "latency_ms": round(float(fallback.latency_ms or 0), 2),
-                            "updated_epoch": time.time(),
-                            "event_quality": freshness,
-                        }
-                        rows_to_store.append(latest)
-                        assessments.append(freshness)
-                        updated += 1
+
             aggregate = aggregate_status(assessments)
             if rows_to_store:
                 try:
                     store = Store()
                     await asyncio.to_thread(store.insert_observations, rows_to_store)
-                    await asyncio.to_thread(
-                        store.upsert_health,
-                        result.source,
-                        aggregate["status"],
-                        result.error if errors else None,
-                        updated,
-                        float(result.latency_ms or 0),
-                        True,
-                    )
+                    source_results = [result, *fallback_results]
+                    seen_sources = set()
+                    for source_result in source_results:
+                        if source_result.source in seen_sources:
+                            continue
+                        seen_sources.add(source_result.source)
+                        source_rows = [
+                            row for row in (source_result.rows or [])
+                            if str(row.get("symbol") or "").upper() in settings.core_symbols
+                        ]
+                        source_assessments = [
+                            assess_observation(row.get("event_time"), row.get("received_time"))
+                            for row in source_rows
+                        ]
+                        source_status = aggregate_status(source_assessments)["status"]
+                        await asyncio.to_thread(
+                            store.upsert_health,
+                            source_result.source,
+                            source_status,
+                            source_result.error,
+                            len(source_rows),
+                            float(source_result.latency_ms or 0),
+                            bool(source_rows),
+                        )
                 except Exception as exc:
                     errors.append({"symbol":"*","error":f"persist:{type(exc).__name__}: {exc}"})
-            transport_status = "HEALTHY" if result.rows or rows_to_store else "DEGRADED"
+            transport_status = "HEALTHY" if result.rows or any(f.rows for f in fallback_results) else "DEGRADED"
             cycle_status = aggregate["status"] if updated == len(settings.core_symbols) else "DEGRADED"
+            if len(selected_sources) == 1:
+                provider_name = next(iter(selected_sources))
+            elif len(selected_sources) > 1:
+                provider_name = "mixed"
+            else:
+                provider_name = fallback_provider if fallback_provider != "none" else provider
             _ARG_LIVE_STATE.update({
                 "status": cycle_status,
                 "transport_status": transport_status,
@@ -345,7 +418,7 @@ async def _argentina_live_loop() -> None:
                 "max_event_age_seconds": aggregate["max_event_age_seconds"],
                 "errors": errors[-8:],
                 "interval_seconds": _ARG_LIVE_INTERVAL_SECONDS,
-                "provider": provider if updated else fallback_provider,
+                "provider": provider_name,
                 "symbols": list(settings.core_symbols),
             })
             print("GORILA_ARG_LIVE_CYCLE", _ARG_LIVE_STATE.copy(), flush=True)
