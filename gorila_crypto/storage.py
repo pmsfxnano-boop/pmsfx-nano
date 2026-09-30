@@ -640,8 +640,10 @@ class CryptoStore:
         end_received_time: str | None = None,
         start_event_time: str | None = None,
         end_event_time: str | None = None,
+        source_prefix: str | None = None,
         order: str = "ingest",
         limit: int = 100000,
+        include_payload: bool = True,
     ) -> list[dict[str, Any]]:
         """Read immutable ledger rows using an explicit deterministic ordering."""
         self.init()
@@ -664,6 +666,9 @@ class CryptoStore:
         if source is not None:
             clauses.append(f"source={placeholder}")
             params.append(source)
+        if source_prefix is not None:
+            clauses.append(f"source LIKE {placeholder}")
+            params.append(source_prefix.rstrip("%") + "%")
         if start_received_time is not None:
             clauses.append(f"received_time>={placeholder}")
             params.append(start_received_time)
@@ -681,10 +686,11 @@ class CryptoStore:
         limit_sql = f" LIMIT {int(limit)}"
         conn = self.connect()
         try:
+            payload_column = "payload_json" if include_payload else "NULL AS payload_json"
             query = (
                 "SELECT ledger_seq,event_id,event_key,symbol,event_type,event_time,"
                 "received_time,provider_time,source,sequence_start,sequence_end,"
-                "payload_hash,payload_json,quality,metadata,recorded_at "
+                f"payload_hash,{payload_column},quality,metadata,recorded_at "
                 f"FROM crypto_events{where} ORDER BY {order_by}{limit_sql}"
             )
             if self._pg:
@@ -705,7 +711,7 @@ class CryptoStore:
                             "sequence_start": row[9],
                             "sequence_end": row[10],
                             "payload_hash": str(row[11]),
-                            "payload": json.loads(row[12]),
+                            "payload": json.loads(row[12]) if row[12] is not None else None,
                             "quality": str(row[13]),
                             "metadata": json.loads(row[14]),
                             "recorded_at": str(row[15]),
@@ -728,7 +734,7 @@ class CryptoStore:
                     "sequence_start": row["sequence_start"],
                     "sequence_end": row["sequence_end"],
                     "payload_hash": str(row["payload_hash"]),
-                    "payload": json.loads(row["payload_json"]),
+                    "payload": json.loads(row["payload_json"]) if row["payload_json"] is not None else None,
                     "quality": str(row["quality"]),
                     "metadata": json.loads(row["metadata"]),
                     "recorded_at": str(row["recorded_at"]),
