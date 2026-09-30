@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from gorila_core.market_freshness import (
     DELAYED_MAX_AGE_SECONDS,
@@ -254,7 +254,9 @@ def root_head() -> None:
 
 @app.get("/api/crypto/health")
 def health() -> dict[str, Any]:
-    return {
+    worker_alive = bool(_runtime_thread and _runtime_thread.is_alive())
+    capture_enabled = settings.ingest_enabled and not _capture_block_reason
+    payload = {
         "service": "gorila-crypto",
         "domain": "crypto",
         "status": (
@@ -264,25 +266,24 @@ def health() -> dict[str, Any]:
         ),
         "runtime_isolated": True,
         "provider": settings.provider,
-        "prospective_capture": settings.ingest_enabled and not _capture_block_reason,
+        "prospective_capture": capture_enabled,
         "capture_block_reason": _capture_block_reason,
-        "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
+        "worker_alive": worker_alive,
         "quality_monitor_alive": bool(_quality_thread and _quality_thread.is_alive()),
         "heartbeat_alive": bool(_heartbeat_thread and _heartbeat_thread.is_alive()),
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
-        "forecast": {
-            "status": "BLOCKED_NO_VALIDATED_MODEL",
-            "semantics": "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)",
-            "automatic_promotion": False,
-        },
         "freshness_contract": {
             "live_max_age_seconds": LIVE_MAX_AGE_SECONDS,
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
         },
-        "ledger": _safe_store_stats(),
         "storage_backend": _storage_backend_status(),
+        "health_contract": "lightweight_no_ledger_scan",
     }
+    if capture_enabled and not worker_alive:
+        payload["status"] = "CAPTURE_WORKER_DEAD"
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
 
 
 @app.get("/api/crypto/prospective/status")
