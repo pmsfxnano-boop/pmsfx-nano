@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -17,20 +17,22 @@ from typing import Any, Mapping
 from .protocol import CryptoStudyProtocol
 from .storage import CryptoStore
 
-_SCHEMA_LOCK = threading.Lock()
-
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY = False
 
 
 class QuantCryptoStore(CryptoStore):
     """CryptoStore with experiment scoping and runtime lease semantics."""
 
     def init(self) -> None:
-        # Initialize the Quant schema for the concrete storage target. This must
-        # not use one process-global "ready" flag because tests/research jobs may
-        # create multiple isolated SQLite databases in the same process.
+        # The legacy CryptoStore schema is already idempotent. The Quant layer
+        # must also be idempotent per database target: a process can exercise
+        # multiple isolated SQLite files in tests or offline research.
         with _SCHEMA_LOCK:
             super().init()
             conn = self.connect()
@@ -164,6 +166,106 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         return protocol.study_id
 
+    def fence_active_study_session(
+        self,
+        *,
+        study_id: str,
+        reason: str = "REPLACED_BY_NEW_WORKER",
+    ) -> int:
+        """Atomically revoke the current single-writer cohort before takeover."""
+        self.init()
+        now = _utc_now()
+        conn = self.connect()
+        revoked = 0
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE crypto_runtime_leases
+                        SET status='ABORTED_REPLACED', heartbeat_at=%s
+                        WHERE status='RUNNING'
+                          AND session_id IN (
+                              SELECT session_id
+                              FROM crypto_capture_sessions
+                              WHERE study_id=%s AND status='RUNNING'
+                          )
+                        """,
+                        (now, study_id),
+                    )
+                    revoked = cur.rowcount
+                    cur.execute(
+                        """
+                        UPDATE crypto_runtime_runs
+                        SET status='ABORTED_REPLACED',
+                            completed_at=%s,
+                            result=%s
+                        WHERE status='RUNNING'
+                          AND run_id IN (
+                              SELECT l.run_id
+                              FROM crypto_runtime_leases l
+                              JOIN crypto_capture_sessions s
+                                ON s.session_id=l.session_id
+                              WHERE s.study_id=%s
+                                AND l.status='ABORTED_REPLACED'
+                          )
+                        """,
+                        (now, json.dumps({"reason": reason}, sort_keys=True)),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE crypto_capture_sessions
+                        SET status='ABORTED_REPLACED', ended_at=%s
+                        WHERE study_id=%s AND status='RUNNING'
+                        """,
+                        (now, study_id),
+                    )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE crypto_runtime_leases
+                    SET status='ABORTED_REPLACED', heartbeat_at=?
+                    WHERE status='RUNNING'
+                      AND session_id IN (
+                          SELECT session_id
+                          FROM crypto_capture_sessions
+                          WHERE study_id=? AND status='RUNNING'
+                      )
+                    """,
+                    (now, study_id),
+                )
+                revoked = cur.rowcount
+                conn.execute(
+                    """
+                    UPDATE crypto_runtime_runs
+                    SET status='ABORTED_REPLACED',
+                        completed_at=?,
+                        result=?
+                    WHERE status='RUNNING'
+                      AND run_id IN (
+                          SELECT l.run_id
+                          FROM crypto_runtime_leases l
+                          JOIN crypto_capture_sessions s
+                            ON s.session_id=l.session_id
+                          WHERE s.study_id=?
+                            AND l.status='ABORTED_REPLACED'
+                      )
+                    """,
+                    (now, json.dumps({"reason": reason}, sort_keys=True)),
+                )
+                conn.execute(
+                    """
+                    UPDATE crypto_capture_sessions
+                    SET status='ABORTED_REPLACED', ended_at=?
+                    WHERE study_id=? AND status='RUNNING'
+                    """,
+                    (now, study_id),
+                )
+            conn.commit()
+            return int(revoked)
+        finally:
+            conn.close()
+
     def start_capture_session(
         self,
         *,
@@ -261,7 +363,7 @@ class QuantCryptoStore(CryptoStore):
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE crypto_capture_sessions SET status=%s, ended_at=%s WHERE session_id=%s",
+                        "UPDATE crypto_capture_sessions SET status=%s, ended_at=%s WHERE session_id=%s AND status IN ('STARTING','RUNNING')",
                         (
                             status,
                             _utc_now() if status not in {"STARTING", "RUNNING"} else None,
@@ -270,7 +372,7 @@ class QuantCryptoStore(CryptoStore):
                     )
             else:
                 conn.execute(
-                    "UPDATE crypto_capture_sessions SET status=?, ended_at=? WHERE session_id=?",
+                    "UPDATE crypto_capture_sessions SET status=?, ended_at=? WHERE session_id=? AND status IN ('STARTING','RUNNING')",
                     (
                         status,
                         _utc_now() if status not in {"STARTING", "RUNNING"} else None,
@@ -324,7 +426,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         return run_id
 
-    def heartbeat_runtime_run(self, run_id: str) -> None:
+    def heartbeat_runtime_run(self, run_id: str) -> bool:
         self.init()
         heartbeat = _utc_now()
         conn = self.connect()
@@ -332,15 +434,18 @@ class QuantCryptoStore(CryptoStore):
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE crypto_runtime_leases SET heartbeat_at=%s,status='RUNNING' WHERE run_id=%s",
+                        "UPDATE crypto_runtime_leases SET heartbeat_at=%s WHERE run_id=%s AND status='RUNNING'",
                         (heartbeat, run_id),
                     )
+                    alive = cur.rowcount == 1
             else:
-                conn.execute(
-                    "UPDATE crypto_runtime_leases SET heartbeat_at=?,status='RUNNING' WHERE run_id=?",
+                cur = conn.execute(
+                    "UPDATE crypto_runtime_leases SET heartbeat_at=? WHERE run_id=? AND status='RUNNING'",
                     (heartbeat, run_id),
                 )
+                alive = cur.rowcount == 1
             conn.commit()
+            return bool(alive)
         finally:
             conn.close()
 
@@ -352,10 +457,26 @@ class QuantCryptoStore(CryptoStore):
         status: str,
         result: Mapping[str, Any],
     ) -> None:
-        super().finish_runtime_run(run_id=run_id, status=status, result=dict(result))
         self.init()
         conn = self.connect()
         try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT status FROM crypto_runtime_leases WHERE run_id=%s",
+                        (run_id,),
+                    )
+                    lease = cur.fetchone()
+            else:
+                lease = conn.execute(
+                    "SELECT status FROM crypto_runtime_leases WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+            if lease is not None and str(lease[0]) != "RUNNING":
+                conn.close()
+                return
+            super().finish_runtime_run(run_id=run_id, status=status, result=dict(result))
+
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -434,287 +555,3 @@ class QuantCryptoStore(CryptoStore):
                         completed_at=?,
                         result=?
                     WHERE status='RUNNING'
-                      AND COALESCE(
-                          (SELECT l.heartbeat_at
-                           FROM crypto_runtime_leases l
-                           WHERE l.run_id=crypto_runtime_runs.run_id),
-                          created_at
-                      ) < ?
-                    """,
-                    (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
-                )
-                count = cur.rowcount
-                conn.execute(
-                    """
-                    UPDATE crypto_runtime_leases
-                    SET status='ABORTED_STALE'
-                    WHERE status='RUNNING' AND heartbeat_at < ?
-                    """,
-                    (cutoff,),
-                )
-                conn.execute(
-                    """
-                    UPDATE crypto_capture_sessions
-                    SET status='ABORTED_STALE', ended_at=?
-                    WHERE status='RUNNING'
-                      AND (
-                          started_at < ?
-                          OR session_id IN (
-                              SELECT session_id
-                              FROM crypto_runtime_leases
-                              WHERE status='ABORTED_STALE'
-                          )
-                      )
-                    """,
-                    (_utc_now(), cutoff),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-        return int(count)
-
-    def read_scoped_data_gaps(
-        self,
-        *,
-        study_id: str,
-        capture_session_id: str | None = None,
-        source_prefix: str | None = None,
-        limit: int = 10_000,
-    ) -> list[dict[str, Any]]:
-        self.init()
-        if limit < 1:
-            raise ValueError("limit must be positive")
-        params: list[Any] = [study_id]
-        placeholder = "%s" if self._pg else "?"
-        clauses = [
-            "metadata::jsonb->>'crypto_study_id'=%s"
-            if self._pg
-            else "json_extract(metadata, '$.crypto_study_id')=?"
-        ]
-        if capture_session_id is not None:
-            clauses.append(
-                "metadata::jsonb->>'capture_session_id'=%s"
-                if self._pg
-                else "json_extract(metadata, '$.capture_session_id')=?"
-            )
-            params.append(capture_session_id)
-        if source_prefix is not None:
-            clauses.append(f"source LIKE {placeholder}")
-            params.append(source_prefix.rstrip("%") + "%")
-        where = " AND ".join(clauses)
-        query = (
-            "SELECT gap_id,detected_at,symbol,source,expected_sequence,"
-            f"observed_sequence,status,metadata FROM crypto_data_gaps WHERE {where} "
-            "ORDER BY detected_at DESC LIMIT " + str(int(limit))
-        )
-        conn = self.connect()
-        try:
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(query, params)
-                    rows = cur.fetchall()
-                keys = [
-                    "gap_id","detected_at","symbol","source",
-                    "expected_sequence","observed_sequence","status","metadata"
-                ]
-                return [
-                    {
-                        key: (json.loads(value) if key == "metadata" else value)
-                        for key, value in zip(keys, row)
-                    }
-                    for row in rows
-                ]
-            rows = conn.execute(query, params).fetchall()
-            return [
-                {**dict(row), "metadata": json.loads(row["metadata"] or "{}")}
-                for row in rows
-            ]
-        finally:
-            conn.close()
-
-    def active_capture_session(self, study_id: str) -> str | None:
-        self.init()
-        conn = self.connect()
-        try:
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT session_id FROM crypto_capture_sessions "
-                        "WHERE study_id=%s AND status='RUNNING' ORDER BY started_at DESC LIMIT 1",
-                        (study_id,),
-                    )
-                    row = cur.fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT session_id FROM crypto_capture_sessions "
-                    "WHERE study_id=? AND status='RUNNING' ORDER BY started_at DESC LIMIT 1",
-                    (study_id,),
-                ).fetchone()
-            return str(row[0]) if row else None
-        finally:
-            conn.close()
-
-    def scoped_stats(self, *, study_id: str, capture_session_id: str | None = None) -> dict[str, Any]:
-        self.init()
-        params: list[Any] = [study_id]
-        placeholder = "%s" if self._pg else "?"
-        clauses = ["e.metadata::jsonb->>'crypto_study_id'=%s"] if self._pg else [
-            "json_extract(e.metadata, '$.crypto_study_id')=?"
-        ]
-        if capture_session_id is not None:
-            clauses.append(
-                "e.metadata::jsonb->>'capture_session_id'=%s"
-                if self._pg
-                else "json_extract(e.metadata, '$.capture_session_id')=?"
-            )
-            params.append(capture_session_id)
-        where = " AND ".join(clauses)
-        query = (
-            "SELECT e.symbol,e.event_type,count(*) AS rows,"
-            "min(e.event_time) AS first_event,max(e.event_time) AS last_event "
-            f"FROM crypto_events e WHERE {where} "
-            "GROUP BY e.symbol,e.event_type ORDER BY e.symbol,e.event_type"
-        )
-        conn = self.connect()
-        try:
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(query, params)
-                    rows = cur.fetchall()
-            else:
-                rows = conn.execute(query, params).fetchall()
-            grouped = [
-                {
-                    "symbol": str(row[0]),
-                    "event_type": str(row[1]),
-                    "rows": int(row[2]),
-                    "first_event": str(row[3]),
-                    "last_event": str(row[4]),
-                }
-                for row in rows
-            ]
-            return {
-                "study_id": study_id,
-                "capture_session_id": capture_session_id,
-                "backend": self.backend,
-                "event_counts": grouped,
-                "total_rows": sum(item["rows"] for item in grouped),
-            }
-        finally:
-            conn.close()
-
-    def read_scoped_events(
-        self,
-        *,
-        study_id: str,
-        capture_session_id: str | None = None,
-        symbol: str | None = None,
-        source: str | None = None,
-        source_prefix: str | None = None,
-        start_received_time: str | None = None,
-        end_received_time: str | None = None,
-        start_event_time: str | None = None,
-        end_event_time: str | None = None,
-        order: str = "ingest",
-        limit: int = 100_000,
-        include_payload: bool = True,
-    ) -> list[dict[str, Any]]:
-        """Read exactly one study/session cohort using the immutable metadata scope."""
-        self.init()
-        if limit < 1:
-            raise ValueError("limit must be positive")
-        order_by = {
-            "ingest": "e.ledger_seq ASC",
-            "event_time": "e.event_time ASC, e.received_time ASC, e.ledger_seq ASC",
-        }.get(order)
-        if order_by is None:
-            raise ValueError("invalid replay order")
-        params: list[Any] = [study_id]
-        placeholder = "%s" if self._pg else "?"
-        clauses = ["e.metadata::jsonb->>'crypto_study_id'=%s"] if self._pg else [
-            "json_extract(e.metadata, '$.crypto_study_id')=?"
-        ]
-        if capture_session_id is not None:
-            clauses.append(
-                "e.metadata::jsonb->>'capture_session_id'=%s"
-                if self._pg
-                else "json_extract(e.metadata, '$.capture_session_id')=?"
-            )
-            params.append(capture_session_id)
-        if symbol is not None:
-            clauses.append(f"e.symbol={placeholder}")
-            params.append(symbol.upper())
-        if source is not None:
-            clauses.append(f"e.source={placeholder}")
-            params.append(source)
-        if source_prefix:
-            clauses.append(f"e.source LIKE {placeholder}")
-            params.append(source_prefix.rstrip("%") + "%")
-        if start_received_time is not None:
-            clauses.append(f"e.received_time>={placeholder}")
-            params.append(start_received_time)
-        if end_received_time is not None:
-            clauses.append(f"e.received_time<={placeholder}")
-            params.append(end_received_time)
-        if start_event_time is not None:
-            clauses.append(f"e.event_time>={placeholder}")
-            params.append(start_event_time)
-        if end_event_time is not None:
-            clauses.append(f"e.event_time<={placeholder}")
-            params.append(end_event_time)
-        where = " AND ".join(clauses)
-        payload_column = "e.payload_json" if include_payload else "NULL AS payload_json"
-        query = (
-            "SELECT e.ledger_seq,e.event_id,e.event_key,e.symbol,e.event_type,"
-            "e.event_time,e.received_time,e.provider_time,e.source,e.sequence_start,"
-            "e.sequence_end,e.payload_hash,"
-            f"{payload_column},e.quality,e.metadata,e.recorded_at "
-            "FROM crypto_events e WHERE "
-            f"{where} ORDER BY {order_by} LIMIT {int(limit)}"
-        )
-        conn = self.connect()
-        try:
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(query, params)
-                    rows = cur.fetchall()
-                    return self._rows_to_dict(rows)
-            rows = conn.execute(query, params).fetchall()
-            return self._rows_to_dict(rows, sqlite=True)
-        finally:
-            conn.close()
-
-    @staticmethod
-    def _rows_to_dict(rows: Any, sqlite: bool = False) -> list[dict[str, Any]]:
-        output: list[dict[str, Any]] = []
-        for row in rows:
-            if sqlite:
-                values = [row[key] for key in (
-                    "ledger_seq","event_id","event_key","symbol","event_type",
-                    "event_time","received_time","provider_time","source",
-                    "sequence_start","sequence_end","payload_hash","payload_json",
-                    "quality","metadata","recorded_at"
-                )]
-            else:
-                values = list(row)
-            output.append(
-                {
-                    "ledger_seq": int(values[0]),
-                    "event_id": str(values[1]),
-                    "event_key": str(values[2]),
-                    "symbol": str(values[3]),
-                    "event_type": str(values[4]),
-                    "event_time": str(values[5]),
-                    "received_time": str(values[6]),
-                    "provider_time": values[7],
-                    "source": str(values[8]),
-                    "sequence_start": values[9],
-                    "sequence_end": values[10],
-                    "payload_hash": str(values[11]),
-                    "payload": json.loads(values[12]) if values[12] is not None else None,
-                    "quality": str(values[13]),
-                    "metadata": json.loads(values[14]),
-                    "recorded_at": str(values[15]),
-                }
-            )
-        return output
