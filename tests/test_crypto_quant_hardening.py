@@ -242,3 +242,9 @@ def test_release_v5_sqlite_fence_binding_contract() -> None:
     from gorila_crypto.quant_store import QuantCryptoStore
 
     assert hasattr(QuantCryptoStore, "fence_active_study_session")
+
+def test_v2_protocol_hash_matches_existing_persisted_identity() -> None:
+    from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+
+    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "2"
+    assert PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash == "b27691a138d530fb28329e1cb455fcadbb2a375733724553caa26ff4aab73449"
