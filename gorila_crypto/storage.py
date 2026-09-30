@@ -390,6 +390,7 @@ class CryptoStore:
             raise ValueError("crypto_sqlite_path_matches_legacy_storage")
         self._pg = bool(self.database_url)
         self._schema_ready = False
+        self._write_conn = None
 
     @property
     def backend(self) -> str:
@@ -416,6 +417,22 @@ class CryptoStore:
         conn = sqlite3.connect(self.sqlite_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _write_connection(self):
+        """Return a reusable writer connection for the hot ingestion path."""
+        self.init()
+        if self._write_conn is None:
+            self._write_conn = self.connect()
+        return self._write_conn
+
+    def close(self) -> None:
+        conn = self._write_conn
+        self._write_conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def init(self) -> None:
         if self._pg:
@@ -444,7 +461,7 @@ class CryptoStore:
 
     def ping(self) -> bool:
         self.init()
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -596,8 +613,12 @@ class CryptoStore:
                     }
             conn.commit()
             return result
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def record_event(
         self,
@@ -1331,7 +1352,7 @@ class CryptoStore:
             status,
             _json(metadata or {}),
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -1353,8 +1374,12 @@ class CryptoStore:
                 )
             conn.commit()
             return gap_id
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def upsert_source_health(
         self,
@@ -1380,7 +1405,7 @@ class CryptoStore:
             int(rows_last_batch),
             error,
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -1418,8 +1443,12 @@ class CryptoStore:
                     values,
                 )
             conn.commit()
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def start_runtime_run(self, *, kind: str, run_id: str | None = None) -> str:
         self.init()
