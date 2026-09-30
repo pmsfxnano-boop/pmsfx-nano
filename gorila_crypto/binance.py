@@ -8,8 +8,8 @@ Design goals:
 - force a full resynchronization on a detected depth gap;
 - expose deterministic pure parsing/state-machine functions for offline tests.
 
-The adapter is intentionally not started by gorila_crypto.app yet. A4 proves the
-transport and sequencing boundary before a 24/7 worker is introduced.
+The adapter is transport-only, but it is now used by the isolated prospective
+capture runtime. It never forecasts, trades, or promotes a model.
 """
 
 from __future__ import annotations
