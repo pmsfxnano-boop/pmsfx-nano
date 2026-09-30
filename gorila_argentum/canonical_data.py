@@ -220,8 +220,19 @@ def _resolve_session(
             ),
         )
 
+    cross_vendor_disagreement = spread > max_rel_spread
+    primary_family = str(preferred.get("family") or "")
+
+    # BYMADATA daily history is the model's declared primary price fabric
+    # (24HS). Rava/TwelveData/other vendors are corroborative sources and may
+    # represent a different settlement convention. A disagreement between
+    # distinct vendor families therefore must not erase an otherwise valid
+    # primary observation from the training panel. The disagreement remains
+    # fully audited in metadata for downstream QA.
     if len(candidates) == 1:
         status = "ACCEPTED_SINGLE_SOURCE"
+    elif primary_family == "BYMADATA":
+        status = "ACCEPTED_PRIMARY_SOURCE"
     elif spread <= max_rel_spread:
         status = "ACCEPTED_RECONCILED"
     else:
@@ -240,6 +251,17 @@ def _resolve_session(
         "candidates": candidates,
         "candidate_hash": _candidate_hash(candidates),
         "freshness_override": preferred["source"] != candidates[0]["source"],
+        "primary_family": primary_family,
+        "cross_vendor_disagreement": bool(cross_vendor_disagreement),
+        "cross_vendor_validation": [
+            {
+                "family": item["family"],
+                "source": item["source"],
+                "value": float(item["value"]),
+                "event_time": item["event_time"],
+            }
+            for item in candidates
+        ],
     }
 
 
