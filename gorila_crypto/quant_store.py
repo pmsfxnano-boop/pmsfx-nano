@@ -214,6 +214,39 @@ class QuantCryptoStore(CryptoStore):
                 if self._pg:
                     with conn.cursor() as cur:
                         cur.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext('gorila_crypto_capture_' || %s))",
+                            (study_id,),
+                        )
+                        cur.execute(
+                            """
+                            SELECT session_id,protocol_hash,provider,venue,symbols_json,streams_json
+                            FROM crypto_capture_sessions
+                            WHERE study_id=%s AND status IN ('STARTING','RUNNING')
+                            ORDER BY started_at DESC
+                            LIMIT 1
+                            """,
+                            (study_id,),
+                        )
+                        existing = cur.fetchone()
+                        if existing is not None:
+                            (
+                                existing_id,
+                                existing_protocol,
+                                existing_provider,
+                                existing_venue,
+                                existing_symbols,
+                                existing_streams,
+                            ) = existing
+                            if (
+                                str(existing_protocol) != protocol_hash
+                                or str(existing_provider) != provider
+                                or str(existing_venue) != venue
+                                or json.loads(existing_symbols) != list(symbols)
+                                or json.loads(existing_streams) != list(streams)
+                            ):
+                                raise RuntimeError("active_capture_session_protocol_conflict")
+                            return str(existing_id)
+                        cur.execute(
                             """
                             INSERT INTO crypto_capture_sessions(
                                 session_id,study_id,provider,venue,region,instance_id,
