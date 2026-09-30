@@ -148,6 +148,10 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
             "SELECT status FROM crypto_source_health WHERE source=?",
             ("binance.websocket.trade",),
         ).fetchone()["status"] == "LIVE"
+        assert conn.execute(
+            "SELECT status FROM crypto_source_health WHERE source=?",
+            ("binance.websocket.market",),
+        ).fetchone()["status"] == "LIVE"
     finally:
         conn.close()
 
