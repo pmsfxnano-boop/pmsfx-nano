@@ -68,6 +68,29 @@ def _storage_backend_status() -> str:
         return "BLOCKED_NO_DURABLE_STORAGE"
 
 
+def _runtime_thread_entry() -> None:
+    global _capture_block_reason
+    try:
+        assert _runtime is not None
+        _runtime.run()
+    except Exception as exc:
+        _capture_block_reason = f"runtime_thread_failed:{type(exc).__name__}:{exc}"
+        print(
+            "GORILA_CAPTURE_THREAD_ERROR "
+            + json.dumps(
+                {
+                    "reason": _capture_block_reason,
+                    "provider": settings.provider,
+                    "symbols": list(settings.symbols),
+                    "streams": list(settings.streams),
+                },
+                sort_keys=True,
+                default=str,
+            ),
+            flush=True,
+        )
+
+
 def _heartbeat_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
@@ -224,7 +247,7 @@ async def lifespan(app: FastAPI):
             adapter = build_market_adapter()
             _runtime = ProspectiveCryptoIngestor(store, adapter)
             _runtime_thread = threading.Thread(
-                target=_runtime.run,
+                target=_runtime_thread_entry,
                 name="gorila-crypto-ingest",
                 daemon=True,
             )
