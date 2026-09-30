@@ -115,3 +115,38 @@ def test_quant_store_scopes_events_and_runtime_sessions(tmp_path) -> None:
 def test_research_protocol_declares_candidate_family() -> None:
     assert PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas == (0.1, 1.0, 10.0)
     assert PREREGISTERED_CRYPTO_PROTOCOL.cscv_groups == 6
+
+def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
+    from gorila_crypto.ledger import ReplaySpec, replay
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "replay.sqlite3"))
+    study = PREREGISTERED_CRYPTO_PROTOCOL
+    store.register_study(study)
+    session_id = store.start_capture_session(
+        study_id=study.study_id,
+        protocol_hash=study.protocol_hash,
+        provider="binance",
+        venue="binance_spot",
+        symbols=study.symbols,
+        streams=study.streams,
+        region="test",
+        instance_id="pytest",
+        code_version="test",
+    )
+    store.append_scoped_event(
+        study_id=study.study_id,
+        capture_session_id=session_id,
+        symbol="BTCUSDT",
+        event_type="trade",
+        event_time="2026-09-30T12:00:00+00:00",
+        received_time="2026-09-30T12:00:00.001000+00:00",
+        source="binance.websocket.trade",
+        payload={"p": "100.0", "q": "1.0"},
+        sequence_start=1,
+        sequence_end=1,
+    )
+    scoped = replay(
+        store,
+        ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
+    )
+    assert len(scoped.rows) == 1
