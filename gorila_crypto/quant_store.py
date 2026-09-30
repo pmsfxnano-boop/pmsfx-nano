@@ -135,12 +135,16 @@ class QuantCryptoStore(CryptoStore):
                         (protocol.study_id, protocol.protocol_hash, _utc_now(), payload),
                     )
                     cur.execute(
-                        "SELECT protocol_hash FROM crypto_studies WHERE study_id=%s",
+                        "SELECT protocol_hash, protocol_json FROM crypto_studies WHERE study_id=%s",
                         (protocol.study_id,),
                     )
                     row = cur.fetchone()
-                    if row is None or str(row[0]) != protocol.protocol_hash:
-                        raise RuntimeError("protocol_hash_conflict")
+                    if row is None:
+                        raise RuntimeError("protocol_not_registered_after_insert")
+                    if str(row[0]) != protocol.protocol_hash:
+                        if json.loads(str(row[1])) != json.loads(payload):
+                            raise RuntimeError("protocol_hash_conflict")
+
             else:
                 conn.execute(
                     """
@@ -151,15 +155,42 @@ class QuantCryptoStore(CryptoStore):
                     (protocol.study_id, protocol.protocol_hash, _utc_now(), "REGISTERED", payload),
                 )
                 row = conn.execute(
-                    "SELECT protocol_hash FROM crypto_studies WHERE study_id=?",
+                    "SELECT protocol_hash, protocol_json FROM crypto_studies WHERE study_id=?",
                     (protocol.study_id,),
                 ).fetchone()
-                if row is None or str(row[0]) != protocol.protocol_hash:
-                    raise RuntimeError("protocol_hash_conflict")
+                if row is None:
+                    raise RuntimeError("protocol_not_registered_after_insert")
+                if str(row[0]) != protocol.protocol_hash:
+                    if json.loads(str(row[1])) != json.loads(payload):
+                        raise RuntimeError("protocol_hash_conflict")
             conn.commit()
         finally:
             conn.close()
         return protocol.study_id
+
+
+    def get_study_protocol_hash(self, study_id: str) -> str:
+        """Return the persisted protocol identity for an already-registered study."""
+        self.init()
+        conn = self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT protocol_hash FROM crypto_studies WHERE study_id=%s",
+                        (study_id,),
+                    )
+                    row = cur.fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT protocol_hash FROM crypto_studies WHERE study_id=?",
+                    (study_id,),
+                ).fetchone()
+            if row is None:
+                raise RuntimeError("study_not_registered")
+            return str(row[0])
+        finally:
+            conn.close()
 
 
     def fence_active_study_session(
