@@ -20,6 +20,11 @@ class CryptoStudyProtocol:
     venue: str = "binance_spot"
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
     streams: tuple[str, ...] = ("trade", "bookTicker")
+    instrument_specs: tuple[tuple[str, str, str, str], ...] = (
+        ("BTCUSDT", "BTC", "USDT", "spot"),
+        ("ETHUSDT", "ETH", "USDT", "spot"),
+        ("SOLUSDT", "SOL", "USDT", "spot"),
+    )
     prospect_days: int = 7
     min_trade_rows_per_symbol: int = 100_000
     max_p99_transport_latency_ms: float = 5_000.0
@@ -53,6 +58,13 @@ class CryptoStudyProtocol:
             raise ValueError("study universe is immutable")
         if self.streams != ("trade", "bookTicker"):
             raise ValueError("study streams are immutable")
+        expected_instruments = (
+            ("BTCUSDT", "BTC", "USDT", "spot"),
+            ("ETHUSDT", "ETH", "USDT", "spot"),
+            ("SOLUSDT", "SOL", "USDT", "spot"),
+        )
+        if self.instrument_specs != expected_instruments:
+            raise ValueError("instrument identities are immutable")
         if self.prospect_days < 1:
             raise ValueError("prospective duration must be positive")
         if self.min_trade_rows_per_symbol < 100_000:
@@ -122,6 +134,13 @@ class CryptoStudyProtocol:
             "required_event_type_min_rows": {
                 "trade": self.min_trade_rows_per_symbol,
                 "bookTicker": 1,
+            },
+            "required_event_type_min_rows_per_symbol": {
+                "trade": self.min_trade_rows_per_symbol,
+                "bookTicker": 1,
+            },
+            "required_event_type_min_duration_seconds": {
+                "trade": self.prospect_days * 24 * 3600,
             },
         }
 
