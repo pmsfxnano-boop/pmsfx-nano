@@ -110,3 +110,8 @@ def test_quant_store_scopes_events_and_runtime_sessions(tmp_path) -> None:
     )
     store.set_capture_session_status(session_id, "STOPPED")
     assert store.active_capture_session(study.study_id) is None
+
+
+def test_research_protocol_declares_candidate_family() -> None:
+    assert PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas == (0.1, 1.0, 10.0)
+    assert PREREGISTERED_CRYPTO_PROTOCOL.cscv_groups == 6
