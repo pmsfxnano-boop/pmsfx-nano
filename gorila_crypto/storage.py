@@ -1715,16 +1715,25 @@ class CryptoStore:
         finally:
             conn.close()
 
-    def health(self) -> list[dict[str, Any]]:
+    def health(self, *, source_prefix: str | None = None) -> list[dict[str, Any]]:
         self.init()
         conn = self.connect()
         try:
+            placeholder = "%s" if self._pg else "?"
+            where = ""
+            params: list[Any] = []
+            if source_prefix is not None:
+                where = f" WHERE source LIKE {placeholder}"
+                params.append(source_prefix.rstrip("%") + "%")
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT source,status,updated_at,last_event_time,last_received_time,"
                         "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                        "FROM crypto_source_health ORDER BY source"
+                        "FROM crypto_source_health"
+                        + where
+                        + " ORDER BY source",
+                        params,
                     )
                     rows = cur.fetchall()
                     return [
@@ -1742,7 +1751,10 @@ class CryptoStore:
             rows = conn.execute(
                 "SELECT source,status,updated_at,last_event_time,last_received_time,"
                 "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                "FROM crypto_source_health ORDER BY source"
+                "FROM crypto_source_health"
+                + where
+                + " ORDER BY source",
+                params,
             ).fetchall()
             return [dict(row) for row in rows]
         finally:
