@@ -172,15 +172,15 @@ def _quality_loop() -> None:
                 rows = store.read_scoped_events(
                     study_id=protocol.study_id,
                     capture_session_id=session_id,
-                    source_prefix="binance.websocket.",
+                    source_prefix=f"{settings.provider}.websocket.",
                     order="ingest",
                     limit=settings.quality_row_limit,
                     include_payload=False,
                 )
                 gap_rows = store.read_scoped_data_gaps(
-                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    study_id=protocol.study_id,
                     capture_session_id=session_id,
-                    source_prefix="binance.websocket.",
+                    source_prefix=f"{settings.provider}.websocket.",
                     limit=10000,
                 )
             else:
@@ -372,8 +372,8 @@ def prospective_status() -> dict[str, Any]:
             "execution": False,
         }
     store = _new_store()
-    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-        session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+    if settings.provider == _study_protocol().provider:
+        session_id = store.active_capture_session(_study_protocol().study_id)
         health_rows = [
             row for row in store.health(source_prefix="binance.websocket.")
             if row.get("last_event_time") is not None
