@@ -237,3 +237,17 @@ def test_fencing_replaces_active_study_without_leaving_a_running_lease(tmp_path)
     )
     assert new_session != session_id
     assert store.active_capture_session(study.study_id) == new_session
+
+def test_final_release_schema_isolation_across_two_sqlite_paths(tmp_path) -> None:
+    first = QuantCryptoStore(sqlite_path=str(tmp_path / "one.sqlite3"))
+    second = QuantCryptoStore(sqlite_path=str(tmp_path / "two.sqlite3"))
+    first.register_study(PREREGISTERED_CRYPTO_PROTOCOL)
+    second.register_study(PREREGISTERED_CRYPTO_PROTOCOL)
+    conn1 = first.connect()
+    conn2 = second.connect()
+    try:
+        assert conn1.execute("SELECT COUNT(*) FROM crypto_studies").fetchone()[0] == 1
+        assert conn2.execute("SELECT COUNT(*) FROM crypto_studies").fetchone()[0] == 1
+    finally:
+        conn1.close()
+        conn2.close()
