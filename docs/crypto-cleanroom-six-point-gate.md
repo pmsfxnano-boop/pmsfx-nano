@@ -9,21 +9,27 @@ not converted into a PASS.
 
 ## 1. Controlled Binance capture
 
-**Status: BLOCKED_DURABLE_STORAGE_LINK; BLUEPRINT_READY**
+**Status: PASS_DURABLE_STORAGE_LINK; LIVE_CAPTURE_EXTERNAL_451_BLOCKED**
 
-The isolated Render service is live on the Binance branch with ingestion enabled, but it
-fails closed because no durable `DATABASE_URL` is available to the service. The Blueprint
-now references the existing Render Postgres instance directly through `fromDatabase`
-rather than copying the Kraken service's secret. This is the correct durable wiring, but
-the hosted Render connector still does not expose a safe Blueprint-sync operation, so the
-reference is not yet applied to the running service. No database secret is written into
-source control or injected as plaintext.
+The isolated Render service `gorila-crypto-cleanroom-binance-capture` was successfully
+updated by Blueprint sync from `render-crypto-binance.yaml`. The deploy is live and the
+runtime heartbeat explicitly reports `backend=postgres`.
 
-Safety result: no ephemeral accumulation and no hidden fallback to SQLite.
+The Blueprint creates `DATABASE_URL` for the isolated Binance service from the existing
+Render Postgres resource `pmsf-nano-db`; no database secret is written into source
+control or injected as plaintext.
+
+Post-deploy evidence:
+- Blueprint-triggered deploy `dep-dau5sijncjis73asrt30` reached `live`.
+- The process started successfully and exposed the health endpoint.
+- The runtime emitted a durable-storage heartbeat with `backend=postgres`.
+- There is no `GORILA_CAPTURE_BLOCKED` durable-storage error in the post-sync evidence.
+
+The storage-link blocker is therefore resolved.
 
 ## 2. Binance invariants
 
-**Status: PASS_CODE_AND_REST_SANITY; LIVE_WSS_LEDGER_PENDING**
+**Status: PASS_CODE_AND_REST_SANITY; LIVE_WSS_BLOCKED_BY_PROVIDER_451**
 
 The adapter has deterministic tests for:
 - explicit symbol identity;
@@ -35,14 +41,19 @@ The adapter has deterministic tests for:
 - hard gap detection;
 - resynchronization after a gap.
 
-Independent live Binance Spot checks returned BTCUSDT and ETHUSDT as `TRADING`.
-A live BTCUSDT REST depth snapshot returned a monotone order book around
-83688 USDT/BTC, while recent trade IDs increased through 6723287258.
-The latest Binance Spot server time observed was 2026-09-29T23:38:44.789Z and the latest
-sampled trade timestamp was 2026-09-29T23:38:44.687Z.
+The isolated Render runtime starts with the Binance provider path, but its WebSocket
+handshake is rejected with HTTP status 451 and Binance's response states that the service is
+unavailable from the restricted location under its eligibility terms.
 
-The REST observations are sanity evidence, not a substitute for persisted WebSocket
-sequence evidence.
+Therefore:
+- the Binance code path is running;
+- durable Postgres is reachable;
+- live Binance WebSocket capture is **not** currently established from this Render
+  region;
+- no WebSocket ledger evidence is promoted to OOS evidence.
+
+Independent live Binance Spot REST sanity checks from earlier work remain valid evidence for
+market availability, but are not a substitute for persisted WebSocket sequence evidence.
 
 ## 3. Kraken timestamp anomaly
 
@@ -85,9 +96,8 @@ The isolated branch now:
 
 Checksum logic, decimal-preservation behavior, adapter integration, snapshot-before-update
 ordering, and the pre-snapshot rejection path have deterministic tests. The latest branch
-commit passed all three repository CI workflows. The live Kraken service
-continues to run from the original cleanroom branch and has not been changed by this
-work.
+code state was CI-green. The live Kraken service continues to run from the original
+cleanroom branch and has not been changed by this work.
 
 ## 5. Cross-venue audit
 
@@ -104,7 +114,7 @@ explicit USD/USDT conversion series is supplied. No assumption that USD = USDT i
 
 ## 6. Prospective ledger → Quality Gate → PIT/OOS → friction/stress
 
-**Status: PIPELINE_HARDENED; LIVE_OOS_BLOCKED_PENDING_PROSPECTIVE_DATA**
+**Status: PIPELINE_HARDENED; LIVE_OOS_BLOCKED**
 
 The research path now hard-stops OOS when:
 - quality status is not PASS;
@@ -117,36 +127,35 @@ stress scenarios and persisted run/fold/OOS/lineage evidence.
 
 No model promotion or execution is enabled.
 
-The live OOS stage cannot truthfully be evaluated until the Binance durable-capture link is
-configured and a sufficiently long prospective ledger exists. The current Render Postgres
-instance is available, but its free-plan expiry is 2026-10-18 and therefore must be treated
-as an operational continuity deadline for the ledger.
+The current Render heartbeat shows existing Postgres rows for symbols such as BTC/USD,
+ETH/USD and SOL/USD. Those rows are not sufficient evidence of a Binance prospective
+ledger because they include prior shared-database observations and the new Binance
+WebSocket session is currently blocked by HTTP 451. The current quality/OOS gate therefore
+remains closed rather than treating shared or historical rows as fresh Binance OOS data.
+
+The current Render Postgres instance is available, but its free-plan expiry is
+2026-10-18 and therefore must be treated as an operational continuity deadline for the
+ledger.
 
 ## Overall disposition
 
-The six-point engineering work is implemented to the maximum safe extent available in the
-current environment. The two hard external blockers are:
+The durable-storage blocker has been resolved and verified in the live Render service.
+The remaining external capture blocker is the Binance WebSocket HTTP 451 location
+restriction from the current Render region.
 
-1. durable Render database reference for the isolated Binance service;
-2. enough valid prospective rows to run the empirical OOS gate.
-
-Neither blocker is bypassed with synthetic or inferred evidence.
-
+The remaining empirical blocker is sufficient **valid prospective** Binance data that passes
+the quality and replay gates. Neither blocker is bypassed with synthetic or inferred
+evidence.
 
 ## Latest hardening delta
 
-Commit chain after the CRC32-format correction adds four non-negotiable controls:
-1. Kraken JSON numeric tokens are decoded with `Decimal`, preventing IEEE-754 conversion
-   from altering checksum-relevant price/quantity values.
-2. Every Kraken connection clears local state and refuses a book update until a fresh
-   snapshot has been observed, eliminating stale-book carryover across reconnects.
-3. Incremental book updates are rejected before buffering when no fresh snapshot exists,
-   including the case where instrument precision has not arrived yet.
-4. Binance durable wiring is defined directly against the existing Postgres resource via
-   Blueprint `fromDatabase`, removing unnecessary secret propagation through the Kraken
-   service.
+The latest operational change adds two verified points:
+1. The isolated Binance Blueprint was synced against the existing Postgres resource and the
+   live service now reports `backend=postgres`.
+2. The live Binance WebSocket handshake is explicitly observed as HTTP 451 from Render's
+   current region; this is recorded as an external capture blocker rather than converted
+   into a data-quality pass.
 
 Current Kraken Render evidence continues to show durable Postgres ingestion while provider
 event time trails receive time by many minutes. That backlog remains unresolved at the
-venue/transport layer and is not converted into a quality pass. The latest code state is
-CI-green, but empirical OOS remains blocked until valid prospective Binance data exists.
+venue/transport layer and is not converted into a quality pass.
