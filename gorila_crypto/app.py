@@ -127,6 +127,12 @@ def _quality_loop() -> None:
             max_p99_transport_latency_ms=float(quality_spec["max_p99_transport_latency_ms"]),
             required_event_types=tuple(quality_spec["required_event_types"]),
             required_event_type_min_rows=dict(quality_spec["required_event_type_min_rows"]),
+            required_event_type_min_rows_per_symbol=dict(
+                quality_spec["required_event_type_min_rows_per_symbol"]
+            ),
+            required_event_type_min_duration_seconds=dict(
+                quality_spec["required_event_type_min_duration_seconds"]
+            ),
         )
     else:
         config = DataQualityConfig(
