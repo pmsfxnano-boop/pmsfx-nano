@@ -47,6 +47,8 @@ class ForecastLabel:
     label_received_time: datetime
     label_event_id: str
     horizon_ms: int
+    actual_event_horizon_ms: int
+    actual_receive_horizon_ms: int
 
 
 @dataclass(frozen=True)
@@ -60,8 +62,8 @@ class WalkForwardConfig:
     min_train_rows: int = 200
     test_rows: int = 50
     step_rows: int = 50
-    purge_ms: int = 1000
-    embargo_ms: int = 1000
+    purge_ms: int = 5000
+    embargo_ms: int = 5000
     min_group_rows: int = 20
     min_fold_pass_fraction: float = 0.67
     temporal_max_logloss_rel_increase: float = 0.10
@@ -136,8 +138,8 @@ class ProbabilisticMetrics:
 class EconomicPolicySpec:
     long_threshold: float = 0.55
     short_threshold: float = 0.45
-    round_trip_cost_bps: float = 0.0
-    round_trip_slippage_bps: float = 0.0
+    round_trip_cost_bps: float = 1.0
+    round_trip_slippage_bps: float = 1.0
 
     def validate(self) -> None:
         if not 0.0 <= self.short_threshold < self.long_threshold <= 1.0:
@@ -233,23 +235,28 @@ def label_snapshot(
     if baseline is None:
         return None
 
-    # Conservative actionable horizon: do not credit a market move that
-    # occurred before the information was actually available. The target event
-    # must be after BOTH the event-time horizon and the receive-time horizon.
-    future_cutoff = max(
-        snapshot.decision_event_time + timedelta(milliseconds=target_spec.horizon_ms),
-        snapshot.decision_received_time + timedelta(milliseconds=target_spec.horizon_ms),
-    )
-    future = None
-    for point in target:
-        if point.event_time < future_cutoff:
-            continue
-        if point.received_time < snapshot.decision_received_time:
-            continue
-        future = point
-        break
-    if future is None:
+    # Fixed-horizon alignment: require the observed target to land inside
+    # both event-time and receive-time bands defined before OOS evaluation.
+    event_target = snapshot.decision_event_time + timedelta(milliseconds=target_spec.horizon_ms)
+    receive_target = snapshot.decision_received_time + timedelta(milliseconds=target_spec.horizon_ms)
+    tolerance = timedelta(milliseconds=target_spec.alignment_tolerance_ms)
+    candidates = [
+        point for point in target
+        if event_target <= point.event_time <= event_target + tolerance
+        and receive_target <= point.received_time <= receive_target + tolerance
+    ]
+    if not candidates:
         return None
+    future = min(
+        candidates,
+        key=lambda point: (
+            abs((point.event_time - event_target).total_seconds())
+            + abs((point.received_time - receive_target).total_seconds()),
+            point.event_time,
+            point.received_time,
+            point.event_id,
+        ),
+    )
 
     raw_return = _log_return_bps(future.price, baseline.price)
     direction = 1.0 if snapshot.feature_values["leader_direction"] >= 0 else -1.0
@@ -263,6 +270,8 @@ def label_snapshot(
         label_received_time=_dt(future.received_time),
         label_event_id=future.event_id,
         horizon_ms=target_spec.horizon_ms,
+        actual_event_horizon_ms=int(round((future.event_time - snapshot.decision_event_time).total_seconds() * 1000.0)),
+        actual_receive_horizon_ms=int(round((future.received_time - snapshot.decision_received_time).total_seconds() * 1000.0)),
     )
 
 
@@ -1098,60 +1107,3 @@ def persist_validation_report(
                 "test_rows": len(fold.test_indices),
                 "model_spec_hash": fold_eval.model.spec_hash,
                 "probabilistic": asdict(fold_eval.probabilistic),
-                "baseline_fifty": asdict(fold_eval.baseline_fifty),
-                "baseline_prevalence": asdict(fold_eval.baseline_prevalence),
-                "economic": asdict(fold_eval.economic),
-            }
-        )
-        for local_index, dataset_index in enumerate(fold.test_indices):
-            row = dataset[dataset_index]
-            probability = report.oos_probabilities[probability_offset + local_index]
-            if probability >= policy.long_threshold:
-                action = 1
-            elif probability <= policy.short_threshold:
-                action = -1
-            else:
-                action = 0
-            signed = float(row.label.realized_signed_return_bps) * action
-            cost = (
-                policy.round_trip_cost_bps
-                + policy.round_trip_slippage_bps
-                if action
-                else 0.0
-            )
-            oos_rows.append(
-                {
-                    "run_id": run_id,
-                    "fold_id": fold.fold_id,
-                    "row_index": local_index,
-                    "leader_event_id": row.snapshot.leader_event_id,
-                    "target_symbol": row.snapshot.target_symbol,
-                    "horizon_ms": row.label.horizon_ms,
-                    "decision_event_time": row.snapshot.decision_event_time.isoformat(),
-                    "decision_received_time": row.snapshot.decision_received_time.isoformat(),
-                    "label_event_time": row.label.label_event_time.isoformat(),
-                    "label_received_time": row.label.label_received_time.isoformat(),
-                    "probability": probability,
-                    "realized_target": row.label.realized_target,
-                    "realized_signed_return_bps": row.label.realized_signed_return_bps,
-                    "net_return_bps": signed - cost,
-                }
-            )
-            lineage_rows.append(
-                {
-                    "run_id": run_id,
-                    "fold_id": fold.fold_id,
-                    "row_index": local_index,
-                    "feature_set_hash": row.snapshot.feature_set_hash,
-                    "source_event_ids": list(row.snapshot.source_event_ids),
-                }
-            )
-        probability_offset += len(fold.test_indices)
-
-    return {
-        "run_id": run_id,
-        "fold_rows": store.save_validation_folds(fold_rows),
-        "oos_rows": store.save_validation_oos(oos_rows),
-        "lineage_rows": store.save_validation_lineage(lineage_rows),
-        "promotion_eligible": report.promotion_eligible,
-    }
