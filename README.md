@@ -17,26 +17,4 @@ The service starts with:
 ```text
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
-
-Health check:
-
-```text
-/health
-```
-
-Dashboard:
-
-```text
-/
-```
-
-## Important
-
-Without `TIINGO_API_KEY`, the API remains online but live quote requests return a configuration error. The project intentionally does not generate forecasts or trading signals when valid market data is unavailable.
-
-## Local
-
-```bash
-pip install -r requirements.txt
-uvicorn main:app --reload
-```
+\n
