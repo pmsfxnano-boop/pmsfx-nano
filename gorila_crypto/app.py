@@ -112,7 +112,12 @@ def _quality_loop() -> None:
     )
     while not _stop_event.is_set():
         try:
-            rows = store.read_events(order="ingest", limit=settings.quality_row_limit)
+            rows = store.read_events(
+                source_prefix=f"{settings.provider}.websocket.",
+                order="ingest",
+                limit=settings.quality_row_limit,
+                include_payload=False,
+            )
             if rows:
                 replay_fp = compute_replay_fingerprint(rows)
                 report = evaluate_replay_quality(
