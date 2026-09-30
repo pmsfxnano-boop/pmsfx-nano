@@ -15,9 +15,11 @@ transport and sequencing boundary before a 24/7 worker is introduced.
 from __future__ import annotations
 
 import json
+import queue
+import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Iterator, Mapping
@@ -433,11 +435,13 @@ class BinanceRestClient:
 
 
 class BinanceSpotMarketAdapter:
-    """Single-connection market stream adapter.
+    """Binance market-stream transport with per-symbol isolation.
 
-    This object is a transport component. It does not start automatically and it
-    does not make forecasts or trading decisions.
+    For multi-symbol capture each symbol owns an independent WebSocket transport.
+    This keeps one symbol's stream health from suppressing the others while the
+    research protocol still treats the three-symbol set as one prospective cohort.
     """
+
 
     source_family = "binance.websocket.market"
 
@@ -514,7 +518,7 @@ class BinanceSpotMarketAdapter:
         except Exception:
             pass
 
-    def iter_forever(
+    def _iter_forever_single(
         self,
         *,
         stop_event=None,
@@ -522,11 +526,7 @@ class BinanceSpotMarketAdapter:
         initial_backoff_s: float = 1.0,
         max_backoff_s: float = 60.0,
     ) -> Iterator[NormalizedMarketEvent]:
-        """Reconnect with bounded exponential backoff.
-
-        The socket connects to the public stream endpoint and sends an explicit
-        SUBSCRIBE request for the preregistered stream set.
-        """
+        """Run one symbol socket with bounded reconnect backoff."""
         backoff = max(0.1, float(initial_backoff_s))
         while stop_event is None or not stop_event.is_set():
             ws = None
@@ -576,6 +576,95 @@ class BinanceSpotMarketAdapter:
             finally:
                 if ws is not None:
                     self.close(ws)
+
+    def iter_forever(
+        self,
+        *,
+        stop_event=None,
+        on_connection: Callable[[str, dict[str, Any]], None] | None = None,
+        initial_backoff_s: float = 1.0,
+        max_backoff_s: float = 60.0,
+    ) -> Iterator[NormalizedMarketEvent]:
+        """Run isolated symbol sockets and merge their normalized events."""
+        if len(self.config.symbols) == 1:
+            yield from self._iter_forever_single(
+                stop_event=stop_event,
+                on_connection=on_connection,
+                initial_backoff_s=initial_backoff_s,
+                max_backoff_s=max_backoff_s,
+            )
+            return
+
+        merged: queue.Queue[NormalizedMarketEvent] = queue.Queue(maxsize=20000)
+        worker_stop = threading.Event()
+        threads: list[threading.Thread] = []
+        worker_errors: list[str] = []
+
+        def run_symbol(symbol: str) -> None:
+            child_config = replace(self.config, symbols=(symbol,))
+            child = BinanceSpotMarketAdapter(
+                child_config,
+                rest_client=self.rest_client,
+                event_sink=None,
+            )
+
+            def child_connection(status: str, metadata: dict[str, Any]) -> None:
+                enriched = {
+                    **metadata,
+                    "symbol": symbol,
+                    "connection_scope": "SYMBOL_ISOLATED",
+                }
+                if on_connection is not None:
+                    on_connection(status, enriched)
+
+            try:
+                for event in child._iter_forever_single(
+                    stop_event=worker_stop,
+                    on_connection=child_connection,
+                    initial_backoff_s=initial_backoff_s,
+                    max_backoff_s=max_backoff_s,
+                ):
+                    while not worker_stop.is_set():
+                        try:
+                            merged.put(event, timeout=1.0)
+                            break
+                        except queue.Full:
+                            continue
+            except Exception as exc:
+                worker_errors.append(f"{symbol}:{type(exc).__name__}:{exc}")
+                if on_connection is not None:
+                    on_connection(
+                        "ERROR",
+                        {
+                            "symbol": symbol,
+                            "connection_scope": "SYMBOL_ISOLATED",
+                            "error": worker_errors[-1],
+                        },
+                    )
+
+        for symbol in self.config.symbols:
+            thread = threading.Thread(
+                target=run_symbol,
+                args=(symbol,),
+                name=f"binance-{symbol.lower()}",
+                daemon=True,
+            )
+            threads.append(thread)
+            thread.start()
+
+        try:
+            while stop_event is None or not stop_event.is_set():
+                try:
+                    yield merged.get(timeout=1.0)
+                except queue.Empty:
+                    if not any(thread.is_alive() for thread in threads):
+                        if worker_errors:
+                            raise BinanceAdapterError("; ".join(worker_errors))
+                        raise BinanceAdapterError("all Binance symbol workers stopped")
+        finally:
+            worker_stop.set()
+            for thread in threads:
+                thread.join(timeout=2.0)
                 if on_connection:
                     on_connection(
                         "DISCONNECTED",
