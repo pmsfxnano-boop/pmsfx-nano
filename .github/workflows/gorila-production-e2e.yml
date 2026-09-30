@@ -156,7 +156,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL="https://gorila-argentum-research.onrender.com/api/gorila/terminal/AAPL"
+          URL="https://gorila-argentum-research.onrender.com/api/gorila/terminal/GGAL"
           curl --fail --silent --show-error --connect-timeout 20 --max-time 180 "$URL" -o /tmp/terminal.json
           cat /tmp/terminal.json
           python - <<'PY'
@@ -164,7 +164,7 @@ jobs:
           from pathlib import Path
           d=json.loads(Path("/tmp/terminal.json").read_text())
           assert d["service"] == "gorila-argentum", d
-          assert d["symbol"] == "AAPL", d
+          assert d["symbol"] == "GGAL", d
           assert "quote" in d, d
           assert "forecast" in d, d
           assert "macro" in d, d
