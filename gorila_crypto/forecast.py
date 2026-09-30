@@ -241,3 +241,48 @@ def score_forecast(
         )
 
     if not all(math.isfinite(float(value)) for value in snapshot.feature_values.values()):
+        raise ValueError("non-finite feature value")
+    linear = float(model.intercept)
+    for name, coefficient in model.coefficients.items():
+        if name not in snapshot.feature_values:
+            raise ValueError(f"model requires unavailable feature: {name}")
+        linear += float(coefficient) * float(snapshot.feature_values[name])
+    probability = _sigmoid(linear)
+    return ForecastResult(
+        status="SHADOW_READY",
+        model_id=model.model_id,
+        model_version=model.version,
+        semantics=FORECAST_SEMANTICS,
+        target_kind=target.kind,
+        horizon_ms=target.horizon_ms,
+        probability_response_positive=probability,
+        decision_event_time=snapshot.decision_event_time,
+        decision_received_time=snapshot.decision_received_time,
+        feature_set_hash=snapshot.feature_set_hash,
+    )
+
+
+
+def deterministic_forecast_id(
+    *,
+    replay_fingerprint: str,
+    snapshot: DetectionFeatureSnapshot,
+    target: ForecastTargetSpec,
+    model: ForecastModelSpec,
+) -> str:
+    target.validate()
+    identity = {
+        "replay_fingerprint": replay_fingerprint,
+        "feature_set_hash": snapshot.feature_set_hash,
+        "leader_event_id": snapshot.leader_event_id,
+        "model_id": model.model_id,
+        "model_version": model.version,
+        "model_spec_hash": model_spec_hash(model),
+        "target_symbol": snapshot.target_symbol,
+        "horizon_ms": target.horizon_ms,
+        "target_kind": target.kind,
+        "semantics": FORECAST_SEMANTICS,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:32]

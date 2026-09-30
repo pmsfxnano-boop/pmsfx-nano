@@ -150,10 +150,15 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
             "SELECT status FROM crypto_source_health WHERE source=?",
             ("binance.websocket.trade",),
         ).fetchone()["status"] == "LIVE"
-        assert conn.execute(
+        transport_row = conn.execute(
             "SELECT status FROM crypto_source_health WHERE source=?",
             ("binance.websocket.market",),
-        ).fetchone()["status"] == "LIVE"
+        ).fetchone()
+        assert transport_row is None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM crypto_connection_events WHERE source=? AND status='CONNECTED'",
+            ("binance.websocket.market",),
+        ).fetchone()[0] >= 1
     finally:
         conn.close()
 

@@ -275,7 +275,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
 
     def append_scoped_event(self, *, study_id: str, capture_session_id: str, **kwargs: Any) -> dict[str, Any]:
-        metadata = dict(kwargs.pop("metadata") or {})
+        metadata = dict(kwargs.pop("metadata", None) or {})
         metadata.update(
             {
                 "crypto_study_id": study_id,
@@ -623,6 +623,7 @@ class QuantCryptoStore(CryptoStore):
         if order_by is None:
             raise ValueError("invalid replay order")
         params: list[Any] = [study_id]
+        placeholder = "%s" if self._pg else "?"
         clauses = ["e.metadata::jsonb->>'crypto_study_id'=%s"] if self._pg else [
             "json_extract(e.metadata, '$.crypto_study_id')=?"
         ]

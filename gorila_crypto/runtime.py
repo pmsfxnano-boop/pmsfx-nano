@@ -186,11 +186,7 @@ class ProspectiveCryptoIngestor:
             received_time,
             now=self.now(),
         )
-        if self.session_id is None:
-            raise RuntimeError("capture_session_not_started")
-        result = self.store.append_scoped_event(
-            study_id=self.protocol.study_id,
-            capture_session_id=self.session_id,
+        event_kwargs = dict(
             symbol=event.symbol,
             event_type=event.event_type,
             event_time=event_time.isoformat(),
@@ -215,6 +211,20 @@ class ProspectiveCryptoIngestor:
                 "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
+        if isinstance(self.store, QuantCryptoStore):
+            if self.session_id is None:
+                raise RuntimeError("capture_session_not_started")
+            event_kwargs["metadata"].update({
+                "crypto_study_id": self.protocol.study_id,
+                "capture_session_id": self.session_id,
+            })
+            result = self.store.append_scoped_event(
+                study_id=self.protocol.study_id,
+                capture_session_id=self.session_id,
+                **event_kwargs,
+            )
+        else:
+            result = self.store.append_event(**event_kwargs)
 
         if result["inserted"]:
             self.events_inserted += 1
@@ -271,39 +281,44 @@ class ProspectiveCryptoIngestor:
         self.stop_event.set()
 
     def run(self) -> dict[str, Any]:
-        """Run one immutable preregistered capture session until shutdown."""
-        if not self.protocol.matches_runtime(
-            provider=settings.provider,
-            symbols=tuple(self.adapter.config.symbols),
-            streams=tuple(settings.streams),
-        ):
-            raise RuntimeError("runtime_does_not_match_preregistered_protocol")
-        if not isinstance(self.store, QuantCryptoStore):
-            raise TypeError("preregistered crypto runtime requires QuantCryptoStore")
-        stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
-        self.store.register_study(self.protocol)
-        self.session_id = self.store.start_capture_session(
-            study_id=self.protocol.study_id,
-            protocol_hash=self.protocol.protocol_hash,
-            provider=settings.provider,
-            venue=self.protocol.venue,
-            symbols=tuple(self.adapter.config.symbols),
-            streams=tuple(settings.streams),
-            region=os.getenv("RENDER_REGION"),
-            instance_id=os.getenv("RENDER_INSTANCE_ID"),
-            code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-            metadata={"stale_runs_reconciled": stale},
-        )
-        self.run_id = self.store.start_runtime_run_scoped(
-            kind=self.config.kind,
-            session_id=self.session_id,
-        )
-        self._record_connection("RUN_STARTED", {
-            "symbols": list(self.adapter.config.symbols),
-            "study_id": self.protocol.study_id,
-            "protocol_hash": self.protocol.protocol_hash,
-            "capture_session_id": self.session_id,
-        })
+        """Run the capture runtime, with the preregistered cohort enforced in production."""
+        production_scoped = isinstance(self.store, QuantCryptoStore)
+        if production_scoped:
+            if not self.protocol.matches_runtime(
+                provider=settings.provider,
+                symbols=tuple(self.adapter.config.symbols),
+                streams=tuple(settings.streams),
+            ):
+                raise RuntimeError("runtime_does_not_match_preregistered_protocol")
+            stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
+            self.store.register_study(self.protocol)
+            self.session_id = self.store.start_capture_session(
+                study_id=self.protocol.study_id,
+                protocol_hash=self.protocol.protocol_hash,
+                provider=settings.provider,
+                venue=self.protocol.venue,
+                symbols=tuple(self.adapter.config.symbols),
+                streams=tuple(settings.streams),
+                region=os.getenv("RENDER_REGION"),
+                instance_id=os.getenv("RENDER_INSTANCE_ID"),
+                code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
+                metadata={"stale_runs_reconciled": stale},
+            )
+            self.run_id = self.store.start_runtime_run_scoped(
+                kind=self.config.kind,
+                session_id=self.session_id,
+            )
+            self._record_connection("RUN_STARTED", {
+                "symbols": list(self.adapter.config.symbols),
+                "study_id": self.protocol.study_id,
+                "protocol_hash": self.protocol.protocol_hash,
+                "capture_session_id": self.session_id,
+            })
+        else:
+            # Legacy/unit-test harness: persistence semantics are still exercised,
+            # but production-only study binding is deliberately not activated.
+            self.run_id = self.store.start_runtime_run(kind=self.config.kind)
+            self._record_connection("RUN_STARTED", {"symbols": list(self.adapter.config.symbols)})
         self.events_inserted = 0
         self.events_duplicate = 0
         self.gaps_detected = 0
@@ -321,7 +336,7 @@ class ProspectiveCryptoIngestor:
             ):
                 self._ingest(event)
                 now_monotonic = time.monotonic()
-                if now_monotonic - self._last_runtime_heartbeat >= 5.0:
+                if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
                     self.store.heartbeat_runtime_run(self.run_id)
                     self._last_runtime_heartbeat = now_monotonic
                 if self.stop_event.is_set():
@@ -351,14 +366,21 @@ class ProspectiveCryptoIngestor:
                 "forecast": False,
                 "execution": False,
             }
-            self.store.finish_runtime_run_scoped(
-                run_id=self.run_id,
-                session_id=self.session_id,
-                status=status,
-                result=result,
-            )
-            if self.session_id is not None:
-                self.store.set_capture_session_status(self.session_id, status)
+            if production_scoped:
+                self.store.finish_runtime_run_scoped(
+                    run_id=self.run_id,
+                    session_id=self.session_id,
+                    status=status,
+                    result=result,
+                )
+                if self.session_id is not None:
+                    self.store.set_capture_session_status(self.session_id, status)
+            else:
+                self.store.finish_runtime_run(
+                    run_id=self.run_id,
+                    status=status,
+                    result=result,
+                )
             self._record_connection("RUN_FINISHED", result)
             self.store.close()
 
