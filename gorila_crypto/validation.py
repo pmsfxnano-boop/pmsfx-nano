@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping, Sequence
 
@@ -242,10 +242,6 @@ def label_snapshot(
     if baseline is None:
         return None
 
-    # Conservative causal horizon: the target must occur after BOTH
-    # event-time and receive-time horizon cutoffs. We do not credit any move
-    # that was available before the decision, and we persist the actual realized
-    # horizon so downstream quality gates can measure drift explicitly.
     future_cutoff = max(
         snapshot.decision_event_time + timedelta(milliseconds=target_spec.horizon_ms),
         snapshot.decision_received_time + timedelta(milliseconds=target_spec.horizon_ms),
@@ -414,3 +410,877 @@ def fit_ridge_logistic(
     penalty = np.diag(np.concatenate([[0.0], np.full(len(feature_names), config.ridge_alpha)]))
     for _ in range(config.max_iterations):
         p = _sigmoid_np(X @ w)
+        gradient = (X.T @ (p - y)) / n + penalty @ w / n
+        weights = p * (1.0 - p)
+        hessian = (X.T * weights) @ X / n + penalty / n
+        try:
+            step = np.linalg.solve(hessian + np.eye(hessian.shape[0]) * 1e-9, gradient)
+        except np.linalg.LinAlgError:
+            step = np.linalg.lstsq(
+                hessian + np.eye(hessian.shape[0]) * 1e-9,
+                gradient,
+                rcond=None,
+            )[0]
+        next_w = w - step
+        if float(np.max(np.abs(next_w - w))) <= config.convergence_tol:
+            w = next_w
+            break
+        w = next_w
+
+    std_coefficients = w[1:]
+    raw_coefficients = {
+        name: float(std_coefficients[i] / scales[i])
+        for i, name in enumerate(feature_names)
+    }
+    raw_intercept = float(w[0] - np.sum(std_coefficients * means / scales))
+    spec = {
+        "model_id": model_id,
+        "version": version,
+        "intercept": raw_intercept,
+        "coefficients": raw_coefficients,
+    }
+    spec_hash = hashlib.sha256(
+        repr(sorted(spec.items(), key=lambda item: item[0])).encode("utf-8")
+    ).hexdigest()
+    return FittedValidationModel(
+        model_id=model_id,
+        version=version,
+        feature_names=tuple(feature_names),
+        coefficients=raw_coefficients,
+        intercept=raw_intercept,
+        training_rows=len(indices),
+        training_positive_rate=float(np.mean(y)),
+        spec_hash=spec_hash,
+    )
+
+
+def predict_probability(
+    model: FittedValidationModel,
+    snapshot: DetectionFeatureSnapshot,
+) -> float:
+    linear = model.intercept
+    for name in model.feature_names:
+        linear += model.coefficients[name] * float(snapshot.feature_values[name])
+    clipped = min(60.0, max(-60.0, linear))
+    return float(1.0 / (1.0 + math.exp(-clipped)))
+
+
+def _rank_auc(labels: Sequence[int], probabilities: Sequence[float]) -> float | None:
+    n = len(labels)
+    positives = sum(1 for y in labels if y == 1)
+    negatives = n - positives
+    if positives == 0 or negatives == 0:
+        return None
+    order = sorted(range(n), key=lambda i: (probabilities[i], i))
+    rank_sum = 0.0
+    i = 0
+    rank = 1
+    while i < n:
+        j = i + 1
+        while j < n and probabilities[order[j]] == probabilities[order[i]]:
+            j += 1
+        avg_rank = (rank + rank + (j - i) - 1) / 2.0
+        for k in range(i, j):
+            if labels[order[k]] == 1:
+                rank_sum += avg_rank
+        rank += j - i
+        i = j
+    return float((rank_sum - positives * (positives + 1) / 2.0) / (positives * negatives))
+
+
+def probabilistic_metrics(labels: Sequence[int], probabilities: Sequence[float]) -> ProbabilisticMetrics:
+    if len(labels) != len(probabilities) or not labels:
+        raise ValueError("labels and probabilities must have equal non-zero length")
+    eps = 1e-15
+    probs = [min(1.0 - eps, max(eps, float(p))) for p in probabilities]
+    brier = sum((p - y) ** 2 for p, y in zip(probs, labels)) / len(labels)
+    log_loss = -sum(
+        y * math.log(p) + (1 - y) * math.log(1 - p)
+        for y, p in zip(labels, probs)
+    ) / len(labels)
+
+    bins = [[] for _ in range(10)]
+    for y, p in zip(labels, probs):
+        idx = min(9, int(p * 10.0))
+        bins[idx].append((y, p))
+    ece = 0.0
+    for bucket in bins:
+        if not bucket:
+            continue
+        ece += len(bucket) / len(labels) * abs(
+            sum(y for y, _ in bucket) / len(bucket)
+            - sum(p for _, p in bucket) / len(bucket)
+        )
+    return ProbabilisticMetrics(
+        n=len(labels),
+        positive_rate=float(sum(labels) / len(labels)),
+        brier=float(brier),
+        log_loss=float(log_loss),
+        auc=_rank_auc(labels, probs),
+        ece_10=float(ece),
+    )
+
+
+def economic_metrics(
+    rows: Sequence[ForecastDatasetRow],
+    probabilities: Sequence[float],
+    policy: EconomicPolicySpec,
+    *,
+    return_haircut: float = 0.0,
+    cost_multiplier: float = 1.0,
+    slippage_multiplier: float = 1.0,
+) -> EconomicMetrics:
+    policy.validate()
+    if len(rows) != len(probabilities) or not rows:
+        raise ValueError("rows and probabilities must have equal non-zero length")
+    if not 0.0 <= return_haircut < 1.0:
+        raise ValueError("return haircut must be in [0,1)")
+    if cost_multiplier < 0 or slippage_multiplier < 0:
+        raise ValueError("stress multipliers must be non-negative")
+
+    net_values: list[float] = []
+    gross_values: list[float] = []
+    traded = 0
+    for row, probability in zip(rows, probabilities):
+        if probability >= policy.long_threshold:
+            action = 1
+        elif probability <= policy.short_threshold:
+            action = -1
+        else:
+            action = 0
+        if action == 0:
+            gross_values.append(0.0)
+            net_values.append(0.0)
+            continue
+        signed = float(row.label.realized_signed_return_bps) * action
+        signed *= 1.0 - return_haircut
+        gross_values.append(signed)
+        traded += 1
+        cost = policy.round_trip_cost_bps * cost_multiplier
+        slippage = policy.round_trip_slippage_bps * slippage_multiplier
+        net_values.append(signed - cost - slippage)
+
+    total_cost = traded * policy.round_trip_cost_bps * cost_multiplier
+    total_slippage = traded * policy.round_trip_slippage_bps * slippage_multiplier
+    return EconomicMetrics(
+        n=len(rows),
+        traded_fraction=float(traded / len(rows)),
+        gross_mean_bps=float(sum(gross_values) / len(rows)),
+        total_cost_bps=float(total_cost),
+        total_slippage_bps=float(total_slippage),
+        net_mean_bps=float(sum(net_values) / len(rows)),
+        cumulative_net_bps=float(sum(net_values)),
+    )
+
+
+def baseline_constant(labels: Sequence[int], value: float) -> ProbabilisticMetrics:
+    return probabilistic_metrics(labels, [value] * len(labels))
+
+
+def block_permutation(labels: Sequence[int], block_size: int, seed: int) -> tuple[int, ...]:
+    if block_size < 1:
+        raise ValueError("block_size must be positive")
+    rng = np.random.default_rng(seed)
+    output = []
+    labels = list(labels)
+    for start in range(0, len(labels), block_size):
+        block = labels[start : start + block_size]
+        output.extend(rng.permutation(block).tolist())
+    return tuple(int(x) for x in output)
+
+
+def placebo_logloss_edge(
+    labels: Sequence[int],
+    probabilities: Sequence[float],
+    *,
+    block_size: int = 20,
+    iterations: int = 500,
+    seed: int = 20260929,
+) -> tuple[float, int]:
+    if iterations < 1:
+        raise ValueError("iterations must be positive")
+    observed = math.log(2.0) - probabilistic_metrics(labels, probabilities).log_loss
+    exceed = 0
+    for iteration in range(iterations):
+        placebo_labels = block_permutation(labels, block_size, seed + iteration)
+        edge = math.log(2.0) - probabilistic_metrics(placebo_labels, probabilities).log_loss
+        if edge >= observed:
+            exceed += 1
+    p_value = (1 + exceed) / (iterations + 1)
+    return float(p_value), iterations
+
+
+def stability_metrics(
+    rows: Sequence[ForecastDatasetRow],
+    probabilities: Sequence[float],
+) -> tuple[dict[str, ProbabilisticMetrics], dict[int, ProbabilisticMetrics]]:
+    by_symbol: dict[str, list[int]] = {}
+    by_symbol_p: dict[str, list[float]] = {}
+    by_horizon: dict[int, list[int]] = {}
+    by_horizon_p: dict[int, list[float]] = {}
+    for row, probability in zip(rows, probabilities):
+        symbol = row.snapshot.target_symbol
+        by_symbol.setdefault(symbol, []).append(row.label.realized_target)
+        by_symbol_p.setdefault(symbol, []).append(probability)
+        horizon = row.label.horizon_ms
+        by_horizon.setdefault(horizon, []).append(row.label.realized_target)
+        by_horizon_p.setdefault(horizon, []).append(probability)
+    return (
+        {
+            key: probabilistic_metrics(by_symbol[key], by_symbol_p[key])
+            for key in sorted(by_symbol)
+        },
+        {
+            key: probabilistic_metrics(by_horizon[key], by_horizon_p[key])
+            for key in sorted(by_horizon)
+        },
+    )
+
+
+def temporal_stability_metrics(
+    folds: Sequence[FoldEvaluation],
+    config: WalkForwardConfig,
+) -> TemporalStabilityMetrics:
+    if len(folds) < 2:
+        return TemporalStabilityMetrics(
+            early_fold_count=len(folds),
+            late_fold_count=0,
+            early_log_loss=float("nan"),
+            late_log_loss=float("nan"),
+            early_brier=float("nan"),
+            late_brier=float("nan"),
+            early_net_mean_bps=float("nan"),
+            late_net_mean_bps=float("nan"),
+            early_baseline_pass_fraction=0.0,
+            late_baseline_pass_fraction=0.0,
+            early_economic_positive_fraction=0.0,
+            late_economic_positive_fraction=0.0,
+            log_loss_relative_change=float("inf"),
+            brier_change=float("inf"),
+            net_drop_bps=float("inf"),
+            passed=False,
+        )
+
+    split = len(folds) // 2
+    early = folds[:split]
+    late = folds[split:]
+
+    def baseline_pass_fraction(items: Sequence[FoldEvaluation]) -> float:
+        return sum(
+            item.probabilistic.log_loss < item.baseline_fifty.log_loss
+            and item.probabilistic.brier < item.baseline_fifty.brier
+            and item.probabilistic.log_loss < item.baseline_prevalence.log_loss
+            and item.probabilistic.brier < item.baseline_prevalence.brier
+            for item in items
+        ) / len(items)
+
+    def economic_positive_fraction(items: Sequence[FoldEvaluation]) -> float:
+        return sum(item.economic.net_mean_bps > 0.0 for item in items) / len(items)
+
+    early_ll = sum(item.probabilistic.log_loss for item in early) / len(early)
+    late_ll = sum(item.probabilistic.log_loss for item in late) / len(late)
+    early_brier = sum(item.probabilistic.brier for item in early) / len(early)
+    late_brier = sum(item.probabilistic.brier for item in late) / len(late)
+    early_net = sum(item.economic.net_mean_bps for item in early) / len(early)
+    late_net = sum(item.economic.net_mean_bps for item in late) / len(late)
+
+    ll_rel = (late_ll - early_ll) / max(abs(early_ll), 1e-12)
+    brier_change = late_brier - early_brier
+    net_drop = early_net - late_net
+    early_base = baseline_pass_fraction(early)
+    late_base = baseline_pass_fraction(late)
+    early_econ = economic_positive_fraction(early)
+    late_econ = economic_positive_fraction(late)
+
+    passed = bool(
+        late_base >= config.min_fold_pass_fraction
+        and late_econ >= config.min_fold_pass_fraction
+        and ll_rel <= config.temporal_max_logloss_rel_increase
+        and brier_change <= config.temporal_max_brier_increase
+        and net_drop <= config.temporal_max_net_drop_bps
+    )
+    return TemporalStabilityMetrics(
+        early_fold_count=len(early),
+        late_fold_count=len(late),
+        early_log_loss=float(early_ll),
+        late_log_loss=float(late_ll),
+        early_brier=float(early_brier),
+        late_brier=float(late_brier),
+        early_net_mean_bps=float(early_net),
+        late_net_mean_bps=float(late_net),
+        early_baseline_pass_fraction=float(early_base),
+        late_baseline_pass_fraction=float(late_base),
+        early_economic_positive_fraction=float(early_econ),
+        late_economic_positive_fraction=float(late_econ),
+        log_loss_relative_change=float(ll_rel),
+        brier_change=float(brier_change),
+        net_drop_bps=float(net_drop),
+        passed=passed,
+    )
+
+
+class QualityGateBlocked(RuntimeError):
+    """Raised when OOS validation is attempted before data quality passes."""
+
+
+def require_quality_gate(
+    quality_report: Mapping[str, object],
+    *,
+    minimum_rows: int,
+    expected_replay_fingerprint: str | None = None,
+) -> None:
+    """Hard-stop OOS until the exact replay slice has passed data quality."""
+    if minimum_rows < 1:
+        raise ValueError("minimum_rows must be positive")
+    status = str(quality_report.get("status") or "")
+    rows = int(quality_report.get("rows") or 0)
+    if status != "PASS":
+        reasons = quality_report.get("reasons") or ()
+        raise QualityGateBlocked(
+            f"quality_gate_status={status or 'UNKNOWN'} reasons={tuple(reasons)}"
+        )
+    if rows < minimum_rows:
+        raise QualityGateBlocked(
+            f"quality_gate_rows={rows} below required minimum={minimum_rows}"
+        )
+    if expected_replay_fingerprint is not None:
+        actual_fingerprint = str(quality_report.get("replay_fingerprint") or "")
+        if actual_fingerprint != expected_replay_fingerprint:
+            raise QualityGateBlocked(
+                "quality_gate_replay_fingerprint_mismatch:"
+                f"expected={expected_replay_fingerprint} actual={actual_fingerprint}"
+            )
+
+
+def run_quality_gated_walk_forward(
+    dataset: Sequence[ForecastDatasetRow],
+    feature_names: Sequence[str],
+    config: WalkForwardConfig,
+    policy: EconomicPolicySpec,
+    *,
+    quality_report: Mapping[str, object],
+    minimum_quality_rows: int,
+    replay_fingerprint: str,
+    model_id: str = "crypto-ridge-logit-wf",
+    model_version: str = "1",
+    placebo_block_size: int = 20,
+    placebo_iterations: int = 500,
+    stress_scenarios: Sequence[StressScenario] = (),
+    candidate_strategy_returns: Sequence[Sequence[float]] = (),
+) -> ValidationReport:
+    """Run PIT/OOS evaluation only after a passed quality gate."""
+    require_quality_gate(
+        quality_report,
+        minimum_rows=minimum_quality_rows,
+        expected_replay_fingerprint=replay_fingerprint,
+    )
+    return run_walk_forward_validation(
+        dataset,
+        feature_names,
+        config,
+        policy,
+        model_id=model_id,
+        model_version=model_version,
+        placebo_block_size=placebo_block_size,
+        placebo_iterations=placebo_iterations,
+        stress_scenarios=stress_scenarios,
+        candidate_strategy_returns=candidate_strategy_returns,
+    )
+
+
+def run_walk_forward_validation(
+    dataset: Sequence[ForecastDatasetRow],
+    feature_names: Sequence[str],
+    config: WalkForwardConfig,
+    policy: EconomicPolicySpec,
+    *,
+    model_id: str = "crypto-ridge-logit-wf",
+    model_version: str = "1",
+    placebo_block_size: int = 20,
+    placebo_iterations: int = 500,
+    stress_scenarios: Sequence[StressScenario] = (),
+    candidate_strategy_returns: Sequence[Sequence[float]] = (),
+) -> ValidationReport:
+    config.validate()
+    if not dataset:
+        raise ValueError("validation dataset cannot be empty")
+    folds = make_walk_forward_folds(dataset, config)
+    if not folds:
+        return ValidationReport(
+            status="INSUFFICIENT_OOS_DATA",
+            dataset_rows=len(dataset),
+            folds=(),
+            fold_baseline_pass_fraction=0.0,
+            fold_economic_positive_fraction=0.0,
+            temporal_stability=TemporalStabilityMetrics(
+                early_fold_count=0,
+                late_fold_count=0,
+                early_log_loss=float("nan"),
+                late_log_loss=float("nan"),
+                early_brier=float("nan"),
+                late_brier=float("nan"),
+                early_net_mean_bps=float("nan"),
+                late_net_mean_bps=float("nan"),
+                early_baseline_pass_fraction=0.0,
+                late_baseline_pass_fraction=0.0,
+                early_economic_positive_fraction=0.0,
+                late_economic_positive_fraction=0.0,
+                log_loss_relative_change=float("nan"),
+                brier_change=float("nan"),
+                net_drop_bps=float("nan"),
+                passed=False,
+            ),
+            oos_probabilities=(),
+            oos_labels=(),
+            oos_returns_bps=(),
+            placebo_p_value=None,
+            placebo_iterations=0,
+            stability_by_symbol={},
+            stability_by_horizon_ms={},
+            stress_results={},
+            multiple_testing_p_value=None,
+            dsr_p_value=None,
+            pbo=None,
+            research_robustness_status="INSUFFICIENT_OOS_DATA",
+            research_robustness_reasons=("NO_OOS_FOLDS",),
+            promotion_eligible=False,
+        )
+
+    fold_evaluations: list[FoldEvaluation] = []
+    oos_probabilities: list[float] = []
+    oos_labels: list[int] = []
+    oos_returns: list[float] = []
+    candidate_family = tuple(float(x) for x in PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas)
+    candidate_oos_net: dict[float, list[float]] = {alpha: [] for alpha in candidate_family}
+
+    for fold in folds:
+        candidate_models = {
+            alpha: fit_ridge_logistic(
+                dataset,
+                fold.train_indices,
+                feature_names,
+                replace(config, ridge_alpha=alpha),
+                model_id=model_id,
+                version=f"{model_version}.alpha{alpha}.fold{fold.fold_id}",
+            )
+            for alpha in candidate_family
+        }
+        model = candidate_models[1.0]
+        test_rows = [dataset[i] for i in fold.test_indices]
+        probabilities = [predict_probability(model, row.snapshot) for row in test_rows]
+        labels = [row.label.realized_target for row in test_rows]
+        fold_metric = probabilistic_metrics(labels, probabilities)
+        baseline_fifty = baseline_constant(labels, 0.5)
+        baseline_prevalence = baseline_constant(labels, model.training_positive_rate)
+        economic = economic_metrics(test_rows, probabilities, policy)
+
+        for alpha, candidate_model in candidate_models.items():
+            candidate_probabilities = [predict_probability(candidate_model, row.snapshot) for row in test_rows]
+            for row, probability in zip(test_rows, candidate_probabilities):
+                if probability >= policy.long_threshold:
+                    action = 1
+                elif probability <= policy.short_threshold:
+                    action = -1
+                else:
+                    action = 0
+                if action == 0:
+                    candidate_oos_net[alpha].append(0.0)
+                else:
+                    gross = float(row.label.realized_signed_return_bps) * action
+                    candidate_oos_net[alpha].append(
+                        gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
+                    )
+
+        fold_evaluations.append(
+            FoldEvaluation(
+                fold=fold,
+                model=model,
+                probabilistic=fold_metric,
+                baseline_fifty=baseline_fifty,
+                baseline_prevalence=baseline_prevalence,
+                economic=economic,
+            )
+        )
+        oos_probabilities.extend(probabilities)
+        oos_labels.extend(labels)
+        oos_returns.extend(row.label.realized_signed_return_bps for row in test_rows)
+
+    if not candidate_strategy_returns:
+        candidate_strategy_returns = tuple(candidate_oos_net[alpha] for alpha in candidate_family)
+
+    stability_by_symbol, stability_by_horizon = stability_metrics(
+        [dataset[i] for fold in folds for i in fold.test_indices],
+        oos_probabilities,
+    )
+    placebo_p, placebo_n = placebo_logloss_edge(
+        oos_labels,
+        oos_probabilities,
+        block_size=placebo_block_size,
+        iterations=placebo_iterations,
+        seed=config.seed,
+    )
+
+    if not stress_scenarios:
+        stress_scenarios = (
+            StressScenario("base"),
+            StressScenario("stress_1", cost_multiplier=2.0, slippage_multiplier=2.0),
+            StressScenario("stress_2", cost_multiplier=4.0, slippage_multiplier=4.0),
+        )
+    stress_results = {}
+    oos_rows = [dataset[i] for fold in folds for i in fold.test_indices]
+    for scenario in stress_scenarios:
+        scenario.validate()
+        stress_results[scenario.name] = economic_metrics(
+            oos_rows,
+            oos_probabilities,
+            policy,
+            return_haircut=scenario.return_haircut,
+            cost_multiplier=scenario.cost_multiplier,
+            slippage_multiplier=scenario.slippage_multiplier,
+        )
+
+    temporal = temporal_stability_metrics(fold_evaluations, config)
+    aggregate = probabilistic_metrics(oos_labels, oos_probabilities)
+    aggregate_baseline = baseline_constant(oos_labels, 0.5)
+    prevalence_values = [
+        fold.model.training_positive_rate
+        for fold in fold_evaluations
+        for _ in fold.fold.test_indices
+    ]
+    aggregate_prevalence = probabilistic_metrics(oos_labels, prevalence_values)
+    aggregate_economic = economic_metrics(oos_rows, oos_probabilities, policy)
+    minimum_fold_count = len(folds) >= 3
+    baseline_beat = all(
+        (
+            aggregate.log_loss < baseline.log_loss
+            and aggregate.brier < baseline.brier
+        )
+        for baseline in (aggregate_baseline, aggregate_prevalence)
+    )
+    fold_baseline_passes = [
+        (
+            fold_eval.probabilistic.log_loss < fold_eval.baseline_fifty.log_loss
+            and fold_eval.probabilistic.brier < fold_eval.baseline_fifty.brier
+            and fold_eval.probabilistic.log_loss < fold_eval.baseline_prevalence.log_loss
+            and fold_eval.probabilistic.brier < fold_eval.baseline_prevalence.brier
+        )
+        for fold_eval in fold_evaluations
+    ]
+    fold_baseline_pass_fraction = (
+        sum(fold_baseline_passes) / len(fold_baseline_passes)
+        if fold_baseline_passes
+        else 0.0
+    )
+    fold_economic_positive_fraction = (
+        sum(fold_eval.economic.net_mean_bps > 0.0 for fold_eval in fold_evaluations)
+        / len(fold_evaluations)
+        if fold_evaluations
+        else 0.0
+    )
+    economic_positive = aggregate_economic.net_mean_bps > 0.0
+    explicit_friction_pass = (
+        policy.round_trip_cost_bps + policy.round_trip_slippage_bps
+    ) > 0.0
+    adjusted_placebo_values = holm_bonferroni(
+        [placebo_p] * PREREGISTERED_CRYPTO_PROTOCOL.declared_hypothesis_family_size
+    )
+    adjusted_placebo = adjusted_placebo_values[0] if adjusted_placebo_values else None
+    multiple_testing_pass = (
+        adjusted_placebo is not None
+        and adjusted_placebo <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+    )
+
+    strategy_net_series: list[float] = []
+    for row, probability in zip(oos_rows, oos_probabilities):
+        if probability >= policy.long_threshold:
+            action = 1
+        elif probability <= policy.short_threshold:
+            action = -1
+        else:
+            action = 0
+        if action == 0:
+            strategy_net_series.append(0.0)
+            continue
+        gross = float(row.label.realized_signed_return_bps) * action
+        strategy_net_series.append(
+            gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
+        )
+
+    dsr = deflated_sharpe_p_value(
+        strategy_net_series,
+        n_trials=PREREGISTERED_CRYPTO_PROTOCOL.declared_hypothesis_family_size,
+    )
+    dsr_pass = (
+        dsr.status == "ESTIMATED"
+        and (dsr.adjusted_p_value or 1.0)
+        <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+    )
+
+    pbo_result = (
+        combinatorial_pbo(
+            candidate_strategy_returns,
+            groups=PREREGISTERED_CRYPTO_PROTOCOL.cscv_groups,
+            test_groups=PREREGISTERED_CRYPTO_PROTOCOL.cscv_test_groups,
+        )
+        if candidate_strategy_returns
+        else None
+    )
+    pbo_value = (
+        pbo_result.pbo
+        if pbo_result is not None and pbo_result.status == "ESTIMATED"
+        else None
+    )
+    pbo_pass = (
+        pbo_result is not None
+        and pbo_result.status == "ESTIMATED"
+        and (pbo_value or 1.0) < 0.5
+    )
+
+    research_reasons: list[str] = []
+    if not multiple_testing_pass:
+        research_reasons.append("MULTIPLE_TESTING_GATE_FAILED")
+    if not dsr_pass:
+        research_reasons.append("DSR_GATE_FAILED")
+    if not pbo_pass:
+        research_reasons.append(
+            "PBO_GATE_FAILED" if pbo_result is not None else "PBO_NOT_RUN"
+        )
+    research_status = "PASS" if not research_reasons else "BLOCKED"
+
+    placebo_pass = adjusted_placebo is not None and adjusted_placebo <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+    stress_pass = all(result.net_mean_bps > 0.0 for result in stress_results.values()) if stress_results else False
+    group_sample_pass = all(
+        metric.n >= config.min_group_rows
+        for metric in list(stability_by_symbol.values())
+        + list(stability_by_horizon.values())
+    )
+    fold_consistency_pass = (
+        fold_baseline_pass_fraction >= config.min_fold_pass_fraction
+        and fold_economic_positive_fraction >= config.min_fold_pass_fraction
+    )
+    promotion_eligible = bool(
+        minimum_fold_count
+        and len(oos_labels) >= config.test_rows
+        and baseline_beat
+        and economic_positive
+        and explicit_friction_pass
+        and placebo_pass
+        and stress_pass
+        and research_status == "PASS"
+        and group_sample_pass
+        and fold_consistency_pass
+        and temporal.passed
+    )
+    return ValidationReport(
+        status="OOS_EVALUATED",
+        dataset_rows=len(dataset),
+        folds=tuple(fold_evaluations),
+        fold_baseline_pass_fraction=fold_baseline_pass_fraction,
+        fold_economic_positive_fraction=fold_economic_positive_fraction,
+        temporal_stability=temporal,
+        oos_probabilities=tuple(oos_probabilities),
+        oos_labels=tuple(oos_labels),
+        oos_returns_bps=tuple(oos_returns),
+        placebo_p_value=placebo_p,
+        placebo_iterations=placebo_n,
+        stability_by_symbol=stability_by_symbol,
+        stability_by_horizon_ms=stability_by_horizon,
+        stress_results=stress_results,
+        multiple_testing_p_value=adjusted_placebo,
+        dsr_p_value=dsr.adjusted_p_value,
+        pbo=pbo_value,
+        research_robustness_status=research_status,
+        research_robustness_reasons=tuple(research_reasons),
+        promotion_eligible=promotion_eligible,
+    )
+
+
+def validation_run_id(
+    *,
+    replay_fingerprint: str,
+    model_id: str,
+    model_version: str,
+    target_spec: ForecastTargetSpec,
+    config: WalkForwardConfig,
+    policy: EconomicPolicySpec,
+) -> str:
+    identity = {
+        "replay_fingerprint": replay_fingerprint,
+        "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash,
+        "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+        "model_id": model_id,
+        "model_version": model_version,
+        "target_horizon_ms": target_spec.horizon_ms,
+        "target_kind": target_spec.kind,
+        "walk_forward": asdict(config),
+        "economic_policy": asdict(policy),
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def persist_validation_report(
+    store,
+    report: ValidationReport,
+    dataset: Sequence[ForecastDatasetRow],
+    *,
+    replay_fingerprint: str,
+    target_spec: ForecastTargetSpec,
+    config: WalkForwardConfig,
+    policy: EconomicPolicySpec,
+    model_id: str,
+    model_version: str,
+) -> dict[str, int | str | bool]:
+    """Persist immutable research evidence generated by one OOS validation run."""
+    from .storage import CryptoStore
+
+    if not isinstance(store, CryptoStore):
+        raise TypeError("store must be a CryptoStore")
+    target_spec.validate()
+    config.validate()
+    policy.validate()
+
+    run_id = validation_run_id(
+        replay_fingerprint=replay_fingerprint,
+        model_id=model_id,
+        model_version=model_version,
+        target_spec=target_spec,
+        config=config,
+        policy=policy,
+    )
+    if report.oos_labels:
+        aggregate = probabilistic_metrics(report.oos_labels, report.oos_probabilities)
+        aggregate_economic = economic_metrics(
+            [dataset[i] for fold in report.folds for i in fold.fold.test_indices],
+            report.oos_probabilities,
+            policy,
+        )
+    else:
+        aggregate = None
+        aggregate_economic = None
+
+    run_row = {
+        "run_id": run_id,
+        "replay_fingerprint": replay_fingerprint,
+        "model_id": model_id,
+        "model_version": model_version,
+        "target_kind": target_spec.kind,
+        "horizon_ms": target_spec.horizon_ms,
+        "status": report.status,
+        "placebo_p_value": report.placebo_p_value,
+        "placebo_iterations": report.placebo_iterations,
+        "promotion_eligible": report.promotion_eligible,
+        "config": {
+            "walk_forward": asdict(config),
+            "economic_policy": asdict(policy),
+            "feature_names": list(
+                dataset[0].snapshot.feature_values.keys()
+            ) if dataset else [],
+        },
+        "aggregate_metrics": {
+            "probabilistic": asdict(aggregate) if aggregate else {},
+            "economic": asdict(aggregate_economic) if aggregate_economic else {},
+            "fold_baseline_pass_fraction": report.fold_baseline_pass_fraction,
+            "fold_economic_positive_fraction": report.fold_economic_positive_fraction,
+            "temporal_stability": asdict(report.temporal_stability),
+            "research_robustness": {
+                "multiple_testing_p_value": report.multiple_testing_p_value,
+                "dsr_p_value": report.dsr_p_value,
+                "pbo": report.pbo,
+                "status": report.research_robustness_status,
+                "reasons": list(report.research_robustness_reasons),
+            },
+        },
+        "stability": {
+            "by_symbol": {
+                key: asdict(value)
+                for key, value in report.stability_by_symbol.items()
+            },
+            "by_horizon_ms": {
+                str(key): asdict(value)
+                for key, value in report.stability_by_horizon_ms.items()
+            },
+        },
+        "stress": {
+            key: asdict(value)
+            for key, value in report.stress_results.items()
+        },
+    }
+    store.save_validation_run(run_row)
+
+    fold_rows = []
+    oos_rows = []
+    lineage_rows = []
+    probability_offset = 0
+    for fold_eval in report.folds:
+        fold = fold_eval.fold
+        fold_rows.append(
+            {
+                "run_id": run_id,
+                "fold_id": fold.fold_id,
+                "train_start": fold.train_start.isoformat(),
+                "train_end": fold.train_end.isoformat(),
+                "test_start": fold.test_start.isoformat(),
+                "test_end": fold.test_end.isoformat(),
+                "train_rows": len(fold.train_indices),
+                "test_rows": len(fold.test_indices),
+                "model_spec_hash": fold_eval.model.spec_hash,
+                "probabilistic": asdict(fold_eval.probabilistic),
+                "baseline_fifty": asdict(fold_eval.baseline_fifty),
+                "baseline_prevalence": asdict(fold_eval.baseline_prevalence),
+                "economic": asdict(fold_eval.economic),
+            }
+        )
+        for local_index, dataset_index in enumerate(fold.test_indices):
+            row = dataset[dataset_index]
+            probability = report.oos_probabilities[probability_offset + local_index]
+            if probability >= policy.long_threshold:
+                action = 1
+            elif probability <= policy.short_threshold:
+                action = -1
+            else:
+                action = 0
+            signed = float(row.label.realized_signed_return_bps) * action
+            cost = (
+                policy.round_trip_cost_bps
+                + policy.round_trip_slippage_bps
+                if action
+                else 0.0
+            )
+            oos_rows.append(
+                {
+                    "run_id": run_id,
+                    "fold_id": fold.fold_id,
+                    "row_index": local_index,
+                    "leader_event_id": row.snapshot.leader_event_id,
+                    "target_symbol": row.snapshot.target_symbol,
+                    "horizon_ms": row.label.horizon_ms,
+                    "decision_event_time": row.snapshot.decision_event_time.isoformat(),
+                    "decision_received_time": row.snapshot.decision_received_time.isoformat(),
+                    "label_event_time": row.label.label_event_time.isoformat(),
+                    "label_received_time": row.label.label_received_time.isoformat(),
+                    "probability": probability,
+                    "realized_target": row.label.realized_target,
+                    "realized_signed_return_bps": row.label.realized_signed_return_bps,
+                    "net_return_bps": signed - cost,
+                }
+            )
+            lineage_rows.append(
+                {
+                    "run_id": run_id,
+                    "fold_id": fold.fold_id,
+                    "row_index": local_index,
+                    "feature_set_hash": row.snapshot.feature_set_hash,
+                    "source_event_ids": list(row.snapshot.source_event_ids),
+                }
+            )
+        probability_offset += len(fold.test_indices)
+
+    return {
+        "run_id": run_id,
+        "fold_rows": store.save_validation_folds(fold_rows),
+        "oos_rows": store.save_validation_oos(oos_rows),
+        "lineage_rows": store.save_validation_lineage(lineage_rows),
+        "promotion_eligible": report.promotion_eligible,
+    }
