@@ -17,6 +17,8 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
+from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .research_gates import combinatorial_pbo, deflated_sharpe_p_value, holm_bonferroni
 from .forecast import (
     DetectionFeatureSnapshot,
     ForecastTargetSpec,
@@ -219,6 +221,11 @@ class ValidationReport:
     stability_by_symbol: Mapping[str, ProbabilisticMetrics]
     stability_by_horizon_ms: Mapping[int, ProbabilisticMetrics]
     stress_results: Mapping[str, EconomicMetrics]
+    multiple_testing_p_value: float | None
+    dsr_p_value: float | None
+    pbo: float | None
+    research_robustness_status: str
+    research_robustness_reasons: tuple[str, ...]
     promotion_eligible: bool
 
 
@@ -767,6 +774,7 @@ def run_quality_gated_walk_forward(
     placebo_block_size: int = 20,
     placebo_iterations: int = 500,
     stress_scenarios: Sequence[StressScenario] = (),
+    candidate_strategy_returns: Sequence[Sequence[float]] = (),
 ) -> ValidationReport:
     """Run PIT/OOS evaluation only after a passed quality gate."""
     require_quality_gate(
@@ -836,6 +844,11 @@ def run_walk_forward_validation(
             stability_by_symbol={},
             stability_by_horizon_ms={},
             stress_results={},
+            multiple_testing_p_value=None,
+            dsr_p_value=None,
+            pbo=None,
+            research_robustness_status="INSUFFICIENT_OOS_DATA",
+            research_robustness_reasons=("NO_OOS_FOLDS",),
             promotion_eligible=False,
         )
 
@@ -887,6 +900,12 @@ def run_walk_forward_validation(
         seed=config.seed,
     )
 
+    if not stress_scenarios:
+        stress_scenarios = (
+            StressScenario("base"),
+            StressScenario("stress_1", cost_multiplier=2.0, slippage_multiplier=2.0),
+            StressScenario("stress_2", cost_multiplier=4.0, slippage_multiplier=4.0),
+        )
     stress_results = {}
     oos_rows = [dataset[i] for fold in folds for i in fold.test_indices]
     for scenario in stress_scenarios:
@@ -942,7 +961,73 @@ def run_walk_forward_validation(
     explicit_friction_pass = (
         policy.round_trip_cost_bps + policy.round_trip_slippage_bps
     ) > 0.0
-    placebo_pass = placebo_p <= 0.05
+    adjusted_placebo_values = holm_bonferroni(
+        [placebo_p] * PREREGISTERED_CRYPTO_PROTOCOL.declared_hypothesis_family_size
+    )
+    adjusted_placebo = adjusted_placebo_values[0] if adjusted_placebo_values else None
+    multiple_testing_pass = (
+        adjusted_placebo is not None
+        and adjusted_placebo <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+    )
+
+    strategy_net_series: list[float] = []
+    for row, probability in zip(oos_rows, oos_probabilities):
+        if probability >= policy.long_threshold:
+            action = 1
+        elif probability <= policy.short_threshold:
+            action = -1
+        else:
+            action = 0
+        if action == 0:
+            strategy_net_series.append(0.0)
+            continue
+        gross = float(row.label.realized_signed_return_bps) * action
+        strategy_net_series.append(
+            gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
+        )
+
+    dsr = deflated_sharpe_p_value(
+        strategy_net_series,
+        n_trials=PREREGISTERED_CRYPTO_PROTOCOL.declared_hypothesis_family_size,
+    )
+    dsr_pass = (
+        dsr.status == "ESTIMATED"
+        and (dsr.adjusted_p_value or 1.0)
+        <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+    )
+
+    pbo_result = (
+        combinatorial_pbo(
+            candidate_strategy_returns,
+            groups=PREREGISTERED_CRYPTO_PROTOCOL.cscv_groups,
+            test_groups=PREREGISTERED_CRYPTO_PROTOCOL.cscv_test_groups,
+        )
+        if candidate_strategy_returns
+        else None
+    )
+    pbo_value = (
+        pbo_result.pbo
+        if pbo_result is not None and pbo_result.status == "ESTIMATED"
+        else None
+    )
+    pbo_pass = (
+        pbo_result is not None
+        and pbo_result.status == "ESTIMATED"
+        and (pbo_value or 1.0) < 0.5
+    )
+
+    research_reasons: list[str] = []
+    if not multiple_testing_pass:
+        research_reasons.append("MULTIPLE_TESTING_GATE_FAILED")
+    if not dsr_pass:
+        research_reasons.append("DSR_GATE_FAILED")
+    if not pbo_pass:
+        research_reasons.append(
+            "PBO_GATE_FAILED" if pbo_result is not None else "PBO_NOT_RUN"
+        )
+    research_status = "PASS" if not research_reasons else "BLOCKED"
+
+    placebo_pass = adjusted_placebo is not None and adjusted_placebo <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
     stress_pass = all(result.net_mean_bps > 0.0 for result in stress_results.values()) if stress_results else False
     group_sample_pass = all(
         metric.n >= config.min_group_rows
@@ -961,6 +1046,7 @@ def run_walk_forward_validation(
         and explicit_friction_pass
         and placebo_pass
         and stress_pass
+        and research_status == "PASS"
         and group_sample_pass
         and fold_consistency_pass
         and temporal.passed
@@ -980,6 +1066,11 @@ def run_walk_forward_validation(
         stability_by_symbol=stability_by_symbol,
         stability_by_horizon_ms=stability_by_horizon,
         stress_results=stress_results,
+        multiple_testing_p_value=adjusted_placebo,
+        dsr_p_value=dsr.adjusted_p_value,
+        pbo=pbo_value,
+        research_robustness_status=research_status,
+        research_robustness_reasons=tuple(research_reasons),
         promotion_eligible=promotion_eligible,
     )
 
@@ -1071,6 +1162,13 @@ def persist_validation_report(
             "fold_baseline_pass_fraction": report.fold_baseline_pass_fraction,
             "fold_economic_positive_fraction": report.fold_economic_positive_fraction,
             "temporal_stability": asdict(report.temporal_stability),
+            "research_robustness": {
+                "multiple_testing_p_value": report.multiple_testing_p_value,
+                "dsr_p_value": report.dsr_p_value,
+                "pbo": report.pbo,
+                "status": report.research_robustness_status,
+                "reasons": list(report.research_robustness_reasons),
+            },
         },
         "stability": {
             "by_symbol": {
