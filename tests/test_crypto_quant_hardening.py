@@ -172,3 +172,20 @@ def test_pbo_rejects_partial_group_partition_instead_of_dropping_observations() 
         test_groups=3,
     )
     assert result.status == "INSUFFICIENT_DATA"
+
+def test_preregistered_protocol_streams_map_to_exact_binance_subscription() -> None:
+    from gorila_crypto.binance import BinanceStreamConfig, build_stream_names
+    from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+
+    config = BinanceStreamConfig(
+        symbols=PREREGISTERED_CRYPTO_PROTOCOL.symbols,
+        streams=PREREGISTERED_CRYPTO_PROTOCOL.streams,
+    )
+    assert build_stream_names(config) == (
+        "btcusdt@trade",
+        "btcusdt@bookTicker",
+        "ethusdt@trade",
+        "ethusdt@bookTicker",
+        "solusdt@trade",
+        "solusdt@bookTicker",
+    )
