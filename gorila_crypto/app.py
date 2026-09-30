@@ -298,7 +298,9 @@ def prospective_status() -> dict[str, Any]:
             "execution": False,
         }
     store = _new_store()
-    health_rows = store.health()
+    health_rows = store.health(
+        source_prefix=f"{settings.provider}.websocket.",
+    )
     stats = store.prospective_stats()
     return {
         "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
