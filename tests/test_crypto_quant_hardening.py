@@ -181,3 +181,59 @@ def test_kraken_protocol_matches_only_explicit_kraken_pairs() -> None:
         symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
         streams=("trade", "bookTicker"),
     )
+
+def test_fencing_replaces_active_study_without_leaving_a_running_lease(tmp_path) -> None:
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "fence.sqlite3"))
+    study = PREREGISTERED_CRYPTO_PROTOCOL
+    store.register_study(study)
+    session_id = store.start_capture_session(
+        study_id=study.study_id,
+        protocol_hash=study.protocol_hash,
+        provider="binance",
+        venue="binance_spot",
+        symbols=study.symbols,
+        streams=study.streams,
+        region="test",
+        instance_id="worker-old",
+        code_version="old",
+    )
+    run_id = store.start_runtime_run_scoped(kind="TEST", session_id=session_id)
+    assert store.active_capture_session(study.study_id) == session_id
+
+    revoked = store.fence_active_study_session(study_id=study.study_id)
+    assert revoked == 1
+    assert store.active_capture_session(study.study_id) is None
+
+    store_cur = store.connect()
+    try:
+        lease = store_cur.execute(
+            "SELECT status FROM crypto_runtime_leases WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        run = store_cur.execute(
+            "SELECT status FROM crypto_runtime_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        session = store_cur.execute(
+            "SELECT status FROM crypto_capture_sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        store_cur.close()
+    assert lease[0] == "ABORTED_REPLACED"
+    assert run[0] == "ABORTED_REPLACED"
+    assert session[0] == "ABORTED_REPLACED"
+
+    new_session = store.start_capture_session(
+        study_id=study.study_id,
+        protocol_hash=study.protocol_hash,
+        provider="binance",
+        venue="binance_spot",
+        symbols=study.symbols,
+        streams=study.streams,
+        region="test",
+        instance_id="worker-new",
+        code_version="new",
+    )
+    assert new_session != session_id
+    assert store.active_capture_session(study.study_id) == new_session
