@@ -981,13 +981,63 @@ def run_walk_forward_validation(
     explicit_friction_pass = (
         policy.round_trip_cost_bps + policy.round_trip_slippage_bps
     ) > 0.0
-    adjusted_placebo_values = holm_bonferroni(
-        [placebo_p] * PREREGISTERED_CRYPTO_PROTOCOL.declared_hypothesis_family_size
+    # Multiplicity is corrected over hypotheses that were actually evaluated,
+    # not by duplicating one aggregate p-value. Each symbol and horizon cell is
+    # a distinct predeclared research hypothesis; Holm controls FWER under
+    # arbitrary dependence.
+    hypothesis_p_values: list[float] = [placebo_p] if placebo_p is not None else []
+    oos_rows = [dataset[i] for fold in folds for i in fold.fold.test_indices]
+    by_symbol_labels: dict[str, list[int]] = {}
+    by_symbol_probs: dict[str, list[float]] = {}
+    by_horizon_labels: dict[int, list[int]] = {}
+    by_horizon_probs: dict[int, list[float]] = {}
+    for row, probability in zip(oos_rows, oos_probabilities):
+        by_symbol_labels.setdefault(row.snapshot.target_symbol, []).append(row.label.realized_target)
+        by_symbol_probs.setdefault(row.snapshot.target_symbol, []).append(probability)
+        by_horizon_labels.setdefault(row.label.horizon_ms, []).append(row.label.realized_target)
+        by_horizon_probs.setdefault(row.label.horizon_ms, []).append(probability)
+
+    hypothesis_sample_sizes: list[int] = []
+    for key in sorted(by_symbol_labels):
+        labels = by_symbol_labels[key]
+        probs = by_symbol_probs[key]
+        if len(labels) >= config.min_group_rows:
+            p_value, _ = placebo_logloss_edge(
+                labels,
+                probs,
+                block_size=placebo_block_size,
+                iterations=placebo_iterations,
+                seed=config.seed + sum(ord(ch) for ch in key),
+            )
+            hypothesis_p_values.append(p_value)
+            hypothesis_sample_sizes.append(len(labels))
+    for key in sorted(by_horizon_labels):
+        labels = by_horizon_labels[key]
+        probs = by_horizon_probs[key]
+        if len(labels) >= config.min_group_rows:
+            p_value, _ = placebo_logloss_edge(
+                labels,
+                probs,
+                block_size=placebo_block_size,
+                iterations=placebo_iterations,
+                seed=config.seed + int(key),
+            )
+            hypothesis_p_values.append(p_value)
+            hypothesis_sample_sizes.append(len(labels))
+
+    if len(hypothesis_p_values) < 2:
+        adjusted_placebo_values = ()
+    else:
+        adjusted_placebo_values = holm_bonferroni(hypothesis_p_values)
+    adjusted_placebo = (
+        min(adjusted_placebo_values)
+        if adjusted_placebo_values
+        else None
     )
-    adjusted_placebo = adjusted_placebo_values[0] if adjusted_placebo_values else None
     multiple_testing_pass = (
         adjusted_placebo is not None
         and adjusted_placebo <= PREREGISTERED_CRYPTO_PROTOCOL.multiple_testing_alpha
+        and len(hypothesis_sample_sizes) >= 1
     )
 
     strategy_net_series: list[float] = []
