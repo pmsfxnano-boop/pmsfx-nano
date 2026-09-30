@@ -33,6 +33,10 @@ services:
         fromDatabase:
           name: pmsfx-nano-db
           property: connectionString
+      - key: GORILA_DB_SCHEMA
+        value: "gorila_argentum"
+      - key: GORILA_REQUIRE_DURABLE_STORAGE
+        value: "1"
       - key: GORILA_MACRO_INTERVAL_SECONDS
         value: "900"
       - key: GORILA_SIGNAL_INTERVAL_SECONDS
