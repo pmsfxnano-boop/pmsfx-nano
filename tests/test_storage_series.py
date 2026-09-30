@@ -116,3 +116,62 @@ def test_model_registry_serializes_datetime_metadata(monkeypatch):
     metadata = json.loads(captured["params"]["metadata"])
     assert metadata["registered_at"] == registered_at.isoformat()
 
+def test_freshness_aware_secondary_selection():
+    from datetime import datetime, timezone
+
+    from gorila_argentum.market_freshness import (
+        assess_observation,
+        choose_fresher_observation,
+    )
+
+    now = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
+    primary = {
+        "symbol": "GGAL",
+        "value": 6000.0,
+        "event_time": "2026-09-30T14:40:00+00:00",
+        "received_time": "2026-09-30T15:00:01+00:00",
+        "source": "BYMADATA/leading-equity",
+    }
+    secondary = {
+        "symbol": "GGAL",
+        "value": 6012.0,
+        "event_time": "2026-09-30T14:59:30+00:00",
+        "received_time": "2026-09-30T15:00:01+00:00",
+        "source": "TwelveDataLive/GGAL",
+    }
+
+    selected, freshness, role = choose_fresher_observation(primary, secondary, now=now)
+
+    assert selected is secondary
+    assert role == "secondary"
+    assert freshness["status"] == "LIVE"
+    assert assess_observation(primary["event_time"], now=now)["status"] == "DELAYED"
+
+
+def test_live_primary_beats_delayed_secondary():
+    from datetime import datetime, timezone
+
+    from gorila_argentum.market_freshness import choose_fresher_observation
+
+    now = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
+    primary = {
+        "symbol": "GGAL",
+        "value": 6000.0,
+        "event_time": "2026-09-30T14:59:40+00:00",
+        "received_time": "2026-09-30T15:00:01+00:00",
+        "source": "BYMADATA/leading-equity",
+    }
+    secondary = {
+        "symbol": "GGAL",
+        "value": 6012.0,
+        "event_time": "2026-09-30T14:58:00+00:00",
+        "received_time": "2026-09-30T15:00:01+00:00",
+        "source": "TwelveDataLive/GGAL",
+    }
+
+    selected, freshness, role = choose_fresher_observation(primary, secondary, now=now)
+
+    assert selected is primary
+    assert role == "primary"
+    assert freshness["status"] == "LIVE"
+
