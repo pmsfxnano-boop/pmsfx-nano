@@ -27,8 +27,7 @@ import httpx
 import websocket
 
 
-# Binance's official market-data-only endpoints. They avoid user-data traffic
-# and are explicitly supported for public market data.
+# Binance's official market-data-only endpoints.
 SPOT_WS_BASE = "wss://data-stream.binance.vision:443/stream"
 SPOT_REST_BASE = "https://data-api.binance.vision"
 DEFAULT_DEPTH_SPEED = "100ms"
@@ -519,3 +518,52 @@ class BinanceSpotMarketAdapter:
         max_backoff_s: float = 60.0,
     ) -> Iterator[NormalizedMarketEvent]:
         """Reconnect with bounded exponential backoff.
+
+        The stream URL embeds the subscription, so no extra SUBSCRIBE control
+        message is necessary after connect. A controlled reconnect is also the
+        normal path before Binance's documented 24-hour connection boundary.
+        """
+        backoff = max(0.1, float(initial_backoff_s))
+        while stop_event is None or not stop_event.is_set():
+            ws = None
+            connected_at = datetime.now(timezone.utc)
+            try:
+                if on_connection:
+                    on_connection("CONNECTING", {"at": connected_at.isoformat()})
+                ws = self.connect()
+                backoff = max(0.1, float(initial_backoff_s))
+                if on_connection:
+                    on_connection("CONNECTED", {"at": datetime.now(timezone.utc).isoformat()})
+                for event in self.iter_events_once(ws=ws):
+                    yield event
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                if on_connection:
+                    on_connection(
+                        "ROTATE",
+                        {
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "connection_max_seconds": self.config.connection_max_seconds,
+                        },
+                    )
+            except Exception as exc:
+                if on_connection:
+                    on_connection(
+                        "ERROR",
+                        {
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                if stop_event is not None and stop_event.is_set():
+                    return
+                time.sleep(backoff)
+                backoff = min(max_backoff_s, backoff * 2.0)
+            finally:
+                if ws is not None:
+                    self.close(ws)
+                if on_connection:
+                    on_connection(
+                        "DISCONNECTED",
+                        {"at": datetime.now(timezone.utc).isoformat()},
+                    )
