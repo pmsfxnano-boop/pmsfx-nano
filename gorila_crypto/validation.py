@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping, Sequence
 
@@ -858,16 +858,24 @@ def run_walk_forward_validation(
     oos_probabilities: list[float] = []
     oos_labels: list[int] = []
     oos_returns: list[float] = []
+    candidate_family = tuple(float(x) for x in PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas)
+    candidate_oos_net: dict[float, list[float]] = {alpha: [] for alpha in candidate_family}
 
     for fold in folds:
-        model = fit_ridge_logistic(
-            dataset,
-            fold.train_indices,
-            feature_names,
-            config,
-            model_id=model_id,
-            version=f"{model_version}.fold{fold.fold_id}",
-        )
+        candidate_models = {
+            alpha: fit_ridge_logistic(
+                dataset,
+                fold.train_indices,
+                feature_names,
+                replace(config, ridge_alpha=alpha),
+                model_id=model_id,
+                version=f"{model_version}.alpha{alpha}.fold{fold.fold_id}",
+            )
+            for alpha in candidate_family
+        }
+        # Alpha=1.0 is the fixed preregistered primary model; the other
+        # candidates are evaluated only for the ex-ante model-family robustness gate.
+        model = candidate_models[1.0]
         test_rows = [dataset[i] for i in fold.test_indices]
         probabilities = [predict_probability(model, row.snapshot) for row in test_rows]
         labels = [row.label.realized_target for row in test_rows]
@@ -875,6 +883,23 @@ def run_walk_forward_validation(
         baseline_fifty = baseline_constant(labels, 0.5)
         baseline_prevalence = baseline_constant(labels, model.training_positive_rate)
         economic = economic_metrics(test_rows, probabilities, policy)
+
+        for alpha, candidate_model in candidate_models.items():
+            candidate_probabilities = [predict_probability(candidate_model, row.snapshot) for row in test_rows]
+            for row, probability in zip(test_rows, candidate_probabilities):
+                if probability >= policy.long_threshold:
+                    action = 1
+                elif probability <= policy.short_threshold:
+                    action = -1
+                else:
+                    action = 0
+                if action == 0:
+                    candidate_oos_net[alpha].append(0.0)
+                else:
+                    gross = float(row.label.realized_signed_return_bps) * action
+                    candidate_oos_net[alpha].append(
+                        gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
+                    )
 
         fold_evaluations.append(
             FoldEvaluation(
@@ -889,6 +914,9 @@ def run_walk_forward_validation(
         oos_probabilities.extend(probabilities)
         oos_labels.extend(labels)
         oos_returns.extend(row.label.realized_signed_return_bps for row in test_rows)
+
+    if not candidate_strategy_returns:
+        candidate_strategy_returns = tuple(candidate_oos_net[alpha] for alpha in candidate_family)
 
     stability_by_symbol, stability_by_horizon = stability_metrics(
         [dataset[i] for fold in folds for i in fold.test_indices],
