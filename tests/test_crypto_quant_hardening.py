@@ -150,3 +150,13 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
         ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
     )
     assert len(scoped.rows) == 1
+
+def test_release_gate_current_tree_uses_market_data_only_stream_url() -> None:
+    from gorila_crypto.binance import BinanceStreamConfig, build_ws_url
+
+    url = build_ws_url(BinanceStreamConfig(
+        symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+        streams=("trade", "bookTicker"),
+    ))
+    assert url.startswith("wss://data-stream.binance.vision:443/stream?")
+
