@@ -285,7 +285,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
 
     def append_scoped_event(self, *, study_id: str, capture_session_id: str, **kwargs: Any) -> dict[str, Any]:
-        metadata = dict(kwargs.pop("metadata") or {})
+        metadata = dict(kwargs.pop("metadata", None) or {})
         metadata.update(
             {
                 "crypto_study_id": study_id,
