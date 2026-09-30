@@ -339,7 +339,10 @@ class QuantCryptoStore(CryptoStore):
         if stale_after_seconds <= 0:
             raise ValueError("stale_after_seconds must be positive")
         self.init()
-        cutoff = datetime.fromtimestamp(time.time() - stale_after_seconds, tz=timezone.utc).isoformat()
+        cutoff = datetime.fromtimestamp(
+            time.time() - stale_after_seconds,
+            tz=timezone.utc,
+        ).isoformat()
         conn = self.connect()
         count = 0
         try:
@@ -353,7 +356,9 @@ class QuantCryptoStore(CryptoStore):
                             result=%s
                         WHERE r.status='RUNNING'
                           AND COALESCE(
-                              (SELECT l.heartbeat_at FROM crypto_runtime_leases l WHERE l.run_id=r.run_id),
+                              (SELECT l.heartbeat_at
+                               FROM crypto_runtime_leases l
+                               WHERE l.run_id=r.run_id),
                               r.created_at
                           ) < %s
                         """,
@@ -368,31 +373,6 @@ class QuantCryptoStore(CryptoStore):
                         """,
                         (cutoff,),
                     )
-            else:
-                cur = conn.execute(
-                    """
-                    UPDATE crypto_runtime_runs
-                    SET status='ABORTED_STALE',
-                        completed_at=?,
-                        result=?
-                    WHERE status='RUNNING'
-                      AND COALESCE(
-                          (SELECT l.heartbeat_at FROM crypto_runtime_leases l WHERE l.run_id=crypto_runtime_runs.run_id),
-                          created_at
-                      ) < ?
-                    """,
-                    (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
-                )
-                count = cur.rowcount
-                conn.execute(
-                    "UPDATE crypto_runtime_leases SET status='ABORTED_STALE' WHERE status='RUNNING' AND heartbeat_at < ?",
-                    (cutoff,),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-            if self._pg:
-                with conn.cursor() as cur:
                     cur.execute(
                         """
                         UPDATE crypto_capture_sessions s
@@ -411,6 +391,31 @@ class QuantCryptoStore(CryptoStore):
                         (_utc_now(), cutoff),
                     )
             else:
+                cur = conn.execute(
+                    """
+                    UPDATE crypto_runtime_runs
+                    SET status='ABORTED_STALE',
+                        completed_at=?,
+                        result=?
+                    WHERE status='RUNNING'
+                      AND COALESCE(
+                          (SELECT l.heartbeat_at
+                           FROM crypto_runtime_leases l
+                           WHERE l.run_id=crypto_runtime_runs.run_id),
+                          created_at
+                      ) < ?
+                    """,
+                    (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
+                )
+                count = cur.rowcount
+                conn.execute(
+                    """
+                    UPDATE crypto_runtime_leases
+                    SET status='ABORTED_STALE'
+                    WHERE status='RUNNING' AND heartbeat_at < ?
+                    """,
+                    (cutoff,),
+                )
                 conn.execute(
                     """
                     UPDATE crypto_capture_sessions
