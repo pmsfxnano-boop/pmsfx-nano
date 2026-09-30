@@ -391,6 +391,45 @@ class QuantCryptoStore(CryptoStore):
             conn.commit()
         finally:
             conn.close()
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE crypto_capture_sessions s
+                        SET status='ABORTED_STALE', ended_at=%s
+                        WHERE s.status='RUNNING'
+                          AND (
+                              s.started_at < %s
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM crypto_runtime_leases l
+                                  WHERE l.session_id=s.session_id
+                                    AND l.status='ABORTED_STALE'
+                              )
+                          )
+                        """,
+                        (_utc_now(), cutoff),
+                    )
+            else:
+                conn.execute(
+                    """
+                    UPDATE crypto_capture_sessions
+                    SET status='ABORTED_STALE', ended_at=?
+                    WHERE status='RUNNING'
+                      AND (
+                          started_at < ?
+                          OR session_id IN (
+                              SELECT session_id
+                              FROM crypto_runtime_leases
+                              WHERE status='ABORTED_STALE'
+                          )
+                      )
+                    """,
+                    (_utc_now(), cutoff),
+                )
+            conn.commit()
+        finally:
+            conn.close()
         return int(count)
 
     def active_capture_session(self, study_id: str) -> str | None:
