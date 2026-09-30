@@ -346,7 +346,7 @@ def build_market_adapter():
     return BinanceSpotMarketAdapter(
         BinanceStreamConfig(
             symbols=settings.symbols,
-            streams=("trade", "bookTicker", "depth"),
+            streams=tuple(settings.streams),
             depth_speed=settings.depth_speed,
         )
     )
