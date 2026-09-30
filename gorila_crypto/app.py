@@ -301,7 +301,9 @@ def prospective_status() -> dict[str, Any]:
     health_rows = store.health(
         source_prefix=f"{settings.provider}.websocket.",
     )
-    stats = store.prospective_stats()
+    stats = store.prospective_stats(
+        source_prefix=f"{settings.provider}.websocket.",
+    )
     return {
         "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
