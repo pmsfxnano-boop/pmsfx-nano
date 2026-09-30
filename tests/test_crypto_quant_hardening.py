@@ -1,3 +1,5 @@
+import pytest
+import json
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -248,3 +250,65 @@ def test_v2_protocol_hash_matches_existing_persisted_identity() -> None:
 
     assert PREREGISTERED_CRYPTO_PROTOCOL.version == "2"
     assert PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash == "b27691a138d530fb28329e1cb455fcadbb2a375733724553caa26ff4aab73449"
+
+def test_registration_reuses_persisted_hash_when_protocol_payload_matches(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+    from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "migration.sqlite3"))
+    store.init()
+    conn = store.connect()
+    try:
+        payload = json.dumps(
+            PREREGISTERED_CRYPTO_PROTOCOL.canonical_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_studies(study_id, protocol_hash, created_at, status, protocol_json)
+            VALUES (?, ?, ?, 'REGISTERED', ?)
+            """,
+            (
+                PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                "legacy-persisted-hash",
+                "2026-09-30T00:00:00+00:00",
+                payload,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store.register_study(PREREGISTERED_CRYPTO_PROTOCOL)
+    assert store.get_study_protocol_hash(PREREGISTERED_CRYPTO_PROTOCOL.study_id) == "legacy-persisted-hash"
+
+
+def test_registration_rejects_different_v2_protocol_payload(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+    from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "migration-reject.sqlite3"))
+    store.init()
+    conn = store.connect()
+    try:
+        payload = dict(PREREGISTERED_CRYPTO_PROTOCOL.canonical_dict())
+        payload["base_cost_bps"] = 9.0
+        conn.execute(
+            """
+            INSERT INTO crypto_studies(study_id, protocol_hash, created_at, status, protocol_json)
+            VALUES (?, ?, ?, 'REGISTERED', ?)
+            """,
+            (
+                PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                "legacy-persisted-hash",
+                "2026-09-30T00:00:00+00:00",
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError, match="protocol_hash_conflict"):
+        store.register_study(PREREGISTERED_CRYPTO_PROTOCOL)
