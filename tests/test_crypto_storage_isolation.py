@@ -182,13 +182,34 @@ def test_crypto_provider_scoping_excludes_other_venue_rows_and_gaps(tmp_path: Pa
         status="GAP_DETECTED",
     )
 
+    store.upsert_source_health(
+        source="binance.websocket.trade",
+        status="LIVE",
+        last_event_time="2026-09-29T15:00:00+00:00",
+        last_received_time="2026-09-29T15:00:00.050000+00:00",
+        event_age_seconds=0.0,
+        transport_age_seconds=0.05,
+        rows_last_batch=1,
+    )
+    store.upsert_source_health(
+        source="kraken.websocket.trade",
+        status="DELAYED",
+        last_event_time="2026-09-29T14:00:00+00:00",
+        last_received_time="2026-09-29T15:05:00+00:00",
+        event_age_seconds=3600.0,
+        transport_age_seconds=0.0,
+        rows_last_batch=1,
+    )
+
     stats = store.prospective_stats(source_prefix="binance.websocket.")
     gaps = store.read_data_gaps(source_prefix="binance.websocket.")
+    health = store.health(source_prefix="binance.websocket.")
 
     assert {row["symbol"] for row in stats["event_counts"]} == {"BTCUSDT"}
     assert stats["gap_count"] == 1
     assert len(gaps) == 1
     assert gaps[0]["source"] == "binance.websocket.depth"
+    assert [row["source"] for row in health] == ["binance.websocket.trade"]
 
 
 def test_crypto_storage_rejects_legacy_sqlite_path_reuse(
