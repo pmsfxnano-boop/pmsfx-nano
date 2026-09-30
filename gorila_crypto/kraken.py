@@ -368,6 +368,14 @@ class KrakenSpotMarketAdapter:
                 symbol = str(row.get("symbol") or "").upper()
                 if not symbol:
                     raise KrakenAdapterError("book event missing symbol")
+                # Never buffer an incremental book update before a fresh
+                # snapshot. Buffering is allowed only for snapshots that are
+                # waiting on instrument precision; otherwise an update could
+                # be admitted later against incomplete local state.
+                if message_type != "snapshot" and symbol not in self._book_snapshots_seen:
+                    raise KrakenAdapterError(
+                        f"{symbol}: book update arrived before a snapshot; refusing to buffer stale/incremental state"
+                    )
                 if symbol not in self._precisions:
                     self._pending_book_rows.setdefault(symbol, []).append(
                         (dict(row), message_type, received_time, receive_ns)
