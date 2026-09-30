@@ -24,6 +24,8 @@ from gorila_crypto.config import settings
 from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, quality_fingerprint
 from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
 from gorila_crypto.storage import CryptoStore
+from gorila_crypto.quant_store import QuantCryptoStore
+from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
 
 
@@ -70,9 +72,16 @@ def _heartbeat_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
         try:
-            stats = store.prospective_stats(
-                source_prefix=f"{settings.provider}.websocket.",
-            )
+            if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+                session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+                stats = store.scoped_stats(
+                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    capture_session_id=session_id,
+                )
+            else:
+                stats = store.prospective_stats(
+                    source_prefix=f"{settings.provider}.websocket.",
+                )
             print(
                 "GORILA_CAPTURE_HEARTBEAT "
                 + json.dumps(
@@ -336,12 +345,20 @@ def prospective_status() -> dict[str, Any]:
             "execution": False,
         }
     store = _new_store()
-    health_rows = store.health(
-        source_prefix=f"{settings.provider}.websocket.",
-    )
-    stats = store.prospective_stats(
-        source_prefix=f"{settings.provider}.websocket.",
-    )
+    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+        session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+        health_rows = store.health(source_prefix="binance.websocket.")
+        stats = store.scoped_stats(
+            study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+            capture_session_id=session_id,
+        )
+    else:
+        health_rows = store.health(
+            source_prefix=f"{settings.provider}.websocket.",
+        )
+        stats = store.prospective_stats(
+            source_prefix=f"{settings.provider}.websocket.",
+        )
     return {
         "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
@@ -357,6 +374,9 @@ def config_snapshot() -> dict[str, Any]:
     return {
         "environment": settings.environment,
         "provider": settings.provider,
+        "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
+        "protocol_version": PREREGISTERED_CRYPTO_PROTOCOL.version if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
+        "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
         "depth_speed": settings.depth_speed,
