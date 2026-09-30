@@ -237,3 +237,8 @@ def test_fencing_replaces_active_study_without_leaving_a_running_lease(tmp_path)
     )
     assert new_session != session_id
     assert store.active_capture_session(study.study_id) == new_session
+
+def test_final_quant_store_lock_is_declared() -> None:
+    import gorila_crypto.quant_store as qs
+
+    assert hasattr(qs, "_SCHEMA_LOCK")
