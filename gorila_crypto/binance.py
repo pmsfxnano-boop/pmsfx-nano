@@ -26,8 +26,9 @@ import httpx
 import websocket
 
 
-SPOT_WS_BASE = "wss://stream.binance.com:9443/stream"
-SPOT_REST_BASE = "https://api.binance.com"
+# Binance's official public market-data-only endpoints.
+SPOT_WS_BASE = "wss://data-stream.binance.vision:443/stream"
+SPOT_REST_BASE = "https://data-api.binance.vision"
 DEFAULT_DEPTH_SPEED = "100ms"
 DEFAULT_DEPTH_LIMIT = 5000
 
