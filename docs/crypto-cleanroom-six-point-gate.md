@@ -1,6 +1,6 @@
 # Crypto Cleanroom — six-point engineering gate
 
-Status date: 2026-09-29 UTC  
+Status date: 2026-09-30 UTC  
 Branch: `gorila-crypto-binance-parallel`  
 Base: `gorila-crypto-cleanroom`
 
@@ -75,9 +75,14 @@ The isolated branch now:
 - verifies the provider CRC32 checksum over the required top levels;
 - records expected/computed checksum and precision;
 - marks unverified/failing rows explicitly;
-- forces connection resynchronization on checksum failure.
+- forces connection resynchronization on checksum failure;
+- parses Kraken wire prices/quantities as Decimal rather than binary floats before
+  checksum reconstruction;
+- requires a fresh book snapshot on every WebSocket connection before accepting
+  incremental updates.
 
-Checksum logic and adapter integration have deterministic tests. The live Kraken service
+Checksum logic, decimal-preservation behavior, and adapter integration have deterministic
+tests. The live Kraken service
 continues to run from the original cleanroom branch and has not been changed by this
 work.
 
@@ -121,3 +126,15 @@ current environment. The two hard external blockers are:
 2. enough valid prospective rows to run the empirical OOS gate.
 
 Neither blocker is bypassed with synthetic or inferred evidence.
+
+
+## Latest hardening delta
+
+Commit chain after the CRC32-format correction adds two non-negotiable integrity controls:
+1. Kraken JSON numeric tokens are decoded with `Decimal`, preventing IEEE-754 conversion
+   from altering checksum-relevant price/quantity values.
+2. Every Kraken connection clears local state and refuses a book update until a fresh
+   snapshot has been observed, eliminating stale-book carryover across reconnects.
+
+These controls do not resolve the observed historical timestamp backlog; that remains a
+prospective forensic question requiring raw live frames.
