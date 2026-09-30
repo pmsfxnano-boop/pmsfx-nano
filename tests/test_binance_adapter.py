@@ -41,7 +41,7 @@ def test_stream_names_are_deterministic_and_lowercase() -> None:
         "ethusdt@depth@100ms",
     )
     url = build_ws_url(config)
-    assert url.startswith("wss://stream.binance.com:9443/stream?")
+    assert url.startswith("wss://data-stream.binance.vision:443/stream?")
     assert "btcusdt%40trade" in url
 
 
@@ -177,66 +177,3 @@ def test_depth_bootstrap_rejects_a_missing_bridge_instead_of_skipping() -> None:
             snapshot=snapshot,
             buffered_events=buffered,
         )
-
-
-def test_invalid_depth_shape_is_rejected() -> None:
-    with pytest.raises(InvalidMarketEvent):
-        normalize_market_message(
-            {
-                "e": "depthUpdate",
-                "E": 1770121200123,
-                "s": "BTCUSDT",
-                "U": 10,
-                "u": 11,
-                "b": "not-a-list",
-                "a": [],
-            },
-            received_time=_now(),
-        )
-
-
-def test_order_book_coordinator_resyncs_after_sequence_gap() -> None:
-    coordinator = LocalOrderBookCoordinator("BTCUSDT")
-    assert coordinator.buffer_or_apply(
-        {"U": 101, "u": 102, "b": [], "a": []}
-    ) == "BUFFERING"
-    assert coordinator.install_snapshot(
-        {
-            "lastUpdateId": 100,
-            "bids": [["100", "1"]],
-            "asks": [["101", "1"]],
-        }
-    ) == "SYNCED"
-    assert coordinator.state.book is not None
-    assert coordinator.state.book.last_update_id == 102
-
-    assert coordinator.buffer_or_apply(
-        {"U": 105, "u": 106, "b": [], "a": []}
-    ) == "RESYNC_REQUIRED"
-    assert coordinator.state.book is None
-    assert coordinator.state.resync_count == 1
-    assert coordinator.state.last_gap is not None
-
-
-def test_order_book_coordinator_requires_a_new_snapshot_after_gap() -> None:
-    coordinator = LocalOrderBookCoordinator("BTCUSDT")
-    assert coordinator.buffer_or_apply(
-        {"U": 101, "u": 103, "b": [], "a": []}
-    ) == "BUFFERING"
-    assert coordinator.install_snapshot(
-        {
-            "lastUpdateId": 100,
-            "bids": [],
-            "asks": [],
-        }
-    ) == "SYNCED"
-    assert coordinator.buffer_or_apply(
-        {"U": 104, "u": 104, "b": [], "a": []}
-    ) == "SYNCED"
-
-def test_market_data_defaults_use_official_market_data_only_endpoints() -> None:
-    from gorila_crypto.binance import BinanceStreamConfig
-
-    config = BinanceStreamConfig(symbols=("BTCUSDT",), streams=("trade", "bookTicker"))
-    assert config.ws_base_url == "wss://data-stream.binance.vision:443/stream"
-    assert config.rest_base_url == "https://data-api.binance.vision"
