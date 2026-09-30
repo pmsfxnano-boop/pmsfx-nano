@@ -150,3 +150,8 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
         ReplaySpec(study_id=study.study_id, capture_session_id=session_id),
     )
     assert len(scoped.rows) == 1
+
+def test_release_gate_uses_crypto_only_study_identity() -> None:
+    assert PREREGISTERED_CRYPTO_PROTOCOL.study_id == "crypto-binance-spot-prospective-v2"
+    assert PREREGISTERED_CRYPTO_PROTOCOL.provider == "binance"
+    assert PREREGISTERED_CRYPTO_PROTOCOL.venue == "binance_spot"
