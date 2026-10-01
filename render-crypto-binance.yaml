@@ -3,7 +3,7 @@
 # The durable ledger remains the existing Render Postgres instance.
 # No cross-region duplicate capture is declared here.
 databases:
-  - name: pmsfx-nano-db
+  - name: cryptonita-durable-ledger
     plan: free
     region: oregon
     ipAllowList:
