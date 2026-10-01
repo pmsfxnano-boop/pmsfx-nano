@@ -385,6 +385,8 @@ class ProspectiveCryptoIngestor:
         """Deterministic, PIT-neutral sampling of durable trade observations."""
         if event.event_type != "trade":
             return True
+        if not isinstance(self.store, QuantCryptoStore) or self.protocol.version != "3":
+            return True
         trade_id = event.sequence_start
         if trade_id is None:
             return False
@@ -657,8 +659,11 @@ class ProspectiveCryptoIngestor:
             quality=event.quality,
             metadata={
                 "sequence_kind": event.sequence_kind,
+                "receive_time_ns": event.receive_time_ns,
                 "runtime_run_id": self.run_id,
                 "ingest_epoch": self.sequence.epoch,
+                "event_age_seconds": assessment["event_age_seconds"],
+                "received_age_seconds": assessment["received_age_seconds"],
                 "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
