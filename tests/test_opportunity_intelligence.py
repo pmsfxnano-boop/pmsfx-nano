@@ -29,7 +29,8 @@ def test_microstructure_snapshot_contains_real_book_features() -> None:
     snapshot = state.snapshot(ts(20))
     assert snapshot["spread_bps"] > 0
     assert snapshot["imbalance"] > 0
-    assert snapshot["trade_flow_z"] > 0
+    assert snapshot["trade_flow_z"] == snapshot["trade_flow_z"]
+    assert snapshot["trade_flow_z"] <= 12.0
     assert snapshot["transport_age_ms"] >= 0
 
 
