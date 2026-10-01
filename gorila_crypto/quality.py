@@ -165,7 +165,12 @@ def evaluate_replay_quality(
         epoch = int((row.get("metadata") or {}).get("ingest_epoch") or 0)
         key = (symbol, source, epoch)
         previous = previous_receive.get(key)
-        if previous is not None and received_time < previous:
+        # bookTicker has RECEIVE_TIME_ONLY semantics: event_time is intentionally
+        # set to the local receive clock, so an older provider message arriving
+        # after a newer message is a transport-order observation, not a PIT leak.
+        # Reversal gating therefore applies only to provider-time observations.
+        provider_time_semantics = str(row.get("quality") or "OK") != "TRANSPORT_TIME_ONLY"
+        if provider_time_semantics and previous is not None and received_time < previous:
             receive_time_reversal_count += 1
         previous_receive[key] = max(previous or received_time, received_time)
         by_symbol.setdefault(symbol, []).append(row)
