@@ -127,3 +127,46 @@ The next microstructure expansion is to add normalized 100 ms/1 s depth-event
 features and an event-intensity state, then test whether the additional
 microstructure information adds incremental predictive information after PIT
 controls and costs.
+
+
+## Current implementation checkpoint — 2026-10-01
+
+The A12 branch now contains:
+
+- receive-time causal one-second shock detection;
+- L1 microstructure state: spread, imbalance, microprice displacement;
+- signed aggressor flow with pre-event normalization;
+- trade intensity and exponentially decaying trade excitation;
+- quote excitation;
+- queue-pressure from top-of-book size changes;
+- depth-update activity without pretending diff-depth is a full book;
+- realized short-horizon volatility;
+- explicit actionable market-data freshness separate from depth-event freshness;
+- non-overlapping opportunities per directed pair;
+- late reactions after 5s treated as censored, never successful labels;
+- six discrete reaction-time horizons: 100/250/500/1000/2000/5000 ms;
+- global and pair-specific learners with adaptive calibration-based blending;
+- online Brier/log-loss monitoring;
+- durable serialization of learner state, microstructure state, recent trades, and pending opportunities;
+- idempotent versioned training-example persistence;
+- isolated worker/service boundary from the canonical capture runtime.
+
+### Production boundary
+
+The canonical capture cohort remains untouched and deployed at commit d6b1e7d2b32e88f0f5ea788e7743d1c7bd9fe2e0.
+
+The adaptive learner branch is intentionally not production-deployed yet. The available Render API can create a service and set literal environment variables, but it does not expose the database-reference binding required by the existing fromDatabase connectionString Blueprint mechanism. Therefore no database credential is being fabricated and the active capture cohort is not being restarted merely to attach the learner.
+
+The isolated deployment contract is nevertheless prepared in render-crypto-intelligence.yaml.
+
+### Scientific boundary
+
+A12 remains shadow/research infrastructure. It may learn from the prospective ledger, but it does not:
+
+- promote a model;
+- issue an execution command;
+- alter the immutable event ledger;
+- rewrite historical features;
+- bypass the 7-day Quality Gate or PIT/OOS validation.
+
+The next operational action is to bind the isolated learner service to the existing Postgres instance, then let it accumulate prospective training examples continuously without restarting the capture service.
