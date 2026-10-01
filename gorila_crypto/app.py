@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from gorila_core.market_freshness import (
     DELAYED_MAX_AGE_SECONDS,
@@ -402,6 +403,24 @@ app = FastAPI(
 )
 
 
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("GORILA_CRYPTO_CORS_ORIGINS", "*").strip()
+    if not raw or raw == "*":
+        return ["*"]
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "HEAD", "OPTIONS"],
+    allow_headers=["*"],
+    max_age=600,
+)
+
+
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
     stats = _safe_store_stats()
@@ -427,6 +446,267 @@ def root() -> dict[str, Any]:
         "ledger_stats": stats,
     }
 
+
+
+@app.get("/api/crypto/market/stream")
+def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
+    """Low-latency read contract for the web terminal.
+
+    The endpoint is deliberately incremental: after the initial bootstrap, callers
+    pass the last ledger sequence and receive only newer trade/bookTicker rows.
+    No quality/research state is mutated here and the query is bounded.
+    """
+    if not settings.ingest_enabled:
+        raise HTTPException(status_code=503, detail="capture_not_enabled")
+    store = _new_store()
+    try:
+        store.init()
+        conn = store.connect()
+        try:
+            safe_limit = max(32, min(int(limit), 600))
+            symbols = tuple(settings.symbols)
+            if not symbols:
+                return {
+                    "status": "READY",
+                    "server_time": datetime.now(timezone.utc).isoformat(),
+                    "next_cursor": int(cursor),
+                    "symbols": [],
+                    "events": [],
+                    "forecast": {"automatic_promotion": False, "execution": False},
+                }
+
+            if store.backend == "postgres":
+                placeholders = ",".join(["%s"] * len(symbols))
+                if int(cursor) <= 0:
+                    per_symbol = max(24, min(160, safe_limit // max(len(symbols), 1)))
+                    sql_events = f"""
+                        SELECT ledger_seq, symbol, event_type, event_time,
+                               received_time, payload_json
+                        FROM (
+                            SELECT
+                                ledger_seq, symbol, event_type, event_time,
+                                received_time, payload_json,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY symbol ORDER BY ledger_seq DESC
+                                ) AS rn
+                            FROM crypto_events
+                            WHERE symbol IN ({placeholders})
+                              AND event_type = 'trade'
+                        ) ranked
+                        WHERE rn <= %s
+                        ORDER BY ledger_seq ASC
+                    """
+                    event_params: tuple[Any, ...] = (*symbols, per_symbol)
+                else:
+                    sql_events = f"""
+                        SELECT ledger_seq, symbol, event_type, event_time,
+                               received_time, payload_json
+                        FROM crypto_events
+                        WHERE ledger_seq > %s
+                          AND symbol IN ({placeholders})
+                          AND event_type IN ('trade','bookTicker')
+                        ORDER BY ledger_seq ASC
+                        LIMIT %s
+                    """
+                    event_params = (int(cursor), *symbols, safe_limit)
+
+                latest_books_sql = f"""
+                    SELECT ledger_seq, symbol, event_time, received_time, payload_json
+                    FROM (
+                        SELECT
+                            ledger_seq, symbol, event_time, received_time, payload_json,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY symbol ORDER BY ledger_seq DESC
+                            ) AS rn
+                        FROM crypto_events
+                        WHERE symbol IN ({placeholders})
+                          AND event_type = 'bookTicker'
+                    ) ranked
+                    WHERE rn = 1
+                    ORDER BY symbol
+                """
+                with conn.cursor() as cur:
+                    cur.execute(sql_events, event_params)
+                    event_rows = cur.fetchall()
+                    cur.execute(latest_books_sql, symbols)
+                    latest_book_rows = cur.fetchall()
+            else:
+                placeholders = ",".join(["?"] * len(symbols))
+                if int(cursor) <= 0:
+                    per_symbol = max(24, min(160, safe_limit // max(len(symbols), 1)))
+                    sql_events = f"""
+                        SELECT ledger_seq, symbol, event_type, event_time,
+                               received_time, payload_json
+                        FROM (
+                            SELECT
+                                ledger_seq, symbol, event_type, event_time,
+                                received_time, payload_json,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY symbol ORDER BY ledger_seq DESC
+                                ) AS rn
+                            FROM crypto_events
+                            WHERE symbol IN ({placeholders})
+                              AND event_type = 'trade'
+                        ) ranked
+                        WHERE rn <= ?
+                        ORDER BY ledger_seq ASC
+                    """
+                    event_params = (*symbols, per_symbol)
+                else:
+                    sql_events = f"""
+                        SELECT ledger_seq, symbol, event_type, event_time,
+                               received_time, payload_json
+                        FROM crypto_events
+                        WHERE ledger_seq > ?
+                          AND symbol IN ({placeholders})
+                          AND event_type IN ('trade','bookTicker')
+                        ORDER BY ledger_seq ASC
+                        LIMIT ?
+                    """
+                    event_params = (int(cursor), *symbols, safe_limit)
+                latest_books_sql = f"""
+                    SELECT ledger_seq, symbol, event_time, received_time, payload_json
+                    FROM (
+                        SELECT
+                            ledger_seq, symbol, event_time, received_time, payload_json,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY symbol ORDER BY ledger_seq DESC
+                            ) AS rn
+                        FROM crypto_events
+                        WHERE symbol IN ({placeholders})
+                          AND event_type = 'bookTicker'
+                    ) ranked
+                    WHERE rn = 1
+                    ORDER BY symbol
+                """
+                with conn:
+                    event_rows = conn.execute(sql_events, event_params).fetchall()
+                    latest_book_rows = conn.execute(latest_books_sql, symbols).fetchall()
+
+            def _row_value(row: Any, idx: int, key: str) -> Any:
+                if isinstance(row, dict):
+                    return row.get(key)
+                try:
+                    return row[idx]
+                except (IndexError, KeyError, TypeError):
+                    return None
+
+            def _event_view(row: Any) -> dict[str, Any]:
+                payload = json.loads(_row_value(row, 5, "payload_json") or "{}")
+                event_type = str(_row_value(row, 2, "event_type"))
+                symbol = str(_row_value(row, 1, "symbol"))
+                price = None
+                quantity = None
+                side = None
+                if event_type == "trade":
+                    price = float(payload["p"])
+                    quantity = float(payload["q"])
+                    side = "SELL" if bool(payload.get("m")) else "BUY"
+                elif event_type == "bookTicker":
+                    bid = float(payload["b"])
+                    ask = float(payload["a"])
+                    price = (bid + ask) / 2.0
+                return {
+                    "ledger_seq": int(_row_value(row, 0, "ledger_seq")),
+                    "symbol": symbol,
+                    "event_type": event_type,
+                    "event_time": str(_row_value(row, 3, "event_time")),
+                    "received_time": str(_row_value(row, 4, "received_time")),
+                    "price": price,
+                    "quantity": quantity,
+                    "side": side,
+                }
+
+            events = [_event_view(row) for row in event_rows]
+            latest_book: dict[str, dict[str, Any]] = {}
+            for row in latest_book_rows:
+                payload = json.loads(_row_value(row, 4, "payload_json") or "{}")
+                latest_book[str(_row_value(row, 1, "symbol"))] = {
+                    "ledger_seq": int(_row_value(row, 0, "ledger_seq")),
+                    "event_time": str(_row_value(row, 2, "event_time")),
+                    "received_time": str(_row_value(row, 3, "received_time")),
+                    "bid": float(payload["b"]),
+                    "ask": float(payload["a"]),
+                    "bid_qty": float(payload.get("B", 0.0)),
+                    "ask_qty": float(payload.get("A", 0.0)),
+                }
+
+            health_rows = _runtime.symbol_health() if _runtime is not None else []
+            health_by_symbol = {str(row.get("symbol")): row for row in health_rows}
+            latest_price: dict[str, float] = {}
+            first_price: dict[str, float] = {}
+            for event in events:
+                if event["event_type"] == "trade" and event["price"] is not None:
+                    first_price.setdefault(event["symbol"], float(event["price"]))
+                    latest_price[event["symbol"]] = float(event["price"])
+
+            now = datetime.now(timezone.utc)
+            summary = []
+            for symbol in symbols:
+                book = latest_book.get(symbol)
+                price = latest_price.get(symbol)
+                if price is None and book:
+                    price = (book["bid"] + book["ask"]) / 2.0
+                window_change = None
+                if symbol in first_price and price is not None and first_price[symbol]:
+                    window_change = (price / first_price[symbol] - 1.0) * 100.0
+                spread_bps = None
+                if book and book["bid"] > 0:
+                    spread_bps = (book["ask"] / book["bid"] - 1.0) * 10000.0
+                freshest = []
+                if book:
+                    freshest.append(book["received_time"])
+                trade_times = [
+                    e["received_time"] for e in events
+                    if e["symbol"] == symbol and e["price"] is not None
+                ]
+                if trade_times:
+                    freshest.append(trade_times[-1])
+                freshness_ms = None
+                if freshest:
+                    try:
+                        freshness_ms = max(
+                            0.0,
+                            (now - datetime.fromisoformat(max(freshest).replace("Z", "+00:00"))).total_seconds() * 1000.0,
+                        )
+                    except ValueError:
+                        freshness_ms = None
+                status = health_by_symbol.get(symbol, {}).get("status", "UNKNOWN")
+                summary.append({
+                    "symbol": symbol,
+                    "status": status,
+                    "price": price,
+                    "window_change_pct": window_change,
+                    "bid": book["bid"] if book else None,
+                    "ask": book["ask"] if book else None,
+                    "bid_qty": book["bid_qty"] if book else None,
+                    "ask_qty": book["ask_qty"] if book else None,
+                    "spread_bps": spread_bps,
+                    "freshness_ms": freshness_ms,
+                    "last_trade_time": trade_times[-1] if trade_times else None,
+                    "last_book_time": book["received_time"] if book else None,
+                })
+
+            next_cursor = max(
+                [int(e["ledger_seq"]) for e in events]
+                + [int(b["ledger_seq"]) for b in latest_book.values()]
+                + [int(cursor)]
+            )
+            return {
+                "status": "LIVE" if summary and all(s["status"] == "LIVE" for s in summary) else "DEGRADED",
+                "server_time": now.isoformat(),
+                "next_cursor": next_cursor,
+                "symbols": summary,
+                "events": events,
+                "forecast": {"automatic_promotion": False, "execution": False},
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"market_stream_unavailable:{type(exc).__name__}",
+        ) from exc
 
 @app.head("/", include_in_schema=False)
 def root_head() -> None:
