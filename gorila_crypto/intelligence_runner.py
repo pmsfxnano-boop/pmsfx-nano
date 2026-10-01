@@ -1,14 +1,13 @@
 """Continuous PIT learner for the adaptive Opportunity Clock.
 
-This is deliberately separate from capture. Deploying this worker does not
-restart the canonical capture cohort and does not change promotion gates.
+This worker is deliberately separate from capture. Its state and training
+examples advance atomically, and warm replay is used only for cold starts.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -48,7 +47,23 @@ def _active_session(conn) -> str | None:
     return str(row[0]) if row else None
 
 
-def _fetch_events(conn, session_id: str, after_seq: int, limit: int) -> list[tuple[Any, ...]]:
+def _latest_ledger_seq(conn, session_id: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(MAX(ledger_seq), 0)
+            FROM crypto_events
+            WHERE metadata::jsonb->>'capture_session_id' = %s
+            """,
+            (session_id,),
+        )
+        row = cur.fetchone()
+    return int(row[0] or 0)
+
+
+def _fetch_events(
+    conn, session_id: str, after_seq: int, limit: int
+) -> list[tuple[Any, ...]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -64,7 +79,9 @@ def _fetch_events(conn, session_id: str, after_seq: int, limit: int) -> list[tup
         return list(cur.fetchall())
 
 
-def _fetch_warm_events(conn, session_id: str, before_seq: int, limit: int) -> list[tuple[Any, ...]]:
+def _fetch_warm_events(
+    conn, session_id: str, before_seq: int, limit: int
+) -> list[tuple[Any, ...]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -86,31 +103,38 @@ def _fetch_warm_events(conn, session_id: str, before_seq: int, limit: int) -> li
 
 def process_event_stream(
     engine: AdaptiveOpportunityClock,
-    store: IntelligenceStore,
     events: list[tuple[Any, ...]],
-    session_id: str,
     *,
     learn: bool,
     fingerprint: str,
-) -> int:
+) -> tuple[int, list[dict[str, Any]]]:
     last_seq = 0
-    for ledger_seq, event_id, symbol, event_type, event_time, received_time, payload_json in events:
-        received = _dt(str(received_time))
-        outcomes = engine.feed_event(
+    outcomes: list[dict[str, Any]] = []
+
+    for (
+        ledger_seq,
+        event_id,
+        symbol,
+        event_type,
+        event_time,
+        received_time,
+        payload_json,
+    ) in events:
+        result = engine.feed_event(
             symbol=str(symbol),
             event_type=str(event_type),
             payload=_payload(payload_json),
             event_time=_dt(str(event_time)),
-            received_time=received,
+            received_time=_dt(str(received_time)),
             event_id=str(event_id),
             replay_fingerprint=fingerprint,
             learn=learn,
         )
-        for outcome in outcomes:
-            if learn:
-                store.save_training_event(capture_session_id=session_id, row=outcome)
+        if learn:
+            outcomes.extend(result)
         last_seq = max(last_seq, int(ledger_seq))
-    return last_seq
+
+    return last_seq, outcomes
 
 
 def run_once(store: IntelligenceStore) -> dict[str, Any]:
@@ -121,37 +145,45 @@ def run_once(store: IntelligenceStore) -> dict[str, Any]:
             return {"status": "NO_RUNNING_CAPTURE_SESSION"}
 
         loaded = store.load_state(STATE_ID)
-        training_rows: list[dict[str, Any]] = []
+
         if (
             loaded
             and loaded[1].get("model_version") == MODEL_VERSION
             and loaded[1].get("capture_session_id") == session_id
         ):
+            # Serialized state already contains the complete microstructure
+            # state and pending opportunities. Do not replay it again.
             last_seq, payload = loaded
             engine = AdaptiveOpportunityClock.from_state(payload)
-            # The serialized state already contains the microstructure book and
-            # pending opportunities; replaying older rows would double-count.
         else:
+            # Cold start only: rebuild a bounded causal context without training.
             latest_seq = _latest_ledger_seq(conn, session_id)
-            warm = _fetch_warm_events(
+            warm_events = _fetch_warm_events(
                 conn, session_id, latest_seq + 1, WARM_REPLAY_ROWS
             )
             engine = AdaptiveOpportunityClock()
             last_seq, _ = process_event_stream(
-                engine, warm, learn=False, fingerprint=f"warm:{session_id}"
+                engine,
+                warm_events,
+                learn=False,
+                fingerprint=f"warm:{session_id}",
             )
 
         events = _fetch_events(conn, session_id, last_seq, BATCH_SIZE)
+        training_rows: list[dict[str, Any]] = []
         if events:
-            latest, outcomes = process_event_stream(
-                engine, events, learn=True, fingerprint=f"live:{session_id}"
+            latest, training_rows = process_event_stream(
+                engine,
+                events,
+                learn=True,
+                fingerprint=f"live:{session_id}",
             )
             last_seq = latest
-            training_rows.extend(outcomes)
 
         state = engine.state()
         state["capture_session_id"] = session_id
         state["last_ledger_seq"] = last_seq
+
         committed = store.commit_state_and_training_events(
             state_id=STATE_ID,
             model_version=MODEL_VERSION,
@@ -168,6 +200,7 @@ def run_once(store: IntelligenceStore) -> dict[str, Any]:
             "capture_session_id": session_id,
             "last_ledger_seq": last_seq,
             "batch_events": len(events),
+            "training_rows_committed": len(training_rows),
             "events_seen": engine.events_seen,
             "opportunities_started": engine.opportunities_started,
             "training_updates": engine.training_updates,
