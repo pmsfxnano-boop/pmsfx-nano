@@ -295,6 +295,50 @@ class QuantCryptoStore(CryptoStore):
             vacuum_conn.close()
         return {"deleted_rows": deleted_rows, "dropped_indexes": dropped_indexes, "reset": False}
 
+    def purge_legacy_unvalidated_events(self, *, keep_study_id: str) -> dict[str, int]:
+        """Remove pre-v3 raw capture rows only when no validated research exists."""
+        self.init()
+        if not self._pg:
+            return {"deleted_rows": 0}
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM crypto_validation_runs")
+                validation_runs = int(cur.fetchone()[0] or 0)
+                cur.execute(
+                    "SELECT COUNT(*) FROM crypto_research_runs WHERE status='COMPLETE'"
+                )
+                completed_research = int(cur.fetchone()[0] or 0)
+                if validation_runs or completed_research:
+                    raise RuntimeError("refusing_legacy_event_purge_after_validated_research")
+                cur.execute(
+                    """
+                    WITH doomed AS (
+                        SELECT e.ctid
+                        FROM crypto_events e
+                        WHERE COALESCE(e.metadata::jsonb->>'crypto_study_id','') <> %s
+                    )
+                    DELETE FROM crypto_events e
+                    USING doomed d
+                    WHERE e.ctid=d.ctid
+                    """,
+                    (keep_study_id,),
+                )
+                deleted = int(cur.rowcount or 0)
+            conn.commit()
+        finally:
+            conn.close()
+
+        vacuum = self.connect()
+        try:
+            vacuum.rollback()
+            vacuum.autocommit = True
+            with vacuum.cursor() as cur:
+                cur.execute('VACUUM (ANALYZE) "gorila_crypto"."crypto_events"')
+        finally:
+            vacuum.close()
+        return {"deleted_rows": deleted}
+
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
         protocol.validate()
         self.init()
