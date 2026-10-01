@@ -13,6 +13,7 @@ import {
   type MarketEvent,
   type SymbolMarket,
 } from "./api";
+import { createDirectBinanceFeed } from "./directBinance";
 
 type Tab = "terminal" | "opportunity" | "research" | "quality";
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
@@ -678,7 +679,23 @@ function App() {
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [resolution, setResolution] = useState("5m");
   const [error, setError] = useState<string | null>(null);
+  const [directSymbols, setDirectSymbols] = useState<SymbolMarket[]>([]);
+  const [directEvents, setDirectEvents] = useState<MarketEvent[]>([]);
+  const directFeedRef = useRef<(() => void) | null>(null);
   const inFlight = useRef(false);
+
+  // Independent visual hot plane: when the API/read-model is unavailable or stale,
+  // the terminal keeps receiving public Binance market data directly in the browser.
+  useEffect(() => {
+    directFeedRef.current = createDirectBinanceFeed((snapshot) => {
+      setDirectSymbols(snapshot.symbols);
+      setDirectEvents(snapshot.events);
+    });
+    return () => {
+      directFeedRef.current?.();
+      directFeedRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -788,12 +805,19 @@ function App() {
     };
   }, [selected, resolution]);
 
-  const selectedMarket = useMemo(() => symbols.find(s => s.symbol === selected) || symbols[0], [symbols, selected]);
-  const selectedTrades = useMemo(
-    () => events.filter(event => event.symbol === (selectedMarket?.symbol || selected) && event.event_type === "trade"),
-    [events, selectedMarket?.symbol, selected],
+  const directLive = directSymbols.some(item => item.status === "LIVE");
+  const displaySymbols = directLive ? directSymbols : symbols;
+  const displayEvents = directLive ? directEvents : events;
+  const displayMarketStatus = directLive ? "LIVE" : marketStatus;
+  const selectedMarket = useMemo(
+    () => displaySymbols.find(s => s.symbol === selected) || displaySymbols[0],
+    [displaySymbols, selected],
   );
-  const live = marketStatus === "LIVE" && selectedMarket?.status === "LIVE";
+  const selectedTrades = useMemo(
+    () => displayEvents.filter(event => event.symbol === (selectedMarket?.symbol || selected) && event.event_type === "trade"),
+    [displayEvents, selectedMarket?.symbol, selected],
+  );
+  const live = displayMarketStatus === "LIVE" && selectedMarket?.status === "LIVE";
 
   const updateSelected = (symbol: string) => {
     setSelected(symbol);
@@ -823,7 +847,7 @@ function App() {
 
         {tab === "terminal" && (
           <>
-            <SymbolStrip symbols={symbols} selected={selectedMarket?.symbol || selected} onSelect={updateSelected} />
+            <SymbolStrip symbols={displaySymbols} selected={selectedMarket?.symbol || selected} onSelect={updateSelected} />
             <TerminalHero item={selectedMarket} />
             <PrimaryChart
               history={history}
@@ -834,7 +858,7 @@ function App() {
             />
             <Microstructure item={selectedMarket} trades={selectedTrades} />
             <LiveTape trades={selectedTrades} />
-            <QuantTimeline health={health} evidence={evidence} market={marketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
+            <QuantTimeline health={health} evidence={evidence} market={displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
             <PriceChart history={history} resolution={resolution} onResolution={setResolution} />
           </>
         )}
