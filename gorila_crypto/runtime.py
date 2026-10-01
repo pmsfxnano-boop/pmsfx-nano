@@ -49,7 +49,7 @@ class IngestRuntimeConfig:
     gap_status: str = "GAP_DETECTED"
     health_status: str = "HEALTHY"
     error_status: str = "DEGRADED"
-    health_flush_interval_seconds: float = 1.0
+    health_flush_interval_seconds: float = 5.0
     event_batch_size: int = 250
     event_batch_flush_interval_seconds: float = 0.050
 
@@ -125,7 +125,8 @@ class ProspectiveCryptoIngestor:
         self._last_runtime_heartbeat = 0.0
         self._health_last_persist_monotonic: dict[str, float] = {}
         self._health_last_status: dict[str, str] = {}
-        self._health_pending_rows: dict[str, int] = {}
+        self._health_pending: dict[str, dict[str, Any]] = {}
+        self._health_lock = threading.Lock()
         self._symbol_lock = threading.Lock()
         self._symbol_first_received: dict[str, datetime] = {}
         self._symbol_last_received: dict[str, datetime] = {}
@@ -309,6 +310,7 @@ class ProspectiveCryptoIngestor:
         """Durable writer isolated from the market event loop."""
         backoff = 0.25
         while not self._persistence_stop.is_set() or not self._persistence_queue.empty():
+            self._flush_source_health()
             if not self._persistence_stop.is_set() and self.session_id is not None:
                 if self._drain_one_spool_batch():
                     backoff = 0.25
@@ -342,6 +344,7 @@ class ProspectiveCryptoIngestor:
             except queue.Empty:
                 break
             self._spool_failed_rows(rows)
+        self._flush_source_health(force=True)
 
     def _should_persist(self, event: NormalizedMarketEvent) -> bool:
         if event.event_type == "trade":
@@ -376,6 +379,100 @@ class ProspectiveCryptoIngestor:
         if self._persistence_thread is not None:
             self._persistence_thread.join(timeout=5.0)
             self._persistence_thread = None
+
+    def _queue_source_health(
+        self,
+        *,
+        source: str,
+        status: str,
+        last_event_time: str | None,
+        last_received_time: str | None,
+        event_age_seconds: float | None,
+        transport_age_seconds: float | None,
+        rows_increment: int = 0,
+        error: str | None = None,
+        now_monotonic: float | None = None,
+    ) -> None:
+        now_mono = time.monotonic() if now_monotonic is None else now_monotonic
+        with self._health_lock:
+            state = self._health_pending.get(source)
+            if state is None:
+                state = {
+                    "source": source,
+                    "rows_last_batch": 0,
+                    "ready": False,
+                }
+                self._health_pending[source] = state
+
+            state.update(
+                {
+                    "status": status,
+                    "last_event_time": last_event_time,
+                    "last_received_time": last_received_time,
+                    "event_age_seconds": event_age_seconds,
+                    "transport_age_seconds": transport_age_seconds,
+                    "error": error,
+                }
+            )
+            state["rows_last_batch"] = int(state["rows_last_batch"]) + max(
+                0, int(rows_increment)
+            )
+
+            last_persisted = self._health_last_persist_monotonic.get(source, 0.0)
+            previous_status = self._health_last_status.get(source)
+            if (
+                previous_status != status
+                or now_mono - last_persisted
+                >= self.config.health_flush_interval_seconds
+            ):
+                state["ready"] = True
+
+    def _flush_source_health(self, *, force: bool = False) -> None:
+        with self._health_lock:
+            snapshots: list[dict[str, Any]] = []
+            for source, state in list(self._health_pending.items()):
+                if not force and not state.get("ready"):
+                    continue
+                snapshot = dict(state)
+                snapshot.pop("ready", None)
+                snapshots.append(snapshot)
+                self._health_pending.pop(source, None)
+
+        if not snapshots:
+            return
+
+        try:
+            self.store.upsert_source_health_batch(snapshots)
+        except Exception as exc:
+            self._persistence_error = (
+                f"source_health:{type(exc).__name__}: {exc}"
+            )
+            MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+            with self._health_lock:
+                for snapshot in snapshots:
+                    source = str(snapshot["source"])
+                    current = self._health_pending.get(source)
+                    if current is None:
+                        current = {
+                            "source": source,
+                            "rows_last_batch": 0,
+                            "ready": True,
+                        }
+                        self._health_pending[source] = current
+                    current.update(snapshot)
+                    current["rows_last_batch"] = (
+                        int(current.get("rows_last_batch", 0))
+                        + int(snapshot.get("rows_last_batch", 0))
+                    )
+                    current["ready"] = True
+            return
+
+        persisted_at = time.monotonic()
+        with self._health_lock:
+            for snapshot in snapshots:
+                source = str(snapshot["source"])
+                self._health_last_persist_monotonic[source] = persisted_at
+                self._health_last_status[source] = str(snapshot["status"])
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
@@ -424,32 +521,24 @@ class ProspectiveCryptoIngestor:
 
         if status == "ERROR":
             self.last_error = str(metadata.get("error") or "unknown_error")
-            try:
-                self.store.upsert_source_health(
-                    source=self.source_family,
-                    status=self.config.error_status,
-                    last_event_time=(
-                        self.last_event.event_time.isoformat()
-                        if self.last_event is not None
-                        else None
-                    ),
-                    last_received_time=(
-                        self.last_event.received_time.isoformat()
-                        if self.last_event is not None
-                        else None
-                    ),
-                    event_age_seconds=None,
-                    transport_age_seconds=None,
-                    rows_last_batch=0,
-                    error=self.last_error,
-                )
-            except Exception as exc:
-                self._persistence_error = (
-                    f"source_health:{type(exc).__name__}: {exc}"
-                )
-                MARKET_CACHE.record_persistence_degradation(
-                    self._persistence_error
-                )
+            self._queue_source_health(
+                source=self.source_family,
+                status=self.config.error_status,
+                last_event_time=(
+                    self.last_event.event_time.isoformat()
+                    if self.last_event is not None
+                    else None
+                ),
+                last_received_time=(
+                    self.last_event.received_time.isoformat()
+                    if self.last_event is not None
+                    else None
+                ),
+                event_age_seconds=None,
+                transport_age_seconds=None,
+                rows_increment=0,
+                error=self.last_error,
+            )
 
     def _flush_pending_events(self) -> None:
         if not self._pending_event_rows:
@@ -540,41 +629,17 @@ class ProspectiveCryptoIngestor:
                     )
 
         source = event.source
-        self._health_pending_rows[source] = (
-            self._health_pending_rows.get(source, 0) + 1
+        self._queue_source_health(
+            source=source,
+            status=assessment["status"],
+            last_event_time=assessment["event_time"],
+            last_received_time=assessment["received_time"],
+            event_age_seconds=assessment["event_age_seconds"],
+            transport_age_seconds=assessment["transport_age_seconds"],
+            rows_increment=1,
+            error=None,
+            now_monotonic=now_monotonic,
         )
-        now_monotonic = time.monotonic()
-        last_persisted = self._health_last_persist_monotonic.get(source, 0.0)
-        previous_status = self._health_last_status.get(source)
-        should_persist_health = (
-            previous_status != assessment["status"]
-            or now_monotonic - last_persisted
-            >= self.config.health_flush_interval_seconds
-        )
-        if should_persist_health and (
-            self.session_id is not None or not isinstance(self.store, QuantCryptoStore)
-        ):
-            try:
-                self.store.upsert_source_health(
-                    source=source,
-                    status=assessment["status"],
-                    last_event_time=assessment["event_time"],
-                    last_received_time=assessment["received_time"],
-                    event_age_seconds=assessment["event_age_seconds"],
-                    transport_age_seconds=assessment["transport_age_seconds"],
-                    rows_last_batch=self._health_pending_rows[source],
-                    error=None,
-                )
-            except Exception as exc:
-                self._persistence_error = (
-                    f"source_health:{type(exc).__name__}: {exc}"
-                )
-                MARKET_CACHE.record_persistence_degradation(
-                    self._persistence_error
-                )
-            self._health_last_persist_monotonic[source] = now_monotonic
-            self._health_last_status[source] = assessment["status"]
-            self._health_pending_rows[source] = 0
 
         with self._symbol_lock:
             symbol = event.symbol.upper()
@@ -888,7 +953,8 @@ class ProspectiveCryptoIngestor:
         self.last_error = None
         self._health_last_persist_monotonic.clear()
         self._health_last_status.clear()
-        self._health_pending_rows.clear()
+        with self._health_lock:
+            self._health_pending.clear()
         self._pending_event_rows.clear()
         self._pending_event_started_monotonic = None
         self._last_bookticker_persist_monotonic.clear()
