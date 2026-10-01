@@ -844,33 +844,44 @@ export default function App() {
 
   const loadState = useCallback(async () => {
     try {
-      const [status, healthPayload, evidencePayload] = await Promise.all([
+      const [status, healthPayload] = await Promise.all([
         fetchProspectiveStatus(),
         fetchHealth(),
-        fetchEvidence(),
       ]);
       setResearchStatus(status);
       setHealth(healthPayload);
-      setEvidence(evidencePayload);
     } catch {
       // Market stream remains the primary live channel.
+    }
+  }, []);
+
+  const loadEvidence = useCallback(async () => {
+    try {
+      setEvidence(await fetchEvidence());
+    } catch {
+      // Evidence is intentionally off the hot path and may lag during storage recovery.
     }
   }, []);
 
   useEffect(() => {
     loadMarket(true);
     loadState();
+    loadEvidence();
     const timer = window.setInterval(() => {
       if (!document.hidden) loadMarket(false);
-    }, 750);
+    }, 1000);
     const stateTimer = window.setInterval(() => {
       if (!document.hidden) loadState();
-    }, 5000);
+    }, 10000);
+    const evidenceTimer = window.setInterval(() => {
+      if (!document.hidden) loadEvidence();
+    }, 15000);
     return () => {
       window.clearInterval(timer);
       window.clearInterval(stateTimer);
+      window.clearInterval(evidenceTimer);
     };
-  }, [loadMarket, loadState]);
+  }, [loadMarket, loadState, loadEvidence]);
 
   useEffect(() => {
     loadHistory(selected, resolution);
