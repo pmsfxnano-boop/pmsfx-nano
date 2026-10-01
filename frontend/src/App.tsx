@@ -172,6 +172,129 @@ function TerminalHero({ item }: { item: SymbolMarket | undefined }) {
   );
 }
 
+function PrimaryChart({
+  history,
+  resolution,
+  onResolution,
+}: {
+  history: HistoryResponse | null;
+  resolution: string;
+  onResolution: (v: string) => void;
+}) {
+  const candles = history?.candles || [];
+  const values = candles.map(c => c.close);
+  const current = values.at(-1) ?? null;
+  const previous = values.length > 1 ? values.at(-2)! : null;
+  const change = current != null && previous != null && previous !== 0
+    ? ((current / previous) - 1) * 100
+    : null;
+
+  const W = 1000;
+  const H = 390;
+  const pad = { l: 18, r: 18, t: 22, b: 28 };
+  const rawHigh = values.length ? Math.max(...values) : 1;
+  const rawLow = values.length ? Math.min(...values) : 0;
+  const range = Math.max(rawHigh - rawLow, rawHigh * 0.001, 1e-9);
+  const high = rawHigh + range * 0.08;
+  const low = rawLow - range * 0.08;
+  const span = Math.max(high - low, 1e-9);
+  const innerW = W - pad.l - pad.r;
+  const innerH = H - pad.t - pad.b;
+  const x = (i: number) => pad.l + (i / Math.max(1, values.length - 1)) * innerW;
+  const y = (price: number) => pad.t + ((high - price) / span) * innerH;
+  const linePoints = values.map((value, i) => `${x(i)},${y(value)}`).join(" ");
+  const areaPoints = values.length
+    ? `${pad.l},${H - pad.b} ${linePoints} ${x(values.length - 1)},${H - pad.b}`
+    : "";
+
+  return (
+    <section className="panel primary-chart-panel">
+      <div className="primary-chart-head">
+        <div>
+          <div className="eyebrow"><Icon name="chart" /> PRIMARY MARKET CHART</div>
+          <div className="primary-chart-title">
+            <strong>{symbolBase(history?.symbol || "BTCUSDT")}</strong>
+            <span>/{history?.symbol?.endsWith("USDT") ? "USDT" : "USD"}</span>
+            {current != null && <b>{fmt(current, current < 10 ? 5 : 2)}</b>}
+            {change != null && <em className={change >= 0 ? "up" : "down"}>{pct(change, 2)}</em>}
+          </div>
+        </div>
+        <div className="resolution-bar">
+          {RESOLUTIONS.map(r => (
+            <button key={r} className={r === resolution ? "active" : ""} onClick={() => onResolution(r)}>
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="primary-chart-frame">
+        {values.length ? (
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-label="Live crypto price chart">
+            <defs>
+              <linearGradient id="primaryChartFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--cyan)" stopOpacity=".24" />
+                <stop offset="100%" stopColor="var(--cyan)" stopOpacity="0" />
+              </linearGradient>
+              <filter id="primaryChartGlow" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+
+            {[0.18, 0.38, 0.58, 0.78].map(v => (
+              <line
+                key={v}
+                className="primary-gridline"
+                x1={pad.l}
+                x2={W - pad.r}
+                y1={H * v}
+                y2={H * v}
+              />
+            ))}
+
+            <polygon className="primary-chart-area" points={areaPoints} />
+            <polyline
+              className="primary-chart-line"
+              points={linePoints}
+              filter="url(#primaryChartGlow)"
+            />
+
+            {current != null && (
+              <>
+                <line
+                  className="primary-price-line"
+                  x1={pad.l}
+                  x2={W - pad.r}
+                  y1={y(current)}
+                  y2={y(current)}
+                />
+                <circle
+                  className="primary-price-dot"
+                  cx={x(values.length - 1)}
+                  cy={y(current)}
+                  r="5"
+                />
+              </>
+            )}
+          </svg>
+        ) : (
+          <div className="empty">Waiting for durable price history.</div>
+        )}
+      </div>
+
+      <div className="primary-chart-foot">
+        <span>{history?.resolution || resolution} · durable market ledger</span>
+        <span>{values.length} observations</span>
+        <span>live terminal read-model</span>
+      </div>
+    </section>
+  );
+}
+
 function Microstructure({ item, trades }: { item: SymbolMarket | undefined; trades: MarketEvent[] }) {
   const buys = trades.filter(t => t.side === "BUY").length;
   const pressure = trades.length ? (buys / trades.length) * 100 : null;
@@ -617,6 +740,7 @@ function App() {
           <>
             <SymbolStrip symbols={symbols} selected={selectedMarket?.symbol || selected} onSelect={updateSelected} />
             <TerminalHero item={selectedMarket} />
+            <PrimaryChart history={history} resolution={resolution} onResolution={setResolution} />
             <Microstructure item={selectedMarket} trades={selectedTrades} />
             <LiveTape trades={selectedTrades} />
             <QuantTimeline health={health} evidence={evidence} market={marketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
