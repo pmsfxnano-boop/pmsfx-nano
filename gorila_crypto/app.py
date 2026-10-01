@@ -354,6 +354,15 @@ async def lifespan(app: FastAPI):
     if settings.ingest_enabled and _capture_block_reason is None:
         try:
             store = _new_store()
+            if os.getenv("GORILA_CRYPTO_EMERGENCY_DISK_RELIEF", "false").strip().lower() in {"1","true","yes","on"}:
+                relief = store.emergency_disk_relief(
+                    keep_session_id=store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+                )
+                print(
+                    "GORILA_DISK_RELIEF "
+                    + json.dumps(relief, sort_keys=True),
+                    flush=True,
+                )
         except RuntimeError as exc:
             _capture_block_reason = str(exc)
             print(
