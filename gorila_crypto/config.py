@@ -118,7 +118,7 @@ settings = CryptoSettings(
         60.0, float(os.getenv("GORILA_CRYPTO_RESEARCH_INTERVAL_SECONDS", "900"))
     ),
     heartbeat_interval_seconds=max(
-        30.0, float(os.getenv("GORILA_CRYPTO_HEARTBEAT_INTERVAL_SECONDS", "60"))
+        30.0, float(os.getenv("GORILA_CRYPTO_HEARTBEAT_INTERVAL_SECONDS", "30"))
     ),
     quality_row_limit=max(
         1000, int(os.getenv("GORILA_CRYPTO_QUALITY_ROW_LIMIT", "100000"))
