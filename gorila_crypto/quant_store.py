@@ -329,14 +329,19 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
 
-        vacuum = self.connect()
-        try:
-            vacuum.rollback()
-            vacuum.autocommit = True
-            with vacuum.cursor() as cur:
-                cur.execute('VACUUM (ANALYZE) "gorila_crypto"."crypto_events"')
-        finally:
-            vacuum.close()
+        if deleted:
+            vacuum = self.connect()
+            try:
+                vacuum.rollback()
+                vacuum.autocommit = True
+                with vacuum.cursor() as cur:
+                    # The free Postgres tier is capacity-constrained. FULL
+                    # rewrites this intentionally tiny research ledger after
+                    # a guarded legacy purge and rebuilds its indexes without
+                    # carrying dead pages from aborted cohorts forward.
+                    cur.execute('VACUUM (FULL, ANALYZE) "gorila_crypto"."crypto_events"')
+            finally:
+                vacuum.close()
         return {"deleted_rows": deleted}
 
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
