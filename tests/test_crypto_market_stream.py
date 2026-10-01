@@ -5,81 +5,39 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 import gorila_crypto.app as app_module
 from gorila_crypto.app import app
 from gorila_crypto.config import settings
-from fastapi.testclient import TestClient
+from gorila_crypto.market_cache import MARKET_CACHE
 
 
-class _Cursor:
-    def __init__(self, event_rows, book_rows) -> None:
-        self.event_rows = event_rows
-        self.book_rows = book_rows
-        self._calls = 0
-
-    def execute(self, sql, params) -> None:
-        self._last_sql = sql
-        self._last_params = params
-
-    def fetchall(self):
-        self._calls += 1
-        return self.event_rows if self._calls == 1 else self.book_rows
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return False
-
-
-class _Connection:
-    def __init__(self, event_rows, book_rows) -> None:
-        self.event_rows = event_rows
-        self.book_rows = book_rows
-
-    def cursor(self):
-        return _Cursor(self.event_rows, self.book_rows)
-
-    def close(self) -> None:
-        return None
+def _seed_cache() -> None:
+    MARKET_CACHE.clear()
+    trade = {
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": "2026-10-01T03:40:00+00:00",
+        "received_time": "2026-10-01T03:40:00.010000+00:00",
+        "payload": {"p": "100.0", "q": "0.5", "m": False},
+    }
+    book = {
+        "symbol": "BTCUSDT",
+        "event_type": "bookTicker",
+        "event_time": "2026-10-01T03:40:00.020000+00:00",
+        "received_time": "2026-10-01T03:40:00.020000+00:00",
+        "payload": {"b": "99.9", "a": "100.1", "B": "2.0", "A": "3.0"},
+    }
+    results = [
+        {"ledger_seq": 101, "event_id": "trade-1", "event_key": "trade-key"},
+        {"ledger_seq": 999, "event_id": "book-1", "event_key": "book-key"},
+    ]
+    MARKET_CACHE.append_persisted([trade, book], results)
 
 
-class _Store:
-    backend = "postgres"
-    durable = True
-
-    def __init__(self, event_rows, book_rows) -> None:
-        self.connection = _Connection(event_rows, book_rows)
-
-    def connect(self):
-        return self.connection
-
-    def init(self):
-        raise AssertionError("postgres market_stream must not run DDL per request")
-
-
-def _rows():
-    trade = (
-        101,
-        "BTCUSDT",
-        "trade",
-        "2026-10-01T03:40:00+00:00",
-        "2026-10-01T03:40:00.010000+00:00",
-        '{"p":"100.0","q":"0.5","m":false}',
-    )
-    book = (
-        999,
-        "BTCUSDT",
-        "bookTicker",
-        "2026-10-01T03:40:00.020000+00:00",
-        "2026-10-01T03:40:00.020000+00:00",
-        '{"b":"99.9","a":"100.1","B":"2.0","A":"3.0"}',
-    )
-    return [trade], [book]
-
-
-def test_market_stream_is_incremental_and_cursor_does_not_skip_book_rows(monkeypatch) -> None:
-    event_rows, book_rows = _rows()
+def test_market_stream_is_hot_and_cursor_does_not_advance_from_side_snapshot(monkeypatch) -> None:
+    _seed_cache()
     monkeypatch.setattr(
         app_module,
         "settings",
@@ -94,11 +52,6 @@ def test_market_stream_is_incremental_and_cursor_does_not_skip_book_rows(monkeyp
             ]
         ),
     )
-    monkeypatch.setattr(
-        app_module,
-        "_new_store",
-        lambda: _Store(event_rows, book_rows),
-    )
 
     with TestClient(app) as client:
         response = client.get("/api/crypto/market/stream?cursor=100&limit=36")
@@ -109,6 +62,7 @@ def test_market_stream_is_incremental_and_cursor_does_not_skip_book_rows(monkeyp
     assert [row["ledger_seq"] for row in payload["events"]] == [101]
     assert payload["symbols"][0]["bid"] == 99.9
     assert payload["symbols"][0]["ask"] == 100.1
+    assert payload["symbols"][0]["spread_bps"] > 0
 
 
 def test_market_stream_fails_closed_when_capture_is_disabled(monkeypatch) -> None:
