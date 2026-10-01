@@ -1,0 +1,10 @@
+{
+  "name": "Cryptonita Quant Terminal",
+  "short_name": "Cryptonita",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#06090d",
+  "theme_color": "#06090d",
+  "description": "Live crypto market data, microstructure and quantitative evidence.",
+  "icons": []
+}
