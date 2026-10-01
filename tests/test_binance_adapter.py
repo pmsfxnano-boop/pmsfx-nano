@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
 import time
@@ -213,7 +214,7 @@ def test_market_data_stall_watchdog_does_not_fire_between_live_events() -> None:
         def recv(self):
             self.n += 1
             time.sleep(0.01)
-            return {
+            return json.dumps({
                 "stream": "btcusdt@bookTicker",
                 "data": {
                     "u": 400900217 + self.n,
@@ -223,7 +224,7 @@ def test_market_data_stall_watchdog_does_not_fire_between_live_events() -> None:
                     "a": "60001.0",
                     "A": "1.1",
                 },
-            }
+            })
 
     adapter = BinanceSpotMarketAdapter(
         BinanceStreamConfig(
