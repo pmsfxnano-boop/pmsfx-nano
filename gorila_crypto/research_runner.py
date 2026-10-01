@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -863,16 +864,20 @@ def _dataset_rows(
                 - max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds() * 1000.0)
             ),
             "leader_book_confidence": math.exp(
-                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds()) / 5.0
+                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
             ),
             "target_book_confidence": math.exp(
-                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds()) / 5.0
+                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
             ),
             "leader_flow_x_book_confidence": leader_flow_1s * math.exp(
-                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds()) / 5.0
+                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
             ),
             "target_flow_x_book_confidence": target_flow_1s * math.exp(
-                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds()) / 5.0
+                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
             ),
         }
 
