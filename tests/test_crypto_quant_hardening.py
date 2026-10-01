@@ -121,8 +121,10 @@ def test_research_protocol_declares_candidate_family() -> None:
 
 def test_v3_quality_gate_accounts_for_durable_trade_sampling() -> None:
     config = PREREGISTERED_CRYPTO_PROTOCOL.quality_config()
-    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "3"
+    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "4"
     assert PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate == 0.05
+    assert PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds == 5.0
+    assert PREREGISTERED_CRYPTO_PROTOCOL.persistence_contract_version == "deterministic_sample_v2_compact"
     assert config["required_event_type_min_rows"]["trade"] == 5000
 
 
@@ -169,7 +171,7 @@ def test_provider_protocol_registry_keeps_binance_and_kraken_isolated() -> None:
         protocol_for,
     )
 
-    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL_V3
+    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL_V4
     assert protocol_for("kraken") is KRAKEN_CRYPTO_PROTOCOL
     assert BINANCE_CRYPTO_PROTOCOL.study_id != KRAKEN_CRYPTO_PROTOCOL.study_id
     assert BINANCE_CRYPTO_PROTOCOL.protocol_hash != KRAKEN_CRYPTO_PROTOCOL.protocol_hash
