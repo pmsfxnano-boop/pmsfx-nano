@@ -188,7 +188,12 @@ class CryptoStudyProtocol:
         if "bookUpdate" in event_types:
             min_rows["bookUpdate"] = max(10_000, self.min_trade_rows_per_symbol // 10)
         return {
-            "min_rows_per_symbol": self.min_trade_rows_per_symbol,
+            # The durable v3/v4 ledger is a deterministic 5% sample of trades.
+            # Quality operates on the persisted replay slice, so its per-symbol
+            # row floor must be expressed in persisted rows while the immutable
+            # protocol field remains the raw-observation floor.
+            "min_rows_per_symbol": persisted_trade_min,
+            "min_raw_rows_per_symbol": self.min_trade_rows_per_symbol,
             "min_duration_seconds": self.prospect_days * 24 * 3600,
             "max_p99_transport_latency_ms": self.max_p99_transport_latency_ms,
             "required_event_types": event_types,
