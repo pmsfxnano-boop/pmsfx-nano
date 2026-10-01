@@ -8,7 +8,7 @@
 # CIDR ranges from Render Connect -> Outbound.
 databases:
   - name: pmsfx-nano-db
-    plan: starter
+    plan: free
     region: oregon
     ipAllowList:
       - source: 0.0.0.0/0
