@@ -879,7 +879,7 @@ class AdaptiveOpportunityClock:
                 duration = _ms(received_time, pending.detected_received_time)
                 # Reactions after the modeled opportunity window are censored,
                 # never positive labels.
-                if duration > MAX_OPPORTUNITY_MS:
+                if duration >= MAX_OPPORTUNITY_MS:
                     continue
                 signed = pending.direction * 10_000.0 * math.log(price / pending.baseline_target_price)
                 if signed >= REACTION_THRESHOLD_BPS:
@@ -958,7 +958,7 @@ class AdaptiveOpportunityClock:
         # Expire/censor after processing this event, preserving PIT ordering.
         for opportunity_id, pending in list(self.pending.items()):
             age = _ms(received_time, pending.detected_received_time)
-            if age > MAX_OPPORTUNITY_MS:
+            if age >= MAX_OPPORTUNITY_MS:
                 outcomes.append(
                     self._resolve(
                         pending,
