@@ -517,10 +517,25 @@ class BinanceSpotMarketAdapter:
         watchdog_thread.start()
 
         try:
-            while (time.time_ns() - connected_ns) / 1_000_000_000 < self.config.connection_max_seconds:
+            while (
+                time.time_ns() - connected_ns
+            ) / 1_000_000_000 < self.config.connection_max_seconds:
                 try:
-                raw = ws.recv()
-            except websocket.WebSocketTimeoutException:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    now_monotonic = time.monotonic()
+                    stall_seconds = now_monotonic - last_market_event_monotonic
+                    if stall_seconds > self.config.market_data_stall_timeout_s:
+                        raise BinanceAdapterError(
+                            "market_data_stall_timeout:"
+                            f"{stall_seconds:.3f}s>"
+                            f"{self.config.market_data_stall_timeout_s:.3f}s"
+                        )
+                    continue
+
+                if raw is None:
+                    break
+
                 now_monotonic = time.monotonic()
                 stall_seconds = now_monotonic - last_market_event_monotonic
                 if stall_seconds > self.config.market_data_stall_timeout_s:
@@ -529,44 +544,36 @@ class BinanceSpotMarketAdapter:
                         f"{stall_seconds:.3f}s>"
                         f"{self.config.market_data_stall_timeout_s:.3f}s"
                     )
-                continue
-            if raw is None:
-                break
 
-            now_monotonic = time.monotonic()
-            stall_seconds = now_monotonic - last_market_event_monotonic
-            if stall_seconds > self.config.market_data_stall_timeout_s:
-                raise BinanceAdapterError(
-                    "market_data_stall_timeout:"
-                    f"{stall_seconds:.3f}s>"
-                    f"{self.config.market_data_stall_timeout_s:.3f}s"
+                received_ns = time.time_ns()
+                received_time = datetime.fromtimestamp(
+                    received_ns / 1_000_000_000,
+                    tz=timezone.utc,
                 )
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                try:
+                    message = json.loads(raw)
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise InvalidMarketEvent(
+                        "Binance websocket payload is not valid JSON"
+                    ) from exc
+                if not isinstance(message, Mapping):
+                    raise InvalidMarketEvent(
+                        "Binance websocket message must be an object"
+                    )
+                if "result" in message and "id" in message:
+                    continue
 
-            received_ns = time.time_ns()
-            received_time = datetime.fromtimestamp(
-                received_ns / 1_000_000_000,
-                tz=timezone.utc,
-            )
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8")
-            try:
-                message = json.loads(raw)
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise InvalidMarketEvent("Binance websocket payload is not valid JSON") from exc
-            if not isinstance(message, Mapping):
-                raise InvalidMarketEvent("Binance websocket message must be an object")
-            if "result" in message and "id" in message:
-                # Binance control-plane acknowledgement, not market data.
-                continue
-            event = normalize_market_message(
-                message,
-                received_ns=received_ns,
-                received_time=received_time,
-            )
-            if event is None:
-                continue
+                event = normalize_market_message(
+                    message,
+                    received_ns=received_ns,
+                    received_time=received_time,
+                )
+                if event is None:
+                    continue
 
-            last_market_event_monotonic = now_monotonic
+                last_market_event_monotonic = now_monotonic
                 if self.event_sink is not None:
                     self.event_sink(event)
                 yield event
