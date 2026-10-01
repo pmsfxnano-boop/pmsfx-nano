@@ -85,3 +85,71 @@ def test_prospective_status_route_exists_without_starting_network_worker() -> No
         payload = response.json()
         assert payload["status"] == "CAPTURE_DISABLED"
         assert payload["worker_alive"] is False
+
+
+def test_market_history_uses_shared_short_lived_cache(monkeypatch) -> None:
+    class FakeCursor:
+        def __init__(self, owner) -> None:
+            self.owner = owner
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args) -> None:
+            self.owner.execute_calls += 1
+
+        def fetchall(self):
+            return [
+                (
+                    "2026-10-01T00:00:00+00:00",
+                    100.0,
+                    101.0,
+                    99.0,
+                    100.5,
+                    12.0,
+                    4,
+                )
+            ]
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.execute_calls = 0
+            self.closed = False
+
+        def cursor(self):
+            return FakeCursor(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeStore:
+        durable = True
+
+        def __init__(self) -> None:
+            self.conn = FakeConn()
+            self.connect_calls = 0
+
+        def connect(self):
+            self.connect_calls += 1
+            return self.conn
+
+    store = FakeStore()
+    monkeypatch.setattr(
+        app_module,
+        "settings",
+        replace(settings, ingest_enabled=True, symbols=("BTCUSDT",)),
+    )
+    monkeypatch.setattr(app_module, "_new_store", lambda: store)
+    app_module._HISTORY_CACHE.clear()
+
+    first = app_module.market_history("BTCUSDT", "1m", 30)
+    second = app_module.market_history("BTCUSDT", "1m", 30)
+
+    assert first == second
+    assert store.connect_calls == 1
+    assert store.conn.execute_calls == 1
+
+    app_module._HISTORY_CACHE.clear()
