@@ -410,19 +410,29 @@ function MetricCard({
   );
 }
 
-function Microstructure({ snapshot }: { snapshot?: SymbolSnapshot }) {
+function Microstructure({ snapshot, events }: { snapshot?: SymbolSnapshot; events: StreamEvent[] }) {
   const imbalance = snapshot?.imbalance;
   const imbalanceText = imbalance == null ? "—" : `${(imbalance * 100).toFixed(1)}%`;
   const pressure = imbalance == null ? "—" : imbalance >= 0 ? "BID PRESSURE" : "ASK PRESSURE";
+  const trades = events.filter((event) => event.event_type === "trade" && event.price != null).slice(-120);
+  const grossQty = trades.reduce((sum, event) => sum + (event.quantity ?? 0), 0);
+  const signedQty = trades.reduce((sum, event) => sum + (event.side === "BUY" ? 1 : -1) * (event.quantity ?? 0), 0);
+  const flow = grossQty > 0 ? signedQty / grossQty : null;
+  const oldest = trades.length ? new Date(trades[0].received_time).getTime() : 0;
+  const newest = trades.length ? new Date(trades[trades.length - 1].received_time).getTime() : 0;
+  const spanMin = oldest && newest ? Math.max((newest - oldest) / 60_000, 1 / 60) : null;
+  const printsPerMin = spanMin ? trades.length / spanMin : null;
   return (
     <section className="section-block">
-      <SectionHead icon="pulse" kicker="MICROSTRUCTURE" title="Market state" note="bookTicker · live" />
+      <SectionHead icon="pulse" kicker="MICROSTRUCTURE" title="Market state" note="top-of-book + trade flow" />
       <div className="micro-grid">
         <MetricCard label="MID" value={price(snapshot?.price)} helper="trade / quote mid" accent />
         <MetricCard label="BID" value={price(snapshot?.bid)} helper={compact(snapshot?.bid_qty)} />
         <MetricCard label="ASK" value={price(snapshot?.ask)} helper={compact(snapshot?.ask_qty)} />
         <MetricCard label="SPREAD" value={bp(snapshot?.spread_bps)} helper="quote width" />
-        <MetricCard label="IMBALANCE" value={imbalanceText} helper={pressure} />
+        <MetricCard label="QUEUE" value={imbalanceText} helper={pressure} />
+        <MetricCard label="TRADE FLOW" value={flow == null ? "—" : `${(flow * 100).toFixed(1)}%`} helper={flow == null ? "no prints" : flow >= 0 ? "buy aggression" : "sell aggression"} />
+        <MetricCard label="PRINTS / MIN" value={printsPerMin == null ? "—" : printsPerMin.toFixed(1)} helper="recent 120 trades" />
         <MetricCard label="FRESHNESS" value={age(snapshot?.freshness_ms)} helper="receive age" />
       </div>
       <div className="imbalance-bar">
@@ -686,7 +696,7 @@ function TerminalView({
       </section>
 
       <div className="two-col">
-        <Microstructure snapshot={snapshot} />
+        <Microstructure snapshot={snapshot} events={selectedEvents} />
         <Tape events={selectedEvents} />
       </div>
 
