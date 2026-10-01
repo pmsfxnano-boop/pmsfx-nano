@@ -1,0 +1,32 @@
+name: crypto-cleanroom-ci
+
+on:
+  push:
+    branches: [gorila-crypto-cleanroom, gorila-crypto-binance-parallel, gorila-crypto-quant-hardening]
+  pull_request:
+    branches: [gorila-crypto-cleanroom, gorila-crypto-binance-parallel]
+
+jobs:
+  crypto-quality:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install runtime and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gorila.txt pytest
+
+      - name: Compile changed Python modules
+        run: |
+          python -m compileall -q gorila_crypto tests/test_crypto_*.py
+
+      - name: Run Crypto cleanroom test suite
+        run: |
+          pytest -q             tests/test_crypto_app.py             tests/test_crypto_forecast.py             tests/test_crypto_forecast_shadow.py             tests/test_crypto_lead_lag.py             tests/test_crypto_quality.py             tests/test_crypto_replay_manifest.py             tests/test_crypto_runtime.py             tests/test_crypto_validation.py             tests/test_crypto_event_replay.py             tests/test_crypto_storage_isolation.py             tests/test_binance_adapter.py             tests/test_kraken_adapter.py             tests/test_crypto_cleanroom_architecture.py             tests/test_crypto_quant_hardening.py

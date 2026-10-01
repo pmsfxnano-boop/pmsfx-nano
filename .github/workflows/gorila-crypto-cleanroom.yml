@@ -1,0 +1,79 @@
+name: gorila-crypto-cleanroom
+
+on:
+  push:
+    branches:
+      - gorila-crypto-cleanroom
+    paths:
+      - "gorila_core/**"
+      - "gorila_crypto/**"
+      - "tests/test_crypto_cleanroom_architecture.py"
+      - "tests/test_crypto_storage_isolation.py"
+      - "tests/test_binance_adapter.py"
+      - "tests/test_crypto_event_replay.py"
+      - "tests/test_crypto_replay_manifest.py"
+      - "tests/test_crypto_lead_lag.py"
+      - "tests/test_crypto_forecast.py"
+      - "tests/test_crypto_forecast_shadow.py"
+      - "tests/test_crypto_validation.py"
+      - "tests/test_crypto_runtime.py"
+      - "tests/test_crypto_quality.py"
+      - "tests/test_crypto_app.py"
+      - ".github/workflows/gorila-crypto-cleanroom.yml"
+  pull_request:
+    paths:
+      - "gorila_core/**"
+      - "gorila_crypto/**"
+      - "tests/test_crypto_cleanroom_architecture.py"
+      - "tests/test_crypto_storage_isolation.py"
+      - "tests/test_binance_adapter.py"
+      - "tests/test_crypto_event_replay.py"
+      - "tests/test_crypto_replay_manifest.py"
+      - "tests/test_crypto_lead_lag.py"
+      - "tests/test_crypto_forecast.py"
+      - "tests/test_crypto_forecast_shadow.py"
+      - ".github/workflows/gorila-crypto-cleanroom.yml"
+
+jobs:
+  cleanroom:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gorila.txt pytest
+      - name: Compile cleanroom modules
+        run: python -m compileall -q gorila_core gorila_crypto
+      - name: Run foundational cleanroom tests
+        run: >-
+          pytest -q
+          tests/test_crypto_cleanroom_architecture.py
+          tests/test_crypto_storage_isolation.py
+          tests/test_binance_adapter.py
+          tests/test_crypto_event_replay.py
+          tests/test_crypto_replay_manifest.py
+          tests/test_crypto_lead_lag.py
+
+      - name: Run A7 forecast tests
+        run: >-
+          pytest -q
+          tests/test_crypto_forecast.py
+          tests/test_crypto_forecast_shadow.py
+
+      - name: Run A8 validation tests
+        run: pytest -q tests/test_crypto_validation.py
+
+      - name: Run A9 prospective runtime tests
+        run: pytest -q tests/test_crypto_runtime.py
+
+      - name: Run A11 quality gate tests
+        run: pytest -q tests/test_crypto_quality.py
+
+      - name: Run prospective capture app tests
+        run: pytest -q tests/test_crypto_app.py
