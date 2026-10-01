@@ -414,7 +414,7 @@ class QuantCryptoStore(CryptoStore):
                                 AND l.status='ABORTED_REPLACED'
                           )
                         """,
-                        (now, json.dumps({"reason": reason}, sort_keys=True)),
+                        (now, json.dumps({"reason": reason}, sort_keys=True), study_id),
                     )
                     cur.execute(
                         """
