@@ -232,6 +232,7 @@ def test_market_data_stall_watchdog_does_not_fire_between_live_events() -> None:
             symbols=("BTCUSDT",),
             streams=("bookTicker",),
             recv_timeout_s=1.0,
+            websocket_read_poll_timeout_s=0.01,
             market_data_stall_timeout_s=0.05,
             connection_max_seconds=1.0,
         )
