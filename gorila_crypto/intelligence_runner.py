@@ -19,7 +19,7 @@ from .opportunity_intelligence import AdaptiveOpportunityClock, MODEL_VERSION
 BATCH_SIZE = 2_000
 WARM_REPLAY_ROWS = 20_000
 POLL_SECONDS = 0.25
-STATE_ID = "binance-live-opportunity-clock-v1"
+STATE_ID = "binance-live-opportunity-clock-v2"
 
 
 def _dt(value: str) -> datetime:
