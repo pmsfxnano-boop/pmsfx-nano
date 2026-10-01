@@ -12,7 +12,7 @@ El árbol activo contiene únicamente infraestructura de mercado cripto, investi
 - Runtime de captura aislado y observabilidad.
 - gorila_core compartido sólo cuando es dependencia directa de Crypto.
 
-No contiene ni consume APIs, datos, dashboards o workflows para mercado argentino, acciones argentinas, acciones estadounidenses ni proveedores de equities.
+No contiene integraciones ajenas al dominio Crypto.
 
 ## Ejecución
 
