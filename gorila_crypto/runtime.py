@@ -22,7 +22,7 @@ from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMa
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .market_cache import MARKET_CACHE
 from .config import settings
-from .evidence_spool import EvidenceSpool, SpoolBatch
+from .evidence_spool import EvidenceSpool
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
