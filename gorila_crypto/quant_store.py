@@ -468,23 +468,38 @@ class QuantCryptoStore(CryptoStore):
         try:
             if self._pg:
                 with conn.cursor() as cur:
+                    terminal_at = _utc_now() if status not in {"STARTING", "RUNNING"} else None
                     cur.execute(
                         "UPDATE crypto_capture_sessions SET status=%s, ended_at=%s WHERE session_id=%s",
-                        (
-                            status,
-                            _utc_now() if status not in {"STARTING", "RUNNING"} else None,
-                            session_id,
-                        ),
+                        (status, terminal_at, session_id),
                     )
+                    if terminal_at is not None:
+                        # A capture session is the single-writer fencing unit.
+                        # Never leave one of its leases RUNNING after the
+                        # session itself has terminated or been fenced.
+                        cur.execute(
+                            """
+                            UPDATE crypto_runtime_leases
+                            SET status=%s, heartbeat_at=%s
+                            WHERE session_id=%s AND status='RUNNING'
+                            """,
+                            (status, terminal_at, session_id),
+                        )
             else:
+                terminal_at = _utc_now() if status not in {"STARTING", "RUNNING"} else None
                 conn.execute(
                     "UPDATE crypto_capture_sessions SET status=?, ended_at=? WHERE session_id=?",
-                    (
-                        status,
-                        _utc_now() if status not in {"STARTING", "RUNNING"} else None,
-                        session_id,
-                    ),
+                    (status, terminal_at, session_id),
                 )
+                if terminal_at is not None:
+                    conn.execute(
+                        """
+                        UPDATE crypto_runtime_leases
+                        SET status=?, heartbeat_at=?
+                        WHERE session_id=? AND status='RUNNING'
+                        """,
+                        (status, terminal_at, session_id),
+                    )
             conn.commit()
         finally:
             conn.close()
