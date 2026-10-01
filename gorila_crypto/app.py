@@ -12,7 +12,7 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -518,11 +518,17 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
 
         status = health_by_symbol.get(symbol, {}).get("status", "UNKNOWN")
         spread_bps = None
+        imbalance = None
         if book and book.get("bid") is not None and book.get("ask") is not None:
             bid_value = float(book["bid"])
             ask_value = float(book["ask"])
             if bid_value > 0:
                 spread_bps = (ask_value / bid_value - 1.0) * 10000.0
+            bid_qty_value = float(book.get("bid_qty") or 0.0)
+            ask_qty_value = float(book.get("ask_qty") or 0.0)
+            denom = bid_qty_value + ask_qty_value
+            if denom > 0:
+                imbalance = (bid_qty_value - ask_qty_value) / denom
         summary.append(
             {
                 "symbol": symbol,
@@ -534,6 +540,7 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
                 "bid_qty": book["bid_qty"] if book else None,
                 "ask_qty": book["ask_qty"] if book else None,
                 "spread_bps": spread_bps,
+                "imbalance": imbalance,
                 "freshness_ms": freshness_ms,
                 "last_trade_time": trade_times[-1] if trade_times else None,
                 "last_book_time": book["received_time"] if book else None,
@@ -557,6 +564,115 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
         "events": events,
         "cache_events_available": snapshot["cache_events_available"],
         "forecast": {"automatic_promotion": False, "execution": False},
+    }
+
+
+@app.get("/api/crypto/market/history")
+def market_history(
+    symbol: str,
+    resolution: str = "5m",
+    limit: int = 240,
+) -> dict[str, Any]:
+    """Bounded historical OHLCV contract for charting outside the hot path."""
+    if not settings.ingest_enabled:
+        raise HTTPException(status_code=503, detail="capture_not_enabled")
+
+    resolutions = {
+        "1m": 60,
+        "5m": 300,
+        "15m": 900,
+        "1h": 3600,
+        "4h": 14400,
+        "1d": 86400,
+    }
+    bucket_seconds = resolutions.get(str(resolution).lower())
+    if bucket_seconds is None:
+        raise HTTPException(status_code=400, detail="unsupported_resolution")
+
+    normalized = str(symbol).upper().strip()
+    if normalized not in {str(item).upper() for item in settings.symbols}:
+        raise HTTPException(status_code=400, detail="unsupported_symbol")
+
+    safe_limit = max(30, min(int(limit), 600))
+    lookback_seconds = int(bucket_seconds * safe_limit * 1.15)
+    start_time = (
+        datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+    ).isoformat()
+
+    store = _new_store()
+    if not store.durable:
+        raise HTTPException(status_code=503, detail="durable_storage_required")
+
+    conn = store.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH buckets AS (
+                    SELECT
+                        to_timestamp(
+                            floor(
+                                extract(epoch from event_time::timestamptz) / %s
+                            ) * %s
+                        ) AS bucket,
+                        event_time,
+                        ledger_seq,
+                        (payload_json::jsonb->>'p')::double precision AS price,
+                        (payload_json::jsonb->>'q')::double precision AS quantity
+                    FROM crypto_events
+                    WHERE symbol=%s
+                      AND event_type='trade'
+                      AND event_time >= %s
+                ),
+                grouped AS (
+                    SELECT
+                        bucket,
+                        count(*)::bigint AS trades,
+                        sum(quantity)::double precision AS volume,
+                        min(price)::double precision AS low,
+                        max(price)::double precision AS high,
+                        (array_agg(price ORDER BY event_time, ledger_seq))[1]::double precision AS open,
+                        (array_agg(price ORDER BY event_time DESC, ledger_seq DESC))[1]::double precision AS close
+                    FROM buckets
+                    GROUP BY bucket
+                    ORDER BY bucket DESC
+                    LIMIT %s
+                )
+                SELECT
+                    bucket AT TIME ZONE 'UTC' AS bucket,
+                    open, high, low, close, volume, trades
+                FROM grouped
+                ORDER BY bucket ASC
+                """,
+                (
+                    bucket_seconds,
+                    bucket_seconds,
+                    normalized,
+                    start_time,
+                    safe_limit,
+                ),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    candles = [
+        {
+            "time": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+            "volume": float(row[5]),
+            "trades": int(row[6]),
+        }
+        for row in rows
+    ]
+
+    return {
+        "symbol": normalized,
+        "resolution": resolution.lower(),
+        "candles": candles,
     }
 
 
