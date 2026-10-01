@@ -367,7 +367,14 @@ class ProspectiveCryptoIngestor:
                 streams=tuple(settings.streams),
             ):
                 raise RuntimeError("runtime_does_not_match_preregistered_protocol")
-            stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
+            try:
+                stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
+            except Exception as exc:
+                stale = 0
+                self._record_connection(
+                    "STALE_RECONCILE_DEFERRED",
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                )
             self.store.register_study(self.protocol)
             effective_protocol_hash = self.store.get_study_protocol_hash(self.protocol.study_id)
             while not self.stop_event.is_set():

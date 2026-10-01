@@ -592,6 +592,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
 
     def reconcile_stale_runtime_runs(self, stale_after_seconds: float = 120.0) -> int:
+        """Best-effort cleanup of stale leases; never block capture takeover on a deploy race."""
         if stale_after_seconds <= 0:
             raise ValueError("stale_after_seconds must be positive")
         self.init()
@@ -599,54 +600,74 @@ class QuantCryptoStore(CryptoStore):
             time.time() - stale_after_seconds,
             tz=timezone.utc,
         ).isoformat()
-        conn = self.connect()
-        count = 0
-        try:
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE crypto_runtime_runs r
-                        SET status='ABORTED_STALE',
-                            completed_at=%s,
-                            result=%s
-                        WHERE r.status='RUNNING'
-                          AND COALESCE(
-                              (SELECT l.heartbeat_at
-                               FROM crypto_runtime_leases l
-                               WHERE l.run_id=r.run_id),
-                              r.created_at
-                          ) < %s
-                        """,
-                        (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
-                    )
-                    count = cur.rowcount
-                    cur.execute(
-                        """
-                        UPDATE crypto_runtime_leases
-                        SET status='ABORTED_STALE'
-                        WHERE status='RUNNING' AND heartbeat_at < %s
-                        """,
-                        (cutoff,),
-                    )
-                    cur.execute(
-                        """
-                        UPDATE crypto_capture_sessions s
-                        SET status='ABORTED_STALE', ended_at=%s
-                        WHERE s.status='RUNNING'
-                          AND (
-                              s.started_at < %s
-                              OR EXISTS (
-                                  SELECT 1
-                                  FROM crypto_runtime_leases l
-                                  WHERE l.session_id=s.session_id
-                                    AND l.status='ABORTED_STALE'
-                              )
-                          )
-                        """,
-                        (_utc_now(), cutoff),
-                    )
-            else:
+
+        for attempt in range(3):
+            conn = self.connect()
+            try:
+                if self._pg:
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE crypto_runtime_runs r
+                                SET status='ABORTED_STALE',
+                                    completed_at=%s,
+                                    result=%s
+                                WHERE r.status='RUNNING'
+                                  AND COALESCE(
+                                      (SELECT l.heartbeat_at
+                                       FROM crypto_runtime_leases l
+                                       WHERE l.run_id=r.run_id),
+                                      r.created_at
+                                  ) < %s
+                                """,
+                                (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
+                            )
+                            count = int(cur.rowcount)
+                            cur.execute(
+                                """
+                                UPDATE crypto_runtime_leases
+                                SET status='ABORTED_STALE'
+                                WHERE status='RUNNING' AND heartbeat_at < %s
+                                """,
+                                (cutoff,),
+                            )
+                            cur.execute(
+                                """
+                                UPDATE crypto_capture_sessions s
+                                SET status='ABORTED_STALE', ended_at=%s
+                                WHERE s.status='RUNNING'
+                                  AND (
+                                      s.started_at < %s
+                                      OR EXISTS (
+                                          SELECT 1
+                                          FROM crypto_runtime_leases l
+                                          WHERE l.session_id=s.session_id
+                                            AND l.status='ABORTED_STALE'
+                                      )
+                                  )
+                                """,
+                                (_utc_now(), cutoff),
+                            )
+                        conn.commit()
+                        return count
+                    except Exception as exc:
+                        conn.rollback()
+                        if type(exc).__name__ != "DeadlockDetected" or attempt == 2:
+                            # This cleanup is advisory. The atomic session-creation
+                            # fence below remains authoritative for takeover.
+                            print(
+                                "GORILA_STALE_RECONCILE_DEFERRED "
+                                + json.dumps(
+                                    {"attempt": attempt + 1, "error": f"{type(exc).__name__}: {exc}"},
+                                    sort_keys=True,
+                                ),
+                                flush=True,
+                            )
+                            return 0
+                        time.sleep(0.25 * (attempt + 1))
+                        continue
+
                 cur = conn.execute(
                     """
                     UPDATE crypto_runtime_runs
@@ -663,7 +684,7 @@ class QuantCryptoStore(CryptoStore):
                     """,
                     (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
                 )
-                count = cur.rowcount
+                count = int(cur.rowcount)
                 conn.execute(
                     """
                     UPDATE crypto_runtime_leases
@@ -688,10 +709,12 @@ class QuantCryptoStore(CryptoStore):
                     """,
                     (_utc_now(), cutoff),
                 )
-            conn.commit()
-        finally:
-            conn.close()
-        return int(count)
+                conn.commit()
+                return count
+            finally:
+                conn.close()
+
+        return 0
 
     def read_scoped_data_gaps(
         self,
