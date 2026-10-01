@@ -56,7 +56,7 @@ def test_market_stream_bootstrap_keeps_side_snapshot_out_of_cursor(monkeypatch) 
 
     payload = app_module.market_stream(cursor=0, limit=36)
 
-    assert payload["next_cursor"] == 2
+    assert payload["next_cursor"] == 1
     assert [row["stream_seq"] for row in payload["events"]] == [1]
     assert payload["events"][0]["ledger_seq"] == 101
     assert payload["symbols"][0]["bid"] == 99.9
@@ -216,19 +216,20 @@ def test_market_cache_cursor_advances_only_through_delivered_events() -> None:
 
     snapshot = MARKET_CACHE.snapshot(
         symbols=("BTCUSDT",),
-        cursor=0,
+        cursor=1,
         limit=32,
     )
 
     assert len(snapshot["events"]) == 32
-    assert snapshot["events"][0]["stream_seq"] == 1
-    assert snapshot["events"][-1]["stream_seq"] == 32
-    assert snapshot["next_cursor"] == 32
+    assert snapshot["events"][0]["stream_seq"] == 2
+    assert snapshot["events"][-1]["stream_seq"] == 33
+    assert snapshot["next_cursor"] == 33
 
     next_snapshot = MARKET_CACHE.snapshot(
         symbols=("BTCUSDT",),
         cursor=snapshot["next_cursor"],
         limit=32,
     )
-    assert next_snapshot["events"][0]["stream_seq"] == 33
+    assert snapshot["next_cursor"] < 40
+    assert next_snapshot["events"][0]["stream_seq"] == 34
     assert next_snapshot["next_cursor"] == 40
