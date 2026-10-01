@@ -135,6 +135,93 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
 
+    def emergency_disk_relief(self, *, keep_session_id: str | None) -> dict[str, int]:
+        """Reclaim invalid/aborted cohort storage so the free Postgres tier can keep ingesting.
+
+        Only rows belonging to non-running capture sessions are eligible. The active
+        prospective cohort is never deleted. The cleanup runs in small committed
+        batches so WAL/locks remain bounded even when the database is under pressure.
+        """
+        self.init()
+        if not self._pg:
+            return {"deleted_rows": 0, "dropped_indexes": 0}
+        deleted_rows = 0
+        dropped_indexes = 0
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DROP INDEX IF EXISTS "idx_crypto_events_symbol_time"
+                    """
+                )
+                if cur.rowcount:
+                    dropped_indexes += 1
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn = self.connect()
+        try:
+            while True:
+                with conn.cursor() as cur:
+                    if keep_session_id:
+                        cur.execute(
+                            """
+                            WITH doomed AS (
+                                SELECT e.ctid
+                                FROM crypto_events e
+                                WHERE (e.metadata::jsonb->>'capture_session_id') IN (
+                                    SELECT s.session_id
+                                    FROM crypto_capture_sessions s
+                                    WHERE s.status NOT IN ('STARTING','RUNNING')
+                                )
+                                AND (e.metadata::jsonb->>'capture_session_id') <> %s
+                                LIMIT 5000
+                            )
+                            DELETE FROM crypto_events e
+                            USING doomed d
+                            WHERE e.ctid = d.ctid
+                            """,
+                            (keep_session_id,),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            WITH doomed AS (
+                                SELECT e.ctid
+                                FROM crypto_events e
+                                WHERE (e.metadata::jsonb->>'capture_session_id') IN (
+                                    SELECT s.session_id
+                                    FROM crypto_capture_sessions s
+                                    WHERE s.status NOT IN ('STARTING','RUNNING')
+                                )
+                                LIMIT 5000
+                            )
+                            DELETE FROM crypto_events e
+                            USING doomed d
+                            WHERE e.ctid = d.ctid
+                            """
+                        )
+                    batch = int(cur.rowcount or 0)
+                conn.commit()
+                deleted_rows += batch
+                if batch == 0:
+                    break
+        finally:
+            conn.close()
+
+        # Reclaim dead tuples for immediate page reuse. This does not require the
+        # free disk space needed by VACUUM FULL and is safe on a live table.
+        vacuum_conn = self.connect()
+        try:
+            vacuum_conn.autocommit = True
+            with vacuum_conn.cursor() as cur:
+                cur.execute('VACUUM (ANALYZE) "gorila_crypto"."crypto_events"')
+        finally:
+            vacuum_conn.close()
+        return {"deleted_rows": deleted_rows, "dropped_indexes": dropped_indexes}
+
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
         protocol.validate()
         self.init()
