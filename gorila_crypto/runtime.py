@@ -139,6 +139,8 @@ class ProspectiveCryptoIngestor:
         self._persistence_error: str | None = None
         self._persistence_last_success_monotonic = 0.0
         self._persistence_dropped_events = 0
+        self._bootstrap_thread: threading.Thread | None = None
+        self._bootstrap_stop = threading.Event()
         self._last_bookticker_persist_monotonic: dict[str, float] = {}
         self._bookticker_persist_interval = settings.persist_bookticker_interval_seconds
 
