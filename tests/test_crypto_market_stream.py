@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
+import pytest
 
 import gorila_crypto.app as app_module
-from gorila_crypto.app import app
 from gorila_crypto.config import settings
 from gorila_crypto.market_cache import MARKET_CACHE
+from fastapi import HTTPException
 
 
 def _seed_cache() -> None:
@@ -36,7 +36,7 @@ def _seed_cache() -> None:
     MARKET_CACHE.append_persisted([trade, book], results)
 
 
-def test_market_stream_is_hot_and_cursor_does_not_advance_from_side_snapshot(monkeypatch) -> None:
+def test_market_stream_bootstrap_keeps_side_snapshot_out_of_cursor(monkeypatch) -> None:
     _seed_cache()
     monkeypatch.setattr(
         app_module,
@@ -53,16 +53,36 @@ def test_market_stream_is_hot_and_cursor_does_not_advance_from_side_snapshot(mon
         ),
     )
 
-    with TestClient(app) as client:
-        response = client.get("/api/crypto/market/stream?cursor=100&limit=36")
+    payload = app_module.market_stream(cursor=0, limit=36)
 
-    assert response.status_code == 200
-    payload = response.json()
     assert payload["next_cursor"] == 101
     assert [row["ledger_seq"] for row in payload["events"]] == [101]
     assert payload["symbols"][0]["bid"] == 99.9
     assert payload["symbols"][0]["ask"] == 100.1
     assert payload["symbols"][0]["spread_bps"] > 0
+
+
+def test_market_stream_incremental_cursor_includes_delivered_book_events(monkeypatch) -> None:
+    _seed_cache()
+    monkeypatch.setattr(
+        app_module,
+        "settings",
+        replace(settings, ingest_enabled=True, symbols=("BTCUSDT",)),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_runtime",
+        SimpleNamespace(
+            symbol_health=lambda: [
+                {"symbol": "BTCUSDT", "status": "LIVE", "healthy": True}
+            ]
+        ),
+    )
+
+    payload = app_module.market_stream(cursor=100, limit=36)
+
+    assert payload["next_cursor"] == 999
+    assert [row["ledger_seq"] for row in payload["events"]] == [101, 999]
 
 
 def test_market_stream_fails_closed_when_capture_is_disabled(monkeypatch) -> None:
@@ -71,8 +91,8 @@ def test_market_stream_fails_closed_when_capture_is_disabled(monkeypatch) -> Non
         "settings",
         replace(settings, ingest_enabled=False),
     )
-    with TestClient(app) as client:
-        response = client.get("/api/crypto/market/stream")
+    with pytest.raises(HTTPException) as exc:
+        app_module.market_stream()
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == "capture_not_enabled"
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "capture_not_enabled"
