@@ -60,3 +60,26 @@ def test_evidence_spool_enforces_capacity(tmp_path) -> None:
     spool.append([row])
     with pytest.raises(OverflowError, match="evidence_spool_capacity_exceeded"):
         spool.append([row])
+
+
+def test_evidence_spool_compresses_large_payload_and_roundtrips(tmp_path) -> None:
+    row = _row()
+    row["payload"]["padding"] = "x" * 20_000
+    raw_size = len(
+        json.dumps([row], sort_keys=True, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
+    )
+    spool = EvidenceSpool(
+        path=str(tmp_path / "compressed.sqlite3"),
+        max_bytes=2 * 1024 * 1024,
+        max_batches=10,
+    )
+
+    spool.append([row])
+
+    batch = spool.peek()
+    assert batch is not None
+    assert batch.rows == [row]
+    assert batch.byte_count < raw_size
+    assert spool.stats()["bytes"] == batch.byte_count
