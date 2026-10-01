@@ -166,3 +166,106 @@ def test_warm_replay_does_not_train() -> None:
         learn=False,
     )
     assert engine.training_updates == 0
+
+
+def test_depth_updates_do_not_fake_best_bid_ask() -> None:
+    state = SymbolMicrostructure("BTCUSDT")
+    state.feed(
+        "bookTicker",
+        {"b": "100.0", "a": "100.1", "B": "5", "A": "4"},
+        ts(0),
+    )
+    state.feed(
+        "depthUpdate",
+        {"b": [["99.0", "10"]], "a": [["101.0", "10"]]},
+        ts(10),
+    )
+    snapshot = state.snapshot(ts(20))
+    assert snapshot["mid"] == 100.05
+    assert snapshot["depth_activity"] > 0
+
+
+def test_late_target_reaction_after_five_seconds_is_not_learned_as_success() -> None:
+    engine = AdaptiveOpportunityClock()
+    base = ts(0)
+    engine.feed_event(
+        symbol="ETHUSDT",
+        event_type="trade",
+        payload={"p": "200", "q": "1", "m": False},
+        event_time=base,
+        received_time=base,
+        event_id="e0",
+        replay_fingerprint="late:test",
+    )
+    engine.feed_event(
+        symbol="BTCUSDT",
+        event_type="trade",
+        payload={"p": "100", "q": "1", "m": False},
+        event_time=base,
+        received_time=base,
+        event_id="b0",
+        replay_fingerprint="late:test",
+    )
+    engine.feed_event(
+        symbol="BTCUSDT",
+        event_type="trade",
+        payload={"p": "100.60", "q": "1", "m": False},
+        event_time=ts(1000),
+        received_time=ts(1000),
+        event_id="b1",
+        replay_fingerprint="late:test",
+    )
+    assert engine.pending
+    engine.feed_event(
+        symbol="ETHUSDT",
+        event_type="trade",
+        payload={"p": "200.10", "q": "1", "m": False},
+        event_time=ts(6000),
+        received_time=ts(6000),
+        event_id="e1",
+        replay_fingerprint="late:test",
+    )
+    assert engine.resolved == 0
+
+
+def test_pairwise_overlap_is_suppressed() -> None:
+    engine = AdaptiveOpportunityClock()
+    base = ts(0)
+    engine.feed_event(
+        symbol="ETHUSDT",
+        event_type="trade",
+        payload={"p": "200", "q": "1", "m": False},
+        event_time=base,
+        received_time=base,
+        event_id="e0",
+        replay_fingerprint="overlap:test",
+    )
+    engine.feed_event(
+        symbol="BTCUSDT",
+        event_type="trade",
+        payload={"p": "100", "q": "1", "m": False},
+        event_time=base,
+        received_time=base,
+        event_id="b0",
+        replay_fingerprint="overlap:test",
+    )
+    engine.feed_event(
+        symbol="BTCUSDT",
+        event_type="trade",
+        payload={"p": "100.60", "q": "1", "m": False},
+        event_time=ts(1000),
+        received_time=ts(1000),
+        event_id="b1",
+        replay_fingerprint="overlap:test",
+    )
+    started = engine.opportunities_started
+    engine.feed_event(
+        symbol="BTCUSDT",
+        event_type="trade",
+        payload={"p": "101.20", "q": "1", "m": False},
+        event_time=ts(2000),
+        received_time=ts(2000),
+        event_id="b2",
+        replay_fingerprint="overlap:test",
+    )
+    assert engine.opportunities_started == started
