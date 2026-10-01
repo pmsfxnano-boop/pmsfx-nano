@@ -174,15 +174,40 @@ function TerminalHero({ item }: { item: SymbolMarket | undefined }) {
 
 function PrimaryChart({
   history,
+  liveEvents,
+  symbol,
   resolution,
   onResolution,
 }: {
   history: HistoryResponse | null;
+  liveEvents: MarketEvent[];
+  symbol: string;
   resolution: string;
   onResolution: (v: string) => void;
 }) {
-  const candles = history?.candles || [];
-  const values = candles.map(c => c.close);
+  const durablePoints = (history?.candles || []).map(c => ({
+    time: c.time,
+    price: c.close,
+  }));
+
+  const livePoints = liveEvents
+    .filter(event => event.price != null)
+    .slice()
+    .sort((a, b) => Date.parse(a.received_time) - Date.parse(b.received_time))
+    .map(event => ({
+      time: event.received_time,
+      price: Number(event.price),
+    }));
+
+  // The chart is genuinely live: durable history is used when available,
+  // while the hot market stream supplies an immediate real-time tail.
+  const sourcePoints = durablePoints.length ? durablePoints : livePoints;
+  const maxPoints = 220;
+  const points = sourcePoints.length > maxPoints
+    ? sourcePoints.filter((_, index) => index % Math.ceil(sourcePoints.length / maxPoints) === 0)
+    : sourcePoints;
+
+  const values = points.map(point => point.price);
   const current = values.at(-1) ?? null;
   const previous = values.length > 1 ? values.at(-2)! : null;
   const change = current != null && previous != null && previous !== 0
@@ -191,12 +216,12 @@ function PrimaryChart({
 
   const W = 1000;
   const H = 390;
-  const pad = { l: 18, r: 18, t: 22, b: 28 };
+  const pad = { l: 18, r: 74, t: 22, b: 30 };
   const rawHigh = values.length ? Math.max(...values) : 1;
   const rawLow = values.length ? Math.min(...values) : 0;
   const range = Math.max(rawHigh - rawLow, rawHigh * 0.001, 1e-9);
-  const high = rawHigh + range * 0.08;
-  const low = rawLow - range * 0.08;
+  const high = rawHigh + range * 0.09;
+  const low = rawLow - range * 0.09;
   const span = Math.max(high - low, 1e-9);
   const innerW = W - pad.l - pad.r;
   const innerH = H - pad.t - pad.b;
@@ -206,15 +231,18 @@ function PrimaryChart({
   const areaPoints = values.length
     ? `${pad.l},${H - pad.b} ${linePoints} ${x(values.length - 1)},${H - pad.b}`
     : "";
+  const live = sourcePoints === livePoints || !durablePoints.length;
+  const displaySymbol = symbolBase(symbol || history?.symbol || "BTCUSDT");
+  const displayQuote = (symbol || history?.symbol || "BTCUSDT").endsWith("USDT") ? "USDT" : "USD";
 
   return (
     <section className="panel primary-chart-panel">
       <div className="primary-chart-head">
         <div>
-          <div className="eyebrow"><Icon name="chart" /> PRIMARY MARKET CHART</div>
+          <div className="eyebrow"><Icon name="chart" /> PRIMARY MARKET CHART <span className="chart-live-dot" /></div>
           <div className="primary-chart-title">
-            <strong>{symbolBase(history?.symbol || "BTCUSDT")}</strong>
-            <span>/{history?.symbol?.endsWith("USDT") ? "USDT" : "USD"}</span>
+            <strong>{displaySymbol}</strong>
+            <span>/{displayQuote}</span>
             {current != null && <b>{fmt(current, current < 10 ? 5 : 2)}</b>}
             {change != null && <em className={change >= 0 ? "up" : "down"}>{pct(change, 2)}</em>}
           </div>
@@ -229,11 +257,12 @@ function PrimaryChart({
       </div>
 
       <div className="primary-chart-frame">
-        {values.length ? (
+        {values.length > 1 ? (
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-label="Live crypto price chart">
             <defs>
               <linearGradient id="primaryChartFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--cyan)" stopOpacity=".24" />
+                <stop offset="0%" stopColor="var(--cyan)" stopOpacity=".30" />
+                <stop offset="52%" stopColor="var(--cyan)" stopOpacity=".10" />
                 <stop offset="100%" stopColor="var(--cyan)" stopOpacity="0" />
               </linearGradient>
               <filter id="primaryChartGlow" x="-20%" y="-20%" width="140%" height="140%">
@@ -243,9 +272,14 @@ function PrimaryChart({
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
+              <linearGradient id="primaryChartTrace" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="var(--cyan)" stopOpacity=".55" />
+                <stop offset="78%" stopColor="var(--cyan)" stopOpacity=".90" />
+                <stop offset="100%" stopColor="#baf6ff" stopOpacity="1" />
+              </linearGradient>
             </defs>
 
-            {[0.18, 0.38, 0.58, 0.78].map(v => (
+            {[0.16, 0.36, 0.56, 0.76].map(v => (
               <line
                 key={v}
                 className="primary-gridline"
@@ -256,10 +290,22 @@ function PrimaryChart({
               />
             ))}
 
+            {[0.25, 0.5, 0.75].map(v => (
+              <line
+                key={`v-${v}`}
+                className="primary-gridline vertical"
+                x1={pad.l + innerW * v}
+                x2={pad.l + innerW * v}
+                y1={pad.t}
+                y2={H - pad.b}
+              />
+            ))}
+
             <polygon className="primary-chart-area" points={areaPoints} />
             <polyline
               className="primary-chart-line"
               points={linePoints}
+              stroke="url(#primaryChartTrace)"
               filter="url(#primaryChartGlow)"
             />
 
@@ -276,20 +322,46 @@ function PrimaryChart({
                   className="primary-price-dot"
                   cx={x(values.length - 1)}
                   cy={y(current)}
-                  r="5"
+                  r="5.5"
                 />
+                <rect
+                  className="primary-price-label-bg"
+                  x={W - pad.r + 8}
+                  y={y(current) - 13}
+                  width="56"
+                  height="26"
+                  rx="7"
+                />
+                <text
+                  className="primary-price-label"
+                  x={W - pad.r + 36}
+                  y={y(current) + 4}
+                  textAnchor="middle"
+                >
+                  {fmt(current, current < 10 ? 4 : 1)}
+                </text>
               </>
+            )}
+
+            {points.at(-1) && (
+              <circle
+                className="primary-live-pulse"
+                cx={x(values.length - 1)}
+                cy={y(values.at(-1)!.price)}
+                r="9"
+              />
             )}
           </svg>
         ) : (
-          <div className="empty">Waiting for durable price history.</div>
+          <div className="empty">Waiting for live market observations.</div>
         )}
+        <div className="chart-live-badge"><span />{live ? "LIVE STREAM" : "DURABLE HISTORY"}</div>
       </div>
 
       <div className="primary-chart-foot">
-        <span>{history?.resolution || resolution} · durable market ledger</span>
+        <span>{live ? "live Binance market stream" : `${history?.resolution || resolution} · durable market ledger`}</span>
         <span>{values.length} observations</span>
-        <span>live terminal read-model</span>
+        <span>low-latency visual read-model</span>
       </div>
     </section>
   );
@@ -740,7 +812,13 @@ function App() {
           <>
             <SymbolStrip symbols={symbols} selected={selectedMarket?.symbol || selected} onSelect={updateSelected} />
             <TerminalHero item={selectedMarket} />
-            <PrimaryChart history={history} resolution={resolution} onResolution={setResolution} />
+            <PrimaryChart
+              history={history}
+              liveEvents={selectedTrades}
+              symbol={selectedMarket?.symbol || selected}
+              resolution={resolution}
+              onResolution={setResolution}
+            />
             <Microstructure item={selectedMarket} trades={selectedTrades} />
             <LiveTape trades={selectedTrades} />
             <QuantTimeline health={health} evidence={evidence} market={marketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
