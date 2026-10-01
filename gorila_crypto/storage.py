@@ -26,7 +26,7 @@ CRYPTO_DATABASE_URL = (
     os.getenv("GORILA_CRYPTO_DATABASE_URL", "").strip()
     or os.getenv("DATABASE_URL", "").strip()
 )
-CRYPTO_SCHEMA_VERSION = 3
+CRYPTO_SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crypto_events (
@@ -49,16 +49,8 @@ CREATE TABLE IF NOT EXISTS crypto_events (
 );
 CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_time
     ON crypto_events(symbol, event_time, ledger_seq);
-CREATE INDEX IF NOT EXISTS idx_crypto_events_source_time
-    ON crypto_events(source, event_time, ledger_seq);
-CREATE INDEX IF NOT EXISTS idx_crypto_events_sequence
-    ON crypto_events(symbol, sequence_start, sequence_end);
 CREATE INDEX IF NOT EXISTS idx_crypto_events_received
     ON crypto_events(received_time, ledger_seq);
-CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_type_ledger
-    ON crypto_events(symbol, event_type, ledger_seq);
-CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_type_time
-    ON crypto_events(symbol, event_type, event_time, ledger_seq);
 
 CREATE TABLE IF NOT EXISTS crypto_connection_events (
     connection_id TEXT PRIMARY KEY,
@@ -468,6 +460,21 @@ class CryptoStore:
                             "SELECT pg_advisory_xact_lock(hashtext('gorila_crypto_schema_v1'))"
                         )
                         cur.execute(SCHEMA)
+                        # Storage footprint migration: these secondary indexes
+                        # duplicate access paths that are not required by the
+                        # live market path or bounded chart/read contracts.
+                        # Drop them from existing databases and omit them from
+                        # future schema bootstraps. This preserves every ledger
+                        # row while reclaiming their on-disk footprint.
+                        for index_name in (
+                            "idx_crypto_events_source_time",
+                            "idx_crypto_events_sequence",
+                            "idx_crypto_events_symbol_type_ledger",
+                            "idx_crypto_events_symbol_type_time",
+                        ):
+                            cur.execute(
+                                f'DROP INDEX IF EXISTS "{index_name}"'
+                            )
                     conn.commit()
                     self._pg_schema_ready_urls.add(self.database_url)
                     self._schema_ready = True
