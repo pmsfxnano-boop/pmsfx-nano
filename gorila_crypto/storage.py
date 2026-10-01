@@ -343,24 +343,35 @@ def _rewrite_database_url_for_external_host(
     database_url: str,
     external_host: str | None = None,
 ) -> str:
-    """Rewrite only the network endpoint for controlled cross-region Postgres use.
-
-    Render's `fromDatabase.connectionString` is private-network scoped. A Frankfurt
-    consumer must use the database's external endpoint with TLS. Credentials remain
-    entirely inside the original URL/env var and are never written to source control.
-    """
-    override = (external_host or os.getenv("GORILA_CRYPTO_DATABASE_HOST_OVERRIDE", "")).strip()
-    if not override:
+    """Normalize Postgres endpoint selection and always require TLS."""
+    if not database_url:
         return database_url
     parsed = urlsplit(database_url)
     if parsed.scheme not in {"postgres", "postgresql"} or not parsed.netloc:
-        raise ValueError("invalid_postgres_database_url_for_external_host_override")
-    userinfo = parsed.netloc.rsplit("@", 1)[0] if "@" in parsed.netloc else ""
-    port = parsed.port or 5432
-    netloc = f"{userinfo}@{override}:{port}" if userinfo else f"{override}:{port}"
+        return database_url
+
+    override = (
+        external_host
+        or os.getenv("GORILA_CRYPTO_DATABASE_HOST_OVERRIDE", "")
+    ).strip()
+
+    if override:
+        userinfo = parsed.netloc.rsplit("@", 1)[0] if "@" in parsed.netloc else ""
+        port = parsed.port or 5432
+        netloc = (
+            f"{userinfo}@{override}:{port}"
+            if userinfo
+            else f"{override}:{port}"
+        )
+    else:
+        netloc = parsed.netloc
+
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["sslmode"] = "require"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(query), parsed.fragment))
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
+
 
 
 class LedgerIntegrityError(RuntimeError):
