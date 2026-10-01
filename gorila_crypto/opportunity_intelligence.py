@@ -21,9 +21,8 @@ import hashlib
 import json
 import math
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from statistics import median
 from typing import Any, Mapping
 
 MODEL_VERSION = "opportunity-clock-intelligence-v1"
@@ -146,7 +145,7 @@ class SymbolMicrostructure:
     trade_intensity: EWMA = field(default_factory=EWMA)
     realized_vol: EWMA = field(default_factory=EWMA)
     flow_moments: OnlineMoments = field(default_factory=lambda: OnlineMoments(alpha=0.02))
-    recent_returns: deque[float] = field(default_factory=lambda: deque(maxlen=64))
+    recent_trades: deque[tuple[datetime, float]] = field(default_factory=lambda: deque(maxlen=256))
 
     def feed(self, event_type: str, payload: Mapping[str, Any], received_time: datetime) -> None:
         self.last_event_received = received_time
@@ -196,7 +195,7 @@ class SymbolMicrostructure:
             if self.last_trade_price is not None and self.last_trade_price > 0:
                 ret_bps = 10_000.0 * math.log(price / self.last_trade_price)
                 self.realized_vol.update(ret_bps * ret_bps)
-                self.recent_returns.append(ret_bps)
+            self.recent_trades.append((received_time, price))
 
             self.last_trade_price = price
             self.last_trade_received = received_time
@@ -204,6 +203,17 @@ class SymbolMicrostructure:
                 self.bid = price
                 self.ask = price
             self._update_mid()
+
+    def return_over_ms(self, now: datetime, price: float, lookback_ms: float) -> float | None:
+        cutoff = max(0.0, float(lookback_ms))
+        reference_price: float | None = None
+        for received_at, reference in reversed(self.recent_trades):
+            if _ms(now, received_at) >= cutoff:
+                reference_price = reference
+                break
+        if reference_price is None or reference_price <= 0 or price <= 0:
+            return None
+        return 10_000.0 * math.log(price / reference_price)
 
     def _update_mid(self) -> None:
         if self.bid is not None and self.ask is not None and self.bid > 0 and self.ask >= self.bid:
@@ -512,10 +522,8 @@ class AdaptiveOpportunityClock:
             state = self.book.symbols.get(symbol.upper())
             if state is None or state.last_trade_received is None:
                 return outcomes
-            if len(state.recent_returns) < 1:
-                return outcomes
-            recent_bps = sum(list(state.recent_returns)[-1:])
-            if abs(recent_bps) < SHOCK_THRESHOLD_BPS:
+            recent_bps = state.return_over_ms(received_time, price, SHOCK_LOOKBACK_MS)
+            if recent_bps is None or abs(recent_bps) < SHOCK_THRESHOLD_BPS:
                 return outcomes
 
             last_impulse = self.last_impulse_received.get(symbol.upper())
