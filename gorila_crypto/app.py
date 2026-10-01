@@ -687,10 +687,10 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
                     "last_book_time": book["received_time"] if book else None,
                 })
 
+            # The cursor advances only through rows delivered in `events`.
+            # The latest-book query is a side snapshot and must never skip ledger rows.
             next_cursor = max(
-                [int(e["ledger_seq"]) for e in events]
-                + [int(b["ledger_seq"]) for b in latest_book.values()]
-                + [int(cursor)]
+                [int(e["ledger_seq"]) for e in events] + [int(cursor)]
             )
             return {
                 "status": "LIVE" if summary and all(s["status"] == "LIVE" for s in summary) else "DEGRADED",
