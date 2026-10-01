@@ -199,6 +199,76 @@ def test_runtime_config_rejects_empty_kind() -> None:
         raise AssertionError("empty runtime kind was accepted")
 
 
+def test_terminal_capture_status_fences_running_session_leases(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "lease-fence.sqlite3"))
+    store.init()
+    conn = store.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO crypto_capture_sessions(
+                session_id,study_id,provider,venue,region,instance_id,
+                code_version,symbols_json,streams_json,protocol_hash,
+                started_at,ended_at,status,metadata
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "session-1",
+                "study-1",
+                "binance",
+                "BINANCE_SPOT",
+                "test",
+                "instance",
+                "code",
+                "[\"BTCUSDT\"]",
+                "[\"trade\"]",
+                "protocol",
+                "2026-09-29T15:00:00+00:00",
+                None,
+                "RUNNING",
+                "{}",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_runtime_leases(
+                run_id,session_id,started_at,heartbeat_at,status
+            ) VALUES(?,?,?,?,?)
+            """,
+            (
+                "run-1",
+                "session-1",
+                "2026-09-29T15:00:00+00:00",
+                "2026-09-29T15:00:01+00:00",
+                "RUNNING",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store.set_capture_session_status("session-1", "ABORTED_STALE")
+
+    conn = store.connect()
+    try:
+        session = conn.execute(
+            "SELECT status,ended_at FROM crypto_capture_sessions WHERE session_id=?",
+            ("session-1",),
+        ).fetchone()
+        lease = conn.execute(
+            "SELECT status FROM crypto_runtime_leases WHERE run_id=?",
+            ("run-1",),
+        ).fetchone()
+        assert session["status"] == "ABORTED_STALE"
+        assert session["ended_at"] is not None
+        assert lease["status"] == "ABORTED_STALE"
+    finally:
+        conn.close()
+        store.close()
+
+
 def test_build_prospective_runtime_fails_closed_without_durable_database(monkeypatch) -> None:
     import gorila_crypto.runtime as runtime
 
