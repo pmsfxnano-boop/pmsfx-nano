@@ -2036,7 +2036,9 @@ class CryptoStore:
             conn.close()
 
     def health(self, *, source_prefix: str | None = None) -> list[dict[str, Any]]:
+        """Return source health with freshness recomputed at read time."""
         self.init()
+        now = datetime.now(timezone.utc)
         conn = self.connect()
         try:
             placeholder = "%s" if self._pg else "?"
@@ -2045,37 +2047,52 @@ class CryptoStore:
             if source_prefix is not None:
                 where = f" WHERE source LIKE {placeholder}"
                 params.append(source_prefix.rstrip("%") + "%")
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT source,status,updated_at,last_event_time,last_received_time,"
-                        "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                        "FROM crypto_source_health"
-                        + where
-                        + " ORDER BY source",
-                        params,
-                    )
-                    rows = cur.fetchall()
-                    return [
-                        dict(zip(
-                            [
-                                "source","status","updated_at","last_event_time",
-                                "last_received_time","event_age_seconds",
-                                "transport_age_seconds","rows_last_batch","error"
-                            ],
-                            row,
-                        ))
-                        for row in rows
-                    ]
 
-            rows = conn.execute(
+            sql = (
                 "SELECT source,status,updated_at,last_event_time,last_received_time,"
                 "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                "FROM crypto_source_health"
-                + where
-                + " ORDER BY source",
-                params,
-            ).fetchall()
-            return [dict(row) for row in rows]
+                "FROM crypto_source_health" + where + " ORDER BY source"
+            )
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    raw_rows = cur.fetchall()
+            else:
+                raw_rows = conn.execute(sql, params).fetchall()
+
+            names = [
+                "source","status","updated_at","last_event_time","last_received_time",
+                "event_age_seconds","transport_age_seconds","rows_last_batch","error"
+            ]
+            result: list[dict[str, Any]] = []
+            for raw in raw_rows:
+                row = dict(zip(names, raw))
+                last_received = row.get("last_received_time")
+                dynamic_age = None
+                if last_received:
+                    try:
+                        dt = datetime.fromisoformat(
+                            str(last_received).replace("Z", "+00:00")
+                        )
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        dynamic_age = max(
+                            0.0,
+                            (now - dt.astimezone(timezone.utc)).total_seconds(),
+                        )
+                    except ValueError:
+                        dynamic_age = None
+
+                if dynamic_age is not None:
+                    row["event_age_seconds"] = dynamic_age
+                    row["transport_age_seconds"] = dynamic_age
+                    if dynamic_age <= 90.0:
+                        row["status"] = "LIVE"
+                    elif dynamic_age <= 1800.0:
+                        row["status"] = "DELAYED"
+                    else:
+                        row["status"] = "STALE"
+                result.append(row)
+            return result
         finally:
             conn.close()
