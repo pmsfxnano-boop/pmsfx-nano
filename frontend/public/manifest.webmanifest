@@ -1,7 +1,7 @@
 {
-  "name": "Gorila Crypto",
-  "short_name": "Gorila Crypto",
-  "description": "Terminal cuantitativo crypto en tiempo real.",
+  "name": "Gorila Argentum",
+  "short_name": "Gorila",
+  "description": "Terminal cuantitativo en tiempo real.",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#07090c",
