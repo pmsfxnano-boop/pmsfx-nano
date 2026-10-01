@@ -22,7 +22,7 @@ export function createDirectBinanceFeed(
   let reconnectTimer = 0;
   let reconnectMs = 500;
   let seq = 0;
-  const events: DirectMarketEvent[] = [];
+  const events: MarketEvent[] = [];
   const latest: Record<string, SymbolMarket> = Object.fromEntries(
     SYMBOLS.map((symbol) => [
       symbol,
@@ -30,12 +30,16 @@ export function createDirectBinanceFeed(
         symbol,
         status: "STARTING",
         price: null,
+        window_change_pct: null,
         bid: null,
         ask: null,
         bid_qty: null,
         ask_qty: null,
         spread_bps: null,
+        imbalance: null,
         freshness_ms: null,
+        last_trade_time: null,
+        last_book_time: null,
       },
     ]),
   );
@@ -44,14 +48,17 @@ export function createDirectBinanceFeed(
     const now = Date.now();
     const symbols = SYMBOLS.map((symbol) => {
       const item = latest[symbol];
-      const freshness_ms = item.freshness_ms == null ? null : Math.max(0, now - item.freshness_ms);
+      const freshnessMs =
+        item.freshness_ms == null
+          ? null
+          : Math.max(0, now - item.freshness_ms);
       return {
         ...item,
-        freshness_ms,
+        freshness_ms: freshnessMs,
         status:
-          freshness_ms != null && freshness_ms <= 5000
+          freshnessMs != null && freshnessMs <= 5000
             ? "LIVE"
-            : freshness_ms != null && freshness_ms <= 30000
+            : freshnessMs != null && freshnessMs <= 30000
               ? "DELAYED"
               : "NO_DATA",
       };
@@ -77,58 +84,104 @@ export function createDirectBinanceFeed(
         emit();
       };
       socket.onmessage = (message) => {
-        const envelope = JSON.parse(String(message.data)) as { data?: Record<string, unknown> };
-        const data = envelope.data || envelope;
-        const type = String(data.e || "");
-        const symbol = String(data.s || "").toUpperCase();
-        if (!SYMBOLS.includes(symbol)) return;
-
-        const now = new Date().toISOString();
-        const eventKey =
-          type === "trade"
-            ? `binance-direct-trade-${symbol}-${String(data.t)}`
-            : `binance-direct-book-${symbol}-${String(data.u)}`;
-
-        seq += 1;
-        if (type === "trade") {
-          const price = Number(data.p);
-          const quantity = Number(data.q);
-          const event: DirectMarketEvent = {
-            stream_seq: seq,
-            ledger_seq: null,
-            durable: false,
-            event_key: eventKey,
-            symbol,
-            event_type: "trade",
-            event_time: new Date(Number(data.E || Date.now())).toISOString(),
-            received_time: now,
-            price: Number.isFinite(price) ? price : null,
-            quantity: Number.isFinite(quantity) ? quantity : null,
-            side: Boolean(data.m) ? "SELL" : "BUY",
-            bid: null,
-            ask: null,
-            bid_qty: null,
-            ask_qty: null,
+        try {
+          const envelope = JSON.parse(String(message.data)) as {
+            data?: Record<string, unknown>;
           };
-          events.push(event);
-          latest[symbol] = {
-            ...latest[symbol],
-            price: latest[symbol].price ?? mid,
-            bid: event.bid ?? null,
-            ask: event.ask ?? null,
-            bid_qty: event.bid_qty ?? null,
-            ask_qty: event.ask_qty ?? null,
-            spread_bps: spread,
-            freshness_ms: Date.now(),
-            last_book_time: event.received_time,
-          };
-        } else {
-          return;
+          const data = envelope.data || envelope;
+          const type = String(data.e || "");
+          const symbol = String(data.s || "").toUpperCase();
+          if (!SYMBOLS.includes(symbol)) return;
+
+          const now = new Date().toISOString();
+          seq += 1;
+
+          if (type === "trade") {
+            const price = Number(data.p);
+            const quantity = Number(data.q);
+            const event: MarketEvent = {
+              stream_seq: seq,
+              ledger_seq: null,
+              durable: false,
+              event_key: `binance-direct-trade-${symbol}-${String(data.t)}`,
+              symbol,
+              event_type: "trade",
+              event_time: new Date(
+                Number(data.E || Date.now()),
+              ).toISOString(),
+              received_time: now,
+              price: Number.isFinite(price) ? price : null,
+              quantity: Number.isFinite(quantity) ? quantity : null,
+              side: Boolean(data.m) ? "SELL" : "BUY",
+            };
+            events.push(event);
+            latest[symbol] = {
+              ...latest[symbol],
+              price: event.price,
+              freshness_ms: Date.now(),
+              last_trade_time: event.received_time,
+            };
+          } else if (type === "bookTicker") {
+            const bid = Number(data.b);
+            const ask = Number(data.a);
+            const bidQty = Number(data.B);
+            const askQty = Number(data.A);
+            const mid =
+              Number.isFinite(bid) && Number.isFinite(ask)
+                ? (bid + ask) / 2
+                : null;
+            const spread =
+              Number.isFinite(bid) &&
+              bid > 0 &&
+              Number.isFinite(ask)
+                ? (ask / bid - 1) * 10000
+                : null;
+
+            const event: MarketEvent = {
+              stream_seq: seq,
+              ledger_seq: null,
+              durable: false,
+              event_key: `binance-direct-book-${symbol}-${String(data.u)}`,
+              symbol,
+              event_type: "bookTicker",
+              event_time: now,
+              received_time: now,
+              price: mid,
+              quantity: null,
+              side: null,
+              bid: Number.isFinite(bid) ? bid : null,
+              ask: Number.isFinite(ask) ? ask : null,
+              bid_qty: Number.isFinite(bidQty) ? bidQty : null,
+              ask_qty: Number.isFinite(askQty) ? askQty : null,
+            };
+            events.push(event);
+            latest[symbol] = {
+              ...latest[symbol],
+              price: latest[symbol].price ?? mid,
+              bid: event.bid ?? null,
+              ask: event.ask ?? null,
+              bid_qty: event.bid_qty ?? null,
+              ask_qty: event.ask_qty ?? null,
+              spread_bps: spread,
+              freshness_ms: Date.now(),
+              last_book_time: event.received_time,
+            };
+          } else {
+            return;
+          }
+
+          if (events.length > 720) {
+            events.splice(0, events.length - 720);
+          }
+          emit();
+        } catch {
+          // Ignore malformed browser-side provider frames and remain connected.
         }
-        emit();
       };
       socket.onerror = () => {
-        try { socket?.close(); } catch {}
+        try {
+          socket?.close();
+        } catch {}
       };
       socket.onclose = () => {
         socket = null;
@@ -148,7 +201,9 @@ export function createDirectBinanceFeed(
     window.clearInterval(freshnessTimer);
     if (reconnectTimer) window.clearTimeout(reconnectTimer);
     reconnectTimer = 0;
-    try { socket?.close(); } catch {}
+    try {
+      socket?.close();
+    } catch {}
     socket = null;
   };
 }
