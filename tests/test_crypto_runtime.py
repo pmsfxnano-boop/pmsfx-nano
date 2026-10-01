@@ -443,6 +443,50 @@ def test_start_capture_session_fences_terminal_lease(tmp_path) -> None:
         store.close()
 
 
+def test_start_capture_session_is_running_atomically(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "atomic-start.sqlite3"))
+    store.init()
+    conn = store.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO crypto_studies(
+                study_id,protocol_hash,created_at,status,protocol_json
+            ) VALUES(?,?,?,?,?)
+            """,
+            ("study-atomic", "protocol-atomic", "2026-09-29T15:00:00+00:00", "REGISTERED", "{}"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    session_id = store.start_capture_session(
+        study_id="study-atomic",
+        protocol_hash="protocol-atomic",
+        provider="binance",
+        venue="BINANCE_SPOT",
+        symbols=("BTCUSDT",),
+        streams=("trade",),
+        region="test",
+        instance_id="atomic-instance",
+        code_version="atomic-code",
+    )
+
+    conn = store.connect()
+    try:
+        row = conn.execute(
+            "SELECT status,ended_at FROM crypto_capture_sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        assert row["status"] == "RUNNING"
+        assert row["ended_at"] is None
+    finally:
+        conn.close()
+        store.close()
+
+
 def test_reconcile_fences_lease_from_terminal_capture_session(tmp_path) -> None:
     from gorila_crypto.quant_store import QuantCryptoStore
 
