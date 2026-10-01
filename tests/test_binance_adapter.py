@@ -27,6 +27,14 @@ def _now() -> datetime:
     return datetime(2026, 9, 29, 15, 0, 0, tzinfo=timezone.utc)
 
 
+def test_websocket_transport_has_explicit_heartbeat() -> None:
+    config = BinanceStreamConfig(symbols=("BTCUSDT",), streams=("trade",))
+    assert config.ping_interval_s is not None
+    assert config.ping_interval_s == 15.0
+    assert config.ping_timeout_s == 5.0
+    assert config.ping_timeout_s < config.ping_interval_s
+
+
 def test_stream_names_are_deterministic_and_lowercase() -> None:
     config = BinanceStreamConfig(
         symbols=("BTCUSDT", "ETHUSDT"),
