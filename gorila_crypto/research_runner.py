@@ -263,38 +263,51 @@ def _sql_quality_report(
             end.isoformat(),
         )
         summary_sql = f"""
-            SELECT e.symbol,
+            WITH scoped AS (
+                SELECT
+                    e.event_id,
+                    e.symbol,
+                    e.event_time::timestamptz AS event_time,
+                    e.received_time::timestamptz AS received_time,
+                    EXTRACT(EPOCH FROM (
+                        e.received_time::timestamptz - e.event_time::timestamptz
+                    )) * 1000.0 AS latency_ms
+                FROM crypto_events e
+                WHERE {_scope_where()}
+            ),
+            sampled_quantiles AS (
+                SELECT
+                    s.symbol,
+                    percentile_cont(0.50) WITHIN GROUP (ORDER BY GREATEST(0.0, s.latency_ms)) AS p50_latency_ms,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY GREATEST(0.0, s.latency_ms)) AS p95_latency_ms,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY GREATEST(0.0, s.latency_ms)) AS p99_latency_ms
+                FROM scoped s
+                WHERE MOD(ABS(hashtext(s.event_id)), 20) = 0
+                GROUP BY s.symbol
+            )
+            SELECT s.symbol,
                    COUNT(*) AS rows,
-                   MIN(e.event_time::timestamptz) AS first_event,
-                   MAX(e.event_time::timestamptz) AS last_event,
-                   percentile_cont(0.50) WITHIN GROUP (
-                       ORDER BY EXTRACT(EPOCH FROM
-                           (e.received_time::timestamptz - e.event_time::timestamptz)
-                       ) * 1000.0
-                   ) AS p50_latency_ms,
-                   percentile_cont(0.95) WITHIN GROUP (
-                       ORDER BY EXTRACT(EPOCH FROM
-                           (e.received_time::timestamptz - e.event_time::timestamptz)
-                       ) * 1000.0
-                   ) AS p95_latency_ms,
-                   percentile_cont(0.99) WITHIN GROUP (
-                       ORDER BY EXTRACT(EPOCH FROM
-                           (e.received_time::timestamptz - e.event_time::timestamptz)
-                       ) * 1000.0
-                   ) AS p99_latency_ms,
+                   MIN(s.event_time) AS first_event,
+                   MAX(s.event_time) AS last_event,
+                   q.p50_latency_ms,
+                   q.p95_latency_ms,
+                   q.p99_latency_ms,
                    COUNT(*) FILTER (
-                       WHERE e.event_time::timestamptz > %s::timestamptz
+                       WHERE s.event_time > %s::timestamptz
                    ) AS future_events,
                    COUNT(*) FILTER (
-                       WHERE e.received_time::timestamptz > %s::timestamptz
+                       WHERE s.received_time > %s::timestamptz
                    ) AS future_received,
                    COUNT(*) FILTER (
-                       WHERE e.received_time::timestamptz < e.event_time::timestamptz
-                   ) AS negative_latency
-            FROM crypto_events e
-            WHERE {_scope_where()}
-            GROUP BY e.symbol
-            ORDER BY e.symbol
+                       WHERE s.received_time < s.event_time
+                   ) AS negative_latency,
+                   COUNT(*) FILTER (
+                       WHERE s.latency_ms > 5000.0
+                   ) AS latency_over_5s
+            FROM scoped s
+            LEFT JOIN sampled_quantiles q ON q.symbol=s.symbol
+            GROUP BY s.symbol,q.p50_latency_ms,q.p95_latency_ms,q.p99_latency_ms
+            ORDER BY s.symbol
         """
         with conn.cursor() as cur:
             cur.execute(
@@ -417,7 +430,12 @@ def _sql_quality_report(
             reasons.append(f"{symbol}:INSUFFICIENT_ROWS")
         if duration < config.min_duration_seconds:
             reasons.append(f"{symbol}:INSUFFICIENT_DURATION")
-        if p99 is not None and p99 > config.max_p99_transport_latency_ms:
+        latency_over_5s = int(item.get("latency_over_5s") or 0)
+        # Exact tail-count gate: avoid a 1M-row PostgreSQL sort while preserving
+        # the protocol meaning of p99 <= 5000ms.
+        if int(item["rows"]) > 0 and latency_over_5s > int(item["rows"]) * 0.01:
+            reasons.append(f"{symbol}:P99_TRANSPORT_LATENCY")
+        elif p99 is not None and p99 > config.max_p99_transport_latency_ms:
             reasons.append(f"{symbol}:P99_TRANSPORT_LATENCY")
 
     for symbol in protocol.symbols:
