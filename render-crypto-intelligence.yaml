@@ -9,8 +9,9 @@ services:
     plan: starter
     branch: gorila-crypto-intelligence
     buildCommand: pip install -r requirements-gorila.txt
-    startCommand: python -m gorila_crypto.intelligence_runner
+    startCommand: uvicorn gorila_crypto.intelligence_service:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/crypto/health
+    autoDeployTrigger: off
     envVars:
       - key: DATABASE_URL
         fromDatabase:
