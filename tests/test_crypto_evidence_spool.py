@@ -60,3 +60,5 @@ def test_evidence_spool_enforces_capacity(tmp_path) -> None:
     spool.append([row])
     with pytest.raises(OverflowError, match="evidence_spool_capacity_exceeded"):
         spool.append([row])
+
+# CI anchor: clean spool provenance follow-up
