@@ -620,6 +620,183 @@ class CryptoStore:
                 self.close()
             raise
 
+
+    def append_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Append a batch of immutable events in one transaction.
+
+        Event identity and payload integrity use the exact same rules as append_event.
+        The batch path exists to prevent Postgres transaction latency from throttling
+        the live market-data transport. Results preserve input order.
+        """
+        self.init()
+        if not events:
+            return []
+
+        prepared: list[dict[str, Any]] = []
+        for raw in events:
+            item = dict(raw)
+            symbol = str(item["symbol"]).upper()
+            event_type = str(item["event_type"])
+            payload = dict(item["payload"])
+            payload_json = _json(payload)
+            payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+            sequence_start = item.get("sequence_start")
+            sequence_end = item.get("sequence_end")
+            source = str(item["source"])
+            event_time = str(item["event_time"])
+            provider_time = item.get("provider_time")
+            identity = {
+                "source": source,
+                "symbol": symbol,
+                "event_type": event_type,
+                "sequence_start": sequence_start,
+                "sequence_end": sequence_end,
+            }
+            if sequence_start is None or sequence_end is None:
+                identity.update(
+                    {
+                        "event_time": event_time,
+                        "provider_time": provider_time,
+                        "payload_hash": payload_hash,
+                    }
+                )
+            event_key = str(item.get("event_key") or hashlib.sha256(
+                _json(identity).encode("utf-8")
+            ).hexdigest())
+            event_id = str(item.get("event_id") or uuid.uuid4())
+            prepared.append(
+                {
+                    "event_id": event_id,
+                    "event_key": event_key,
+                    "symbol": symbol,
+                    "event_type": event_type,
+                    "event_time": event_time,
+                    "received_time": str(item["received_time"]),
+                    "provider_time": provider_time,
+                    "source": source,
+                    "sequence_start": sequence_start,
+                    "sequence_end": sequence_end,
+                    "payload_hash": payload_hash,
+                    "payload_json": payload_json,
+                    "quality": str(item.get("quality") or "OK"),
+                    "metadata": _json(item.get("metadata") or {}),
+                    "recorded_at": str(item.get("recorded_at") or _utc_now()),
+                }
+            )
+
+        keys = [row["event_key"] for row in prepared]
+        conn = self._write_connection()
+        try:
+            existing: dict[str, tuple[int, str, str]] = {}
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT event_key,ledger_seq,event_id,payload_hash "
+                        "FROM crypto_events WHERE event_key = ANY(%s)",
+                        (keys,),
+                    )
+                    for key, ledger_seq, event_id, payload_hash in cur.fetchall():
+                        existing[str(key)] = (int(ledger_seq), str(event_id), str(payload_hash))
+
+                    sql = """
+                        INSERT INTO crypto_events(
+                            event_id,event_key,symbol,event_type,event_time,received_time,
+                            provider_time,source,sequence_start,sequence_end,payload_hash,
+                            payload_json,quality,metadata,recorded_at
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(event_key) DO NOTHING
+                    """
+                    values = [
+                        (
+                            row["event_id"], row["event_key"], row["symbol"], row["event_type"],
+                            row["event_time"], row["received_time"], row["provider_time"],
+                            row["source"], row["sequence_start"], row["sequence_end"],
+                            row["payload_hash"], row["payload_json"], row["quality"],
+                            row["metadata"], row["recorded_at"],
+                        )
+                        for row in prepared
+                    ]
+                    cur.executemany(sql, values)
+                    cur.execute(
+                        "SELECT event_key,ledger_seq,event_id,payload_hash "
+                        "FROM crypto_events WHERE event_key = ANY(%s)",
+                        (keys,),
+                    )
+                    rows = cur.fetchall()
+                    found = {
+                        str(key): (int(ledger_seq), str(event_id), str(payload_hash))
+                        for key, ledger_seq, event_id, payload_hash in rows
+                    }
+            else:
+                placeholders = ",".join("?" for _ in keys)
+                rows = conn.execute(
+                    "SELECT event_key,ledger_seq,event_id,payload_hash "
+                    f"FROM crypto_events WHERE event_key IN ({placeholders})",
+                    keys,
+                ).fetchall()
+                for row in rows:
+                    existing[str(row[0])] = (int(row[1]), str(row[2]), str(row[3]))
+
+                sql = """
+                    INSERT OR IGNORE INTO crypto_events(
+                        event_id,event_key,symbol,event_type,event_time,received_time,
+                        provider_time,source,sequence_start,sequence_end,payload_hash,
+                        payload_json,quality,metadata,recorded_at
+                    )
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """
+                values = [
+                    (
+                        row["event_id"], row["event_key"], row["symbol"], row["event_type"],
+                        row["event_time"], row["received_time"], row["provider_time"],
+                        row["source"], row["sequence_start"], row["sequence_end"],
+                        row["payload_hash"], row["payload_json"], row["quality"],
+                        row["metadata"], row["recorded_at"],
+                    )
+                    for row in prepared
+                ]
+                conn.executemany(sql, values)
+                placeholders = ",".join("?" for _ in keys)
+                rows = conn.execute(
+                    "SELECT event_key,ledger_seq,event_id,payload_hash "
+                    f"FROM crypto_events WHERE event_key IN ({placeholders})",
+                    keys,
+                ).fetchall()
+                found = {
+                    str(row[0]): (int(row[1]), str(row[2]), str(row[3]))
+                    for row in rows
+                }
+
+            if len(found) != len(set(keys)):
+                raise RuntimeError("event_batch_resolution_failed")
+
+            results: list[dict[str, Any]] = []
+            for row in prepared:
+                resolved = found[row["event_key"]]
+                if resolved[2] != row["payload_hash"]:
+                    raise LedgerIntegrityError(
+                        "provider_identity_conflict: existing payload hash differs"
+                    )
+                was_existing = row["event_key"] in existing
+                results.append(
+                    {
+                        "inserted": not was_existing,
+                        "ledger_seq": resolved[0],
+                        "event_id": resolved[1],
+                        "event_key": row["event_key"],
+                    }
+                )
+
+            conn.commit()
+            return results
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
+
     def record_event(
         self,
         *,
