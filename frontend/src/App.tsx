@@ -505,7 +505,7 @@ function Tape({ events }: { events: StreamEvent[] }) {
         <div className="tape-head"><span>TIME</span><span>SIDE</span><span>PRICE</span><span>SIZE</span></div>
         <div className="tape-scroll">
           {rows.map((event) => (
-            <div className="tape-row" key={event.ledger_seq}>
+            <div className="tape-row" key={event.stream_seq}>
               <span>{timeOf(event.received_time)}</span>
               <span className={event.side === "BUY" ? "positive" : "negative"}>{event.side}</span>
               <strong>{price(event.price)}</strong>
@@ -713,7 +713,7 @@ function TerminalView({
             <div className="hero-meta">
               <span>Binance Spot</span>
               <span>trade + bookTicker</span>
-              <span>ledger seq {selectedEvents.at(-1)?.ledger_seq ?? "—"}</span>
+              <span>market seq {selectedEvents.at(-1)?.stream_seq ?? "—"}</span>
             </div>
           </div>
           <div className="hero-rail">
@@ -784,6 +784,7 @@ export default function App() {
   const [cursor, setCursor] = useState(0);
   const cursorRef = useRef(0);
   const [channel, setChannel] = useState("SYNC");
+  const [durability, setDurability] = useState("SYNC");
   const [error, setError] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -802,7 +803,8 @@ export default function App() {
       setSnapshots(payload.symbols);
       cursorRef.current = payload.next_cursor;
       setCursor(payload.next_cursor);
-      setChannel(payload.status);
+      setChannel(payload.market_status || payload.status);
+      setDurability(payload.durability_status || "SYNC");
       setError(null);
       setEvents((previous) => {
         const next = { ...previous };
@@ -811,8 +813,8 @@ export default function App() {
           const merged = [...current, event];
           const seen = new Set<number>();
           next[event.symbol] = merged.filter((row) => {
-            if (seen.has(row.ledger_seq)) return false;
-            seen.add(row.ledger_seq);
+            if (seen.has(row.stream_seq)) return false;
+            seen.add(row.stream_seq);
             return true;
           }).slice(-720);
         }
@@ -876,6 +878,7 @@ export default function App() {
 
   const live = channel === "LIVE";
   const headerStatus = live ? "LIVE" : channel;
+  const headerLabel = durability === "DEGRADED" ? "LIVE · DURABILITY DEGRADED" : headerStatus;
   const serviceHost = useMemo(() => new URL(API_BASE).hostname, []);
 
   return (
@@ -885,7 +888,7 @@ export default function App() {
         <TopNav view={view} onView={setView} />
         <div className="topbar-right">
           <Status status={headerStatus} />
-          <span className="latency-label">READ MODEL · HOT</span>
+          <span className="latency-label">{durability === "DEGRADED" ? "HOT MARKET · LEDGER DEGRADED" : "READ MODEL · HOT"}</span>
         </div>
       </header>
 
