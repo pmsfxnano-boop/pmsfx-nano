@@ -1,6 +1,6 @@
 # Crypto Backend Continuity State
 
-Last verified: 2026-10-01 01:09 UTC.
+Last verified: 2026-10-01 02:03 UTC.
 
 Canonical scope: Crypto only. Active branches: main, gorila-crypto-binance-parallel, gorila-crypto-cleanroom.
 
@@ -26,16 +26,13 @@ Backend hardening:
 - Autonomous research runner with 7-day maturity gate, exact-ledger fingerprinting, Quality Gate, 6 directed pairs x 6 horizons, OOS persistence, and research-run idempotency.
 
 Current blockers:
-1. Current Binance branch head dccbd5bb750eeeb3cd87d02ec879f477cb90bd06 contains the corrected health/readiness test.
-2. CI must pass on the exact current head before Render promotion.
-3. Oregon had a stale STARTING capture session; hardened runtime must reconcile it after deployment.
-4. Frankfurt still has a queued/update-in-progress older deployment and is not yet considered clean-live.
-5. Production PIT/walk-forward/OOS evidence cannot exist until a complete 7-day prospective cohort passes Quality Gate.
-
-Exact continuation:
-1. Keep session a3a0e7ff-805d-4cbc-96e5-55f3959f3d46 under observation until the full 7-day cohort matures.
-2. Verify periodic ledger growth and freshness for all six channels; if feed stalls, watchdog/supervisor must recycle the runtime.
-3. At maturity, execute the autonomous research runner against the exact session fingerprint and require Quality Gate before PIT/walk-forward/OOS persistence.
-4. Verify all 36 preregistered directed-pair x horizon reports and their costs/slippage/OOS evidence.
-5. Only after the quantitative gates pass, consider any model promotion. Automatic promotion remains disabled.
+1. The production runtime is currently deployed at commit d6b1e7d2b32e88f0f5ea788e7743d1c7bd9fe2e0.
+2. The exact-current-head CI result is not independently verified in this environment; do not claim CI green without a run record.
+3. The active prospective session is b1b79084-fd1d-48bd-89a8-c8b8598fa889, started 2026-10-01T02:02:18.729046+00:00 UTC, with runtime run e83621e1-59dd-4df0-b279-ef15199acde0.
+4. The active session currently shows all six preregistered Binance channels, zero duplicate event keys, and zero persisted data gaps at the latest verification.
+5. The per-symbol feed watchdog was hardened because a prior cohort demonstrated an ETH-specific stall while BTC/SOL remained active; the deployed d6b1e7... runtime now evaluates required-symbol freshness and restarts the feed without ending the cohort.
+6. A test-only fixture correction was committed after deployment (7b2ee441...), so the deployed production code and the branch test suite differ only in that regression fixture; do not redeploy for the test-only change during the current cohort.
+7. Production PIT/walk-forward/OOS evidence cannot exist until this new complete 7-day prospective cohort passes Quality Gate.
+8. Frankfurt remains not considered clean-live until separately verified.
+Automatic promotion remains disabled.
 
