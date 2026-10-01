@@ -343,11 +343,11 @@ function PrimaryChart({
               </>
             )}
 
-            {points.at(-1) && (
+            {current != null && (
               <circle
                 className="primary-live-pulse"
                 cx={x(values.length - 1)}
-                cy={y(values.at(-1)!.price)}
+                cy={y(current)}
                 r="9"
               />
             )}
