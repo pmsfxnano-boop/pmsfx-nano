@@ -23,13 +23,16 @@ jobs:
           FRONTEND_ORIGIN="https://gorila-argentum-terminal.onrender.com"
           HEALTH_URL="$BASE/api/crypto/health"
           MARKET_URL="$BASE/api/crypto/market/stream?cursor=0&limit=36"
+          EVIDENCE_URL="$BASE/api/crypto/evidence"
 
           for attempt in 1 2 3 4 5 6; do
             tmp_headers="$(mktemp)"
             tmp_body="$(mktemp)"
+            tmp_evidence="$(mktemp)"
 
             health_ok=0
             market_ok=0
+            evidence_ok=0
             cors_ok=0
 
             if curl --fail --silent --show-error --max-time 20 "$HEALTH_URL" >/dev/null; then
@@ -43,34 +46,62 @@ jobs:
               fi
             fi
 
+            if curl --fail --silent --show-error --max-time 20 "$EVIDENCE_URL" >"$tmp_evidence"; then
+              evidence_ok=1
+            fi
+
             contract_ok=0
-            if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ]; then
-              if python - "$tmp_body" <<'PY'
+            if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$evidence_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ]; then
+              if python - "$tmp_body" "$tmp_evidence" <<'PY'
           import json
           import sys
 
           with open(sys.argv[1], encoding="utf-8") as fh:
-              payload = json.load(fh)
+              market = json.load(fh)
+          with open(sys.argv[2], encoding="utf-8") as fh:
+              evidence = json.load(fh)
 
-          required = {"status", "next_cursor", "symbols", "events", "forecast"}
-          missing = required - payload.keys()
-          if missing:
-              raise SystemExit(f"market contract missing keys: {sorted(missing)}")
-          if not payload["symbols"]:
+          required_market = {"status", "next_cursor", "symbols", "events", "forecast"}
+          missing_market = required_market - market.keys()
+          if missing_market:
+              raise SystemExit(f"market contract missing keys: {sorted(missing_market)}")
+          if not market["symbols"]:
               raise SystemExit("market contract returned no symbols")
-          if not payload["events"]:
+          if not market["events"]:
               raise SystemExit("market contract returned no persisted events yet")
-          forecast = payload["forecast"]
+          forecast = market["forecast"]
           if forecast.get("automatic_promotion") is not False:
               raise SystemExit("automatic promotion must remain disabled")
           if forecast.get("execution") is not False:
               raise SystemExit("execution must remain disabled")
+
+          required_evidence = {
+              "study", "cohort", "quality_gate", "research", "pit_oos",
+              "forecast_shadow", "lead_lag_shadow", "opportunity_shadow",
+              "regime", "opportunity_clock",
+          }
+          missing_evidence = required_evidence - evidence.keys()
+          if missing_evidence:
+              raise SystemExit(f"evidence contract missing keys: {sorted(missing_evidence)}")
+
+          clock = evidence["opportunity_clock"]
+          if clock.get("validated") and clock.get("state") != "ACTIVE":
+              raise SystemExit("validated Opportunity Clock must be ACTIVE")
+          if not clock.get("validated") and clock.get("state") != "LOCKED":
+              raise SystemExit("unvalidated Opportunity Clock must be LOCKED")
+          regime = evidence["regime"]
+          if regime.get("validated") is not False:
+              raise SystemExit("observed regime layer must remain explicitly unvalidated")
+
           print(
-              "Market contract OK:",
-              f"status={payload['status']}",
-              f"symbols={len(payload['symbols'])}",
-              f"events={len(payload['events'])}",
-              f"next_cursor={payload['next_cursor']}",
+              "Market + evidence contracts OK:",
+              f"market_status={market['status']}",
+              f"symbols={len(market['symbols'])}",
+              f"events={len(market['events'])}",
+              f"next_cursor={market['next_cursor']}",
+              f"clock={clock['state']}",
+              f"quality={evidence['quality_gate']['state']}",
+              f"pit_oos={evidence['pit_oos']['state']}",
           )
           PY
               then
@@ -78,13 +109,13 @@ jobs:
               fi
             fi
 
-            if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ] && [ "$contract_ok" -eq 1 ]; then
-              rm -f "$tmp_headers" "$tmp_body"
-              echo "Render capture + market contract + CORS OK on attempt $attempt"
+            if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$evidence_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ] && [ "$contract_ok" -eq 1 ]; then
+              rm -f "$tmp_headers" "$tmp_body" "$tmp_evidence"
+              echo "Render capture + market + evidence + CORS OK on attempt $attempt"
               exit 0
             fi
 
-            rm -f "$tmp_headers" "$tmp_body"
+            rm -f "$tmp_headers" "$tmp_body" "$tmp_evidence"
             sleep 10
           done
 
