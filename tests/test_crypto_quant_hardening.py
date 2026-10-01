@@ -157,11 +157,12 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
 def test_provider_protocol_registry_keeps_binance_and_kraken_isolated() -> None:
     from gorila_crypto.protocol import (
         BINANCE_CRYPTO_PROTOCOL,
+        BINANCE_CRYPTO_PROTOCOL_V3,
         KRAKEN_CRYPTO_PROTOCOL,
         protocol_for,
     )
 
-    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL
+    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL_V3
     assert protocol_for("kraken") is KRAKEN_CRYPTO_PROTOCOL
     assert BINANCE_CRYPTO_PROTOCOL.study_id != KRAKEN_CRYPTO_PROTOCOL.study_id
     assert BINANCE_CRYPTO_PROTOCOL.protocol_hash != KRAKEN_CRYPTO_PROTOCOL.protocol_hash
@@ -247,10 +248,10 @@ def test_release_v5_sqlite_fence_binding_contract() -> None:
     assert hasattr(QuantCryptoStore, "fence_active_study_session")
 
 def test_v2_protocol_hash_matches_existing_persisted_identity() -> None:
-    from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
+    from gorila_crypto.protocol import BINANCE_CRYPTO_PROTOCOL
 
-    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "2"
-    assert PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash == "b27691a138d530fb28329e1cb455fcadbb2a375733724553caa26ff4aab73449"
+    assert BINANCE_CRYPTO_PROTOCOL.version == "2"
+    assert BINANCE_CRYPTO_PROTOCOL.protocol_hash == "b27691a138d530fb28329e1cb455fcadbb2a375733724553caa26ff4aab73449"
 
 def test_registration_reuses_persisted_hash_when_protocol_payload_matches(tmp_path) -> None:
     from gorila_crypto.quant_store import QuantCryptoStore
