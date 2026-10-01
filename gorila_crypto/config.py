@@ -45,6 +45,12 @@ class CryptoSettings:
     quality_max_p99_transport_latency_ms: float
     event_live_max_age_seconds: float
     event_delayed_max_age_seconds: float
+    persist_bookticker_interval_seconds: float
+    persistence_queue_batches: int
+    storage_maintenance_interval_seconds: float
+    retention_trade_hours: float
+    retention_bookticker_hours: float
+    retention_depth_hours: float
 
 
     def validate(self) -> None:
@@ -68,6 +74,18 @@ class CryptoSettings:
             raise ValueError("heartbeat interval cannot be below 30 seconds")
         if self.quality_row_limit < 1000:
             raise ValueError("quality row limit must be >= 1000")
+        if self.persist_bookticker_interval_seconds < 0.25:
+            raise ValueError("bookTicker persistence interval must be >= 0.25s")
+        if self.persistence_queue_batches < 8:
+            raise ValueError("persistence queue must have at least 8 batches")
+        if self.storage_maintenance_interval_seconds < 300:
+            raise ValueError("storage maintenance interval must be >= 300s")
+        if self.retention_trade_hours <= 0:
+            raise ValueError("trade retention must be positive")
+        if self.retention_bookticker_hours <= 0:
+            raise ValueError("bookTicker retention must be positive")
+        if self.retention_depth_hours <= 0:
+            raise ValueError("depth retention must be positive")
 
 settings = CryptoSettings(
     provider=os.getenv("GORILA_CRYPTO_PROVIDER", "binance").strip().lower(),
@@ -106,6 +124,30 @@ settings = CryptoSettings(
     event_delayed_max_age_seconds=max(
         31.0,
         float(os.getenv("GORILA_DELAYED_EVENT_MAX_AGE_SECONDS", "1800")),
+    ),
+    persist_bookticker_interval_seconds=max(
+        0.25,
+        float(os.getenv("GORILA_PERSIST_BOOKTICKER_INTERVAL_SECONDS", "1.0")),
+    ),
+    persistence_queue_batches=max(
+        8,
+        int(os.getenv("GORILA_PERSISTENCE_QUEUE_BATCHES", "256")),
+    ),
+    storage_maintenance_interval_seconds=max(
+        300.0,
+        float(os.getenv("GORILA_STORAGE_MAINTENANCE_INTERVAL_SECONDS", "900")),
+    ),
+    retention_trade_hours=max(
+        1.0,
+        float(os.getenv("GORILA_RETENTION_TRADE_HOURS", "48")),
+    ),
+    retention_bookticker_hours=max(
+        1.0,
+        float(os.getenv("GORILA_RETENTION_BOOKTICKER_HOURS", "24")),
+    ),
+    retention_depth_hours=max(
+        0.25,
+        float(os.getenv("GORILA_RETENTION_DEPTH_HOURS", "1")),
     ),
 )
 
