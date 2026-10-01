@@ -813,44 +813,54 @@ class CryptoStore:
             existing: dict[str, tuple[int, str, str]] = {}
             if self._pg:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT event_key,ledger_seq,event_id,payload_hash "
-                        "FROM crypto_events WHERE event_key = ANY(%s)",
-                        (keys,),
+                    column_sql = (
+                        "event_id,event_key,symbol,event_type,event_time,received_time,"
+                        "provider_time,source,sequence_start,sequence_end,payload_hash,"
+                        "payload_json,quality,metadata,recorded_at"
                     )
-                    for key, ledger_seq, event_id, payload_hash in cur.fetchall():
-                        existing[str(key)] = (int(ledger_seq), str(event_id), str(payload_hash))
-
-                    sql = """
-                        INSERT INTO crypto_events(
-                            event_id,event_key,symbol,event_type,event_time,received_time,
-                            provider_time,source,sequence_start,sequence_end,payload_hash,
-                            payload_json,quality,metadata,recorded_at
-                        )
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT(event_key) DO NOTHING
-                    """
-                    values = [
-                        (
+                    row_placeholder = "(" + ",".join(["%s"] * 15) + ")"
+                    insert_sql = (
+                        f"INSERT INTO crypto_events({column_sql}) VALUES "
+                        + ",".join([row_placeholder] * len(prepared))
+                        + " ON CONFLICT(event_key) DO NOTHING "
+                        + "RETURNING event_key,ledger_seq,event_id,payload_hash"
+                    )
+                    flat_values = [
+                        value
+                        for row in prepared
+                        for value in (
                             row["event_id"], row["event_key"], row["symbol"], row["event_type"],
                             row["event_time"], row["received_time"], row["provider_time"],
                             row["source"], row["sequence_start"], row["sequence_end"],
                             row["payload_hash"], row["payload_json"], row["quality"],
                             row["metadata"], row["recorded_at"],
                         )
-                        for row in prepared
                     ]
-                    cur.executemany(sql, values)
-                    cur.execute(
-                        "SELECT event_key,ledger_seq,event_id,payload_hash "
-                        "FROM crypto_events WHERE event_key = ANY(%s)",
-                        (keys,),
-                    )
-                    rows = cur.fetchall()
+                    cur.execute(insert_sql, flat_values)
+                    inserted_rows = cur.fetchall()
                     found = {
                         str(key): (int(ledger_seq), str(event_id), str(payload_hash))
-                        for key, ledger_seq, event_id, payload_hash in rows
+                        for key, ledger_seq, event_id, payload_hash in inserted_rows
                     }
+                    missing_keys = list(
+                        dict.fromkeys(
+                            key for key in keys if key not in found
+                        )
+                    )
+                    existing: dict[str, tuple[int, str, str]] = {}
+                    if missing_keys:
+                        cur.execute(
+                            "SELECT event_key,ledger_seq,event_id,payload_hash "
+                            "FROM crypto_events WHERE event_key = ANY(%s)",
+                            (missing_keys,),
+                        )
+                        for key, ledger_seq, event_id, payload_hash in cur.fetchall():
+                            existing[str(key)] = (
+                                int(ledger_seq),
+                                str(event_id),
+                                str(payload_hash),
+                            )
+                        found.update(existing)
             else:
                 placeholders = ",".join("?" for _ in keys)
                 rows = conn.execute(
