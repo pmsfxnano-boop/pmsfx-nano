@@ -160,6 +160,19 @@ def test_ingestor_does_not_infer_continuity_across_reconnect_boundary(tmp_path) 
     assert result["events_inserted"] == 2
 
 
+def test_symbol_health_accepts_explicit_reference(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / "symbol-health.sqlite3"))
+    ingestor = ProspectiveCryptoIngestor(
+        store,
+        FakeAdapter([event(trade_id=1)]),
+        now=lambda: BASE,
+    )
+    health = ingestor.symbol_health(now=BASE)
+    assert len(health) == 1
+    assert health[0]["status"] == "STARTING"
+    store.close()
+
+
 def test_feed_watchdog_survives_first_restart_request(tmp_path) -> None:
     import threading
     import time
