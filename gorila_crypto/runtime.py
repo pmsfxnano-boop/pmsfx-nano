@@ -253,8 +253,16 @@ class ProspectiveCryptoIngestor:
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
         if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
-            self.store.heartbeat_runtime_run(self.run_id)
-            self._last_runtime_heartbeat = time.monotonic()
+            try:
+                self.store.heartbeat_runtime_run(self.run_id)
+                self._last_runtime_heartbeat = time.monotonic()
+            except Exception as exc:
+                self._persistence_error = (
+                    f"connection_heartbeat:{type(exc).__name__}: {exc}"
+                )
+                MARKET_CACHE.record_persistence_degradation(
+                    self._persistence_error
+                )
         if status == "CONNECTED":
             self.sequence.new_connection()
             self.last_error = None
@@ -351,26 +359,28 @@ class ProspectiveCryptoIngestor:
         if gap is not None:
             expected, observed = gap
             self.gaps_detected += 1
-            try:
-                self.store.record_gap(
-                    symbol=event.symbol,
-                    source=event.source,
-                    expected_sequence=expected,
-                    observed_sequence=observed,
-                    status=self.config.gap_status,
-                    metadata={
-                        "run_id": self.run_id,
-                        "capture_session_id": self.session_id,
-                        "crypto_study_id": self.protocol.study_id,
-                        "event_type": event.event_type,
-                        "ingest_epoch": self.sequence.epoch,
-                        "message": "Continuity gap detected within one connection epoch; "
-                        "missing events were not synthesized.",
-                    },
-                )
-            except Exception as exc:
-                self._persistence_error = f"gap_record:{type(exc).__name__}: {exc}"
-                MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+            if self.session_id is not None:
+        try:
+                        self.store.record_gap(
+                        symbol=event.symbol,
+                        source=event.source,
+                        expected_sequence=expected,
+                        observed_sequence=observed,
+                        status=self.config.gap_status,
+                        metadata={
+                            "run_id": self.run_id,
+                            "capture_session_id": self.session_id,
+                            "crypto_study_id": self.protocol.study_id,
+                            "event_type": event.event_type,
+                            "ingest_epoch": self.sequence.epoch,
+                            "message": "Continuity gap detected within one connection epoch; "
+                            "missing events were not synthesized.",
+                        },
+                    )
+                except Exception as exc:
+                    self._persistence_error = f"gap_record:{type(exc).__name__}: {exc}"
+                    MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+
 
         source = event.source
         self._health_pending_rows[source] = self._health_pending_rows.get(source, 0) + 1
@@ -432,13 +442,22 @@ class ProspectiveCryptoIngestor:
             else max(0.0, now - self._persistence_last_success_monotonic)
         )
         durability = "LIVE"
-        if self._persistence_error is not None:
+        durability_reason = None
+        if (
+            isinstance(self.store, QuantCryptoStore)
+            and self.session_id is None
+        ):
             durability = "DEGRADED"
+            durability_reason = "STORAGE_BOOTSTRAP_PENDING"
+        elif self._persistence_error is not None:
+            durability = "DEGRADED"
+            durability_reason = self._persistence_error
         elif self._persistence_queue.qsize() > max(8, settings.persistence_queue_batches * 0.75):
             durability = "DEGRADED"
         return {
             "market_plane": "LIVE" if self.last_event is not None else "STARTING",
             "durability": durability,
+            "durability_reason": durability_reason,
             "persistence_error": self._persistence_error,
             "persistence_queue_batches": self._persistence_queue.qsize(),
             "persistence_last_success_age_seconds": last_success_age,
