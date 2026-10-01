@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+import math
 from typing import Any, Mapping
 
 
@@ -164,8 +165,17 @@ class CryptoStudyProtocol:
     def quality_config(self) -> Mapping[str, Any]:
         self.validate()
         event_types = self.normalized_event_types or self.streams
+        persisted_trade_min = self.min_trade_rows_per_symbol
+        if self.provider == "binance" and self.version == "3":
+            persisted_trade_min = max(
+                1,
+                math.ceil(
+                    self.min_trade_rows_per_symbol
+                    * self.trade_persistence_sample_rate
+                ),
+            )
         min_rows = {
-            "trade": self.min_trade_rows_per_symbol,
+            "trade": persisted_trade_min,
         }
         if "bookTicker" in event_types:
             min_rows["bookTicker"] = max(1, min_rows.get("bookTicker", 1))
