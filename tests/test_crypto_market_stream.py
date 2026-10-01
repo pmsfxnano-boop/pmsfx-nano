@@ -56,7 +56,7 @@ def test_market_stream_bootstrap_keeps_side_snapshot_out_of_cursor(monkeypatch) 
 
     payload = app_module.market_stream(cursor=0, limit=36)
 
-    assert payload["next_cursor"] == 2
+    assert payload["next_cursor"] == 1
     assert [row["stream_seq"] for row in payload["events"]] == [1]
     assert payload["events"][0]["ledger_seq"] == 101
     assert payload["symbols"][0]["bid"] == 99.9
@@ -192,3 +192,44 @@ def test_market_cache_advances_before_durable_commit() -> None:
     snapshot = MARKET_CACHE.snapshot(symbols=("ETHUSDT",), cursor=0, limit=32)
     assert snapshot["events"][0]["durable"] is True
     assert snapshot["events"][0]["ledger_seq"] == 1234
+
+
+def test_market_cache_cursor_advances_only_through_delivered_events() -> None:
+    from gorila_crypto.market_cache import MARKET_CACHE
+
+    MARKET_CACHE.clear()
+    rows = []
+    for idx in range(40):
+        rows.append(
+            {
+                "symbol": "BTCUSDT",
+                "event_type": "trade",
+                "event_time": f"2026-10-01T03:50:{idx:02d}+00:00",
+                "received_time": f"2026-10-01T03:50:{idx:02d}.010000+00:00",
+                "source": "binance.websocket.trade",
+                "sequence_start": idx + 1,
+                "sequence_end": idx + 1,
+                "payload": {"p": str(100.0 + idx), "q": "0.1", "m": False},
+            }
+        )
+    MARKET_CACHE.append_observed(rows)
+
+    snapshot = MARKET_CACHE.snapshot(
+        symbols=("BTCUSDT",),
+        cursor=1,
+        limit=32,
+    )
+
+    assert len(snapshot["events"]) == 32
+    assert snapshot["events"][0]["stream_seq"] == 2
+    assert snapshot["events"][-1]["stream_seq"] == 33
+    assert snapshot["next_cursor"] == 33
+
+    next_snapshot = MARKET_CACHE.snapshot(
+        symbols=("BTCUSDT",),
+        cursor=snapshot["next_cursor"],
+        limit=32,
+    )
+    assert snapshot["next_cursor"] < 40
+    assert next_snapshot["events"][0]["stream_seq"] == 34
+    assert next_snapshot["next_cursor"] == 40
