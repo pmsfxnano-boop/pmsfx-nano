@@ -280,7 +280,7 @@ class ProspectiveCryptoIngestor:
                 "runtime_run_id": self.run_id,
                 "ingest_epoch": self.sequence.epoch,
                 "event_age_seconds": assessment["event_age_seconds"],
-                "received_age_seconds": assessment["received_age_seconds"],
+                "received_age_seconds": assessment["transport_age_seconds"],
                 "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
