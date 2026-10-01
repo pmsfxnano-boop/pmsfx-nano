@@ -343,6 +343,14 @@ def test_spool_replay_is_idempotent_against_ledger(tmp_path) -> None:
     store = QuantCryptoStore(sqlite_path=str(tmp_path / "idempotent.sqlite3"))
     adapter = FakeAdapter([event(trade_id=1)])
     ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor._evidence_spool = __import__(
+        "gorila_crypto.evidence_spool",
+        fromlist=["EvidenceSpool"],
+    ).EvidenceSpool(
+        path=str(tmp_path / "spool.sqlite3"),
+        max_bytes=2 * 1024 * 1024,
+        max_batches=100,
+    )
     ingestor.session_id = "session-idempotency"
 
     row = {
