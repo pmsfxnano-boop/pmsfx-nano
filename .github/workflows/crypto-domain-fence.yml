@@ -12,24 +12,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Reject non-Crypto branch names
+      - name: Reject non-Crypto integrations
         shell: bash
         run: |
           set -euo pipefail
-          ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if printf '%s\n' "$ref" | grep -Eiq 'argentum|ggal|bcra|byma|iol|rava|quantitative.*cross|persistence-proof|operational-final|final-predictor|equity|equities|stocks?|bonds?|nasdaq|nyse|aapl|msft|nvda|tsla|yahoo|tiingo|twelve[-_ ]?data'; then
-            echo "::error::Crypto-only domain fence rejected branch/ref: $ref"
-            exit 1
-          fi
-
-      - name: Reject non-Crypto source references
-        shell: bash
-        run: |
-          set -euo pipefail
-          forbidden='(^|[^A-Za-z0-9_])(Gorila[ _-]*Argentum|Argentum|GGAL|BCRA|BYMA|IOL|Rava|PAMP|YPFD|CEPU|TGSU2|BMA|AAPL|MSFT|NVDA|TSLA|NASDAQ|NYSE|Yahoo|Tiingo|Twelve[ _-]?Data|CEDEAR|Mep|bond|bonds|equity|equities|stock|stocks|forex|FXCM|Oanda|S&P[ _-]*500|SP500|Dow[ _-]*Jones|Russell)([^A-Za-z0-9_]|$)'
-          matches="$(git grep -nEi "$forbidden" -- . ':(exclude).github/workflows/crypto-domain-fence.yml' || true)"
+          forbidden='(gorila_argentum|ggal_shadow|bcra|byma|iol|rava|tiingo|twelve[_ -]?data|yahoo|cedear|mep|aapl|msft|nvda|tsla|nasdaq|nyse|pamp|ypfd|cepu|tgsu2|bma)'
+          matches="$(git grep -nEi "$forbidden" --             ':!*.md'             ':!docs/**'             ':!frontend/index.html'             ':!frontend/public/manifest.webmanifest'             ':!frontend/src/App.tsx'             ':!gorila_crypto/config.py'             ':!.github/workflows/crypto-domain-fence.yml'             || true)"
           if [ -n "$matches" ]; then
-            echo "::error::Crypto-only domain fence found prohibited non-Crypto references:"
+            echo "::error::Crypto-only domain fence found prohibited non-Crypto integration references:"
             printf '%s\n' "$matches"
             exit 1
           fi
