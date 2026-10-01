@@ -54,14 +54,12 @@ def test_importing_crypto_app_does_not_load_unapproved_repo_domains() -> None:
 import sys
 import gorila_crypto.app
 
-allowed = {{"gorila_core", "gorila_crypto"}}
-loaded = {{
+allowed = {"gorila_core", "gorila_crypto"}
+loaded = {
     name.split(".")[0]
     for name in sys.modules
-    if name.split(".")[0] in {{
-        "gorila_core", "gorila_crypto"
-    }}
-}}
+    if name.split(".")[0] in {"gorila_core", "gorila_crypto"}
+}
 unexpected = loaded - allowed
 if unexpected:
     raise SystemExit("UNAPPROVED_REPO_MODULES:" + ",".join(sorted(unexpected)))
