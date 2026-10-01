@@ -615,6 +615,12 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                 "prospect_days": PREREGISTERED_CRYPTO_PROTOCOL.prospect_days,
                 "min_trade_rows_per_symbol": PREREGISTERED_CRYPTO_PROTOCOL.min_trade_rows_per_symbol,
                 "forecast_horizons_ms": list(PREREGISTERED_CRYPTO_PROTOCOL.forecast_horizons_ms),
+                "capture_contract": {
+                    "version": PREREGISTERED_CRYPTO_PROTOCOL.persistence_contract_version,
+                    "trade_persistence_sample_rate": PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate,
+                    "bookticker_persistence_interval_seconds": PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds,
+                    "hot_plane_lossless": True,
+                },
                 "alpha_feature_set": FEATURE_SET_VERSION,
                 "alpha_model_version": "2",
                 "promotion_latency_guard": {
