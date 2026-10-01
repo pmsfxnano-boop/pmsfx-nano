@@ -419,6 +419,27 @@ class QuantCryptoStore(CryptoStore):
         )
         return super().append_event(metadata=metadata, **kwargs)
 
+    def append_scoped_events(
+        self,
+        *,
+        study_id: str,
+        capture_session_id: str,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        scoped: list[dict[str, Any]] = []
+        for item in events:
+            row = dict(item)
+            metadata = dict(row.pop("metadata", None) or {})
+            metadata.update(
+                {
+                    "crypto_study_id": study_id,
+                    "capture_session_id": capture_session_id,
+                }
+            )
+            row["metadata"] = metadata
+            scoped.append(row)
+        return super().append_events(scoped)
+
     def start_runtime_run_scoped(self, *, kind: str, session_id: str | None = None) -> str:
         run_id = super().start_runtime_run(kind=kind)
         self.init()
