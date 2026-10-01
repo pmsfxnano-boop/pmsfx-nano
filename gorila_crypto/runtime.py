@@ -628,6 +628,7 @@ class ProspectiveCryptoIngestor:
                         self._persistence_error
                     )
 
+        now_monotonic = time.monotonic()
         source = event.source
         self._queue_source_health(
             source=source,
