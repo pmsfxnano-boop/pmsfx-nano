@@ -160,6 +160,35 @@ def test_ingestor_does_not_infer_continuity_across_reconnect_boundary(tmp_path) 
     assert result["events_inserted"] == 2
 
 
+def test_feed_watchdog_survives_first_restart_request(tmp_path) -> None:
+    import threading
+    import time
+
+    store = CryptoStore(sqlite_path=str(tmp_path / "watchdog.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor._feed_stale_timeout_seconds = 0.05
+    ingestor._feed_watchdog_interval_seconds = 0.01
+    ingestor._feed_stop_event = threading.Event()
+    ingestor._capture_started_at = BASE
+    ingestor._last_event = event(trade_id=1, second=0)
+    ingestor._feed_watchdog_grace_until = 0.0
+
+    thread = threading.Thread(target=ingestor._feed_watchdog, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 2.0
+    while not ingestor._feed_stop_event.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert ingestor._feed_stop_event.is_set()
+    assert thread.is_alive()
+
+    ingestor.stop_event.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    store.close()
+
+
 def test_runtime_config_rejects_empty_kind() -> None:
     config = IngestRuntimeConfig(kind="   ")
     try:
