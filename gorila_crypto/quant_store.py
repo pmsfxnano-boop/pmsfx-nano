@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .protocol import CryptoStudyProtocol
+from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .storage import CryptoStore
 
 
