@@ -90,6 +90,28 @@ class FakeAdapter:
                     yield item
 
 
+def test_ingestor_batches_event_persistence(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / "batch-runtime.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=i, second=i) for i in range(1, 8)])
+    ingestor = ProspectiveCryptoIngestor(
+        store,
+        adapter,
+        config=IngestRuntimeConfig(
+            event_batch_size=3,
+            event_batch_flush_interval_seconds=60.0,
+        ),
+    )
+
+    result = ingestor.run()
+
+    assert result["events_inserted"] == 7
+    conn = store.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 7
+    finally:
+        conn.close()
+
+
 def test_sequence_monitor_flags_depth_gap_only_within_connection() -> None:
     monitor = SequenceContinuityMonitor()
     monitor.new_connection()
