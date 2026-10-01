@@ -1,11 +1,7 @@
-# Isolated Binance capture services.
-# The Oregon service is retained untouched while the Frankfurt replacement is created
-# as a separate service. Both reference the existing Render Postgres instance directly.
-# No database secret is copied into source control and the Kraken service is untouched.
-# Cross-region consumer: Frankfurt must reach the Oregon Postgres over TLS.
-# This allowlist is intentionally broad only as a bootstrap diagnostic; after the
-# Frankfurt service proves connectivity, replace it with the Frankfurt outbound
-# CIDR ranges from Render Connect -> Outbound.
+# Canonical Binance capture service for Cryptonita.
+# Exactly one live capture boundary owns the prospective Binance cohort.
+# The durable ledger remains the existing Render Postgres instance.
+# No cross-region duplicate capture is declared here.
 databases:
   - name: pmsfx-nano-db
     plan: free
@@ -40,42 +36,6 @@ services:
         value: 100ms
       - key: GORILA_CRYPTO_ENVIRONMENT
         value: cleanroom-binance
-      - key: GORILA_CRYPTO_INGEST_ENABLED
-        value: "true"
-      - key: GORILA_CRYPTO_QUALITY_MONITOR_ENABLED
-        value: "true"
-      - key: GORILA_LIVE_EVENT_MAX_AGE_SECONDS
-        value: "90"
-      - key: GORILA_DELAYED_EVENT_MAX_AGE_SECONDS
-        value: "1800"
-
-  - type: web
-    name: gorila-crypto-cleanroom-binance-frankfurt-capture
-    runtime: python
-    region: frankfurt
-    plan: free
-    branch: gorila-crypto-binance-parallel
-    buildCommand: pip install -r requirements-gorila.txt
-    startCommand: uvicorn gorila_crypto.app:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/crypto/health
-    autoDeploy: false
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: pmsfx-nano-db
-          property: connectionString
-      - key: GORILA_CRYPTO_PROVIDER
-        value: binance
-      - key: GORILA_CRYPTO_SYMBOLS
-        value: BTCUSDT,ETHUSDT,SOLUSDT
-      - key: GORILA_CRYPTO_STREAMS
-        value: trade,bookTicker,depth
-      - key: GORILA_CRYPTO_DEPTH_SPEED
-        value: 100ms
-      - key: GORILA_CRYPTO_ENVIRONMENT
-        value: cleanroom-binance-frankfurt
-      - key: GORILA_CRYPTO_DATABASE_HOST_OVERRIDE
-        value: dpg-dama7gqjnfac73ecks0g-a.oregon-postgres.render.com
       - key: GORILA_CRYPTO_INGEST_ENABLED
         value: "true"
       - key: GORILA_CRYPTO_QUALITY_MONITOR_ENABLED
