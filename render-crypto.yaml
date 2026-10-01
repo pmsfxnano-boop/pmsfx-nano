@@ -1,4 +1,4 @@
-# Continuous capture requires a paid compute plan; Free instances can spin down.
+# Continuous capture uses GitHub Actions keepalive to avoid idle spin-down on Free compute.
 # This Blueprint manages only the isolated Crypto capture service.
 # It references the already-existing Render Postgres instance by name and
 # deliberately does not declare that database as a managed Blueprint resource.
@@ -8,7 +8,7 @@ services:
     name: gorila-crypto-cleanroom-capture
     runtime: python
     region: oregon
-    plan: starter
+    plan: free
     branch: gorila-crypto-cleanroom
     buildCommand: pip install -r requirements-gorila.txt
     startCommand: uvicorn gorila_crypto.app:app --host 0.0.0.0 --port $PORT
