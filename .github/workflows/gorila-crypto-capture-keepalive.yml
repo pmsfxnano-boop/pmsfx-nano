@@ -1,0 +1,31 @@
+name: gorila-crypto-capture-keepalive
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping canonical Binance capture service
+        run: |
+          set -euo pipefail
+          URL="https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error --max-time 20 "$URL"; then
+              echo
+              echo "Render heartbeat OK on attempt $attempt"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Render heartbeat failed after retries"
+          exit 1
