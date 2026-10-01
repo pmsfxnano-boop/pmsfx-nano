@@ -460,7 +460,8 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="capture_not_enabled")
     store = _new_store()
     try:
-        store.init()
+        if not store.durable:
+            store.init()
         conn = store.connect()
         try:
             safe_limit = max(32, min(int(limit), 600))
@@ -511,19 +512,12 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
                     event_params = (int(cursor), *symbols, safe_limit)
 
                 latest_books_sql = f"""
-                    SELECT ledger_seq, symbol, event_time, received_time, payload_json
-                    FROM (
-                        SELECT
-                            ledger_seq, symbol, event_time, received_time, payload_json,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY symbol ORDER BY ledger_seq DESC
-                            ) AS rn
-                        FROM crypto_events
-                        WHERE symbol IN ({placeholders})
-                          AND event_type = 'bookTicker'
-                    ) ranked
-                    WHERE rn = 1
-                    ORDER BY symbol
+                    SELECT DISTINCT ON (symbol)
+                        ledger_seq, symbol, event_time, received_time, payload_json
+                    FROM crypto_events
+                    WHERE symbol IN ({placeholders})
+                      AND event_type = 'bookTicker'
+                    ORDER BY symbol, ledger_seq DESC
                 """
                 with conn.cursor() as cur:
                     cur.execute(sql_events, event_params)
