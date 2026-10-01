@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import threading
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -66,10 +67,42 @@ class EvidenceSpool:
                         batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         created_at TEXT NOT NULL,
                         payload_json TEXT NOT NULL,
+                        payload_zlib BLOB,
                         byte_count INTEGER NOT NULL
                     )
                     """
                 )
+                columns = {
+                    str(row[1])
+                    for row in conn.execute(
+                        "PRAGMA table_info(evidence_spool_batches)"
+                    ).fetchall()
+                }
+                if "payload_zlib" not in columns:
+                    conn.execute(
+                        "ALTER TABLE evidence_spool_batches "
+                        "ADD COLUMN payload_zlib BLOB"
+                    )
+                old_rows = conn.execute(
+                    """
+                    SELECT batch_id,payload_json
+                    FROM evidence_spool_batches
+                    WHERE payload_zlib IS NULL
+                      AND payload_json <> ''
+                    ORDER BY batch_id
+                    """
+                ).fetchall()
+                for row in old_rows:
+                    raw = str(row["payload_json"]).encode("utf-8")
+                    compressed = zlib.compress(raw, level=6)
+                    conn.execute(
+                        """
+                        UPDATE evidence_spool_batches
+                        SET payload_json='',payload_zlib=?,byte_count=?
+                        WHERE batch_id=?
+                        """,
+                        (compressed, len(compressed), int(row["batch_id"])),
+                    )
                 conn.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_evidence_spool_created
@@ -108,23 +141,25 @@ class EvidenceSpool:
                 ).fetchone()
                 queued_bytes = int(stats["queued_bytes"])
                 queued_batches = int(stats["queued_batches"])
+                compressed = zlib.compress(payload.encode("utf-8"), level=6)
+                compressed_bytes = len(compressed)
                 if (
-                    queued_bytes + byte_count > self.max_bytes
+                    queued_bytes + compressed_bytes > self.max_bytes
                     or queued_batches + 1 > self.max_batches
                 ):
                     raise OverflowError("evidence_spool_capacity_exceeded")
-
                 cursor = conn.execute(
                     """
                     INSERT INTO evidence_spool_batches(
-                        created_at, payload_json, byte_count
+                        created_at, payload_json, payload_zlib, byte_count
                     )
-                    VALUES(?,?,?)
+                    VALUES(?,?,?,?)
                     """,
                     (
                         datetime.now(timezone.utc).isoformat(),
-                        payload,
-                        byte_count,
+                        "",
+                        compressed,
+                        compressed_bytes,
                     ),
                 )
                 conn.commit()
@@ -138,7 +173,7 @@ class EvidenceSpool:
             try:
                 row = conn.execute(
                     """
-                    SELECT batch_id,created_at,payload_json,byte_count
+                    SELECT batch_id,created_at,payload_json,payload_zlib,byte_count
                     FROM evidence_spool_batches
                     ORDER BY batch_id
                     LIMIT 1
@@ -146,10 +181,15 @@ class EvidenceSpool:
                 ).fetchone()
                 if row is None:
                     return None
+                payload_json = str(row["payload_json"] or "")
+                if row["payload_zlib"] is not None:
+                    payload_json = zlib.decompress(
+                        bytes(row["payload_zlib"])
+                    ).decode("utf-8")
                 return SpoolBatch(
                     batch_id=int(row["batch_id"]),
                     created_at=str(row["created_at"]),
-                    rows=list(json.loads(row["payload_json"])),
+                    rows=list(json.loads(payload_json)),
                     byte_count=int(row["byte_count"]),
                 )
             finally:
