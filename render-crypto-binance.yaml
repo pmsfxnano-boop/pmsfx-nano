@@ -1,6 +1,6 @@
 # Canonical Binance capture service for Cryptonita.
 # Exactly one live capture boundary owns the prospective Binance cohort.
-# The durable ledger remains the existing Render Postgres instance.
+# The durable ledger is the current Cryptonita Postgres instance and must be available before capture rollout.
 # No cross-region duplicate capture is declared here.
 databases:
   - name: cryptonita-durable-ledger
