@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import {
@@ -314,7 +315,7 @@ function ChartCanvas({
     return () => observer.disconnect();
   }, [candles, livePrice, selected, resolution]);
 
-  const onMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMove = (event: MouseEvent<HTMLCanvasElement>) => {
     if (!candles.length || !ref.current) return;
     const bounds = ref.current.getBoundingClientRect();
     const frac = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
