@@ -121,36 +121,48 @@ def run_once(store: IntelligenceStore) -> dict[str, Any]:
             return {"status": "NO_RUNNING_CAPTURE_SESSION"}
 
         loaded = store.load_state(STATE_ID)
-        if loaded and loaded[1].get("model_version") == MODEL_VERSION and loaded[1].get("capture_session_id") == session_id:
+        training_rows: list[dict[str, Any]] = []
+        if (
+            loaded
+            and loaded[1].get("model_version") == MODEL_VERSION
+            and loaded[1].get("capture_session_id") == session_id
+        ):
             last_seq, payload = loaded
             engine = AdaptiveOpportunityClock.from_state(payload)
-            warm = _fetch_warm_events(conn, session_id, last_seq + 1, WARM_REPLAY_ROWS)
-            process_event_stream(
-                engine, store, warm, session_id, learn=False,
-                fingerprint=f"warm:{session_id}",
-            )
+            # The serialized state already contains the microstructure book and
+            # pending opportunities; replaying older rows would double-count.
         else:
-            last_seq = 0
+            latest_seq = _latest_ledger_seq(conn, session_id)
+            warm = _fetch_warm_events(
+                conn, session_id, latest_seq + 1, WARM_REPLAY_ROWS
+            )
             engine = AdaptiveOpportunityClock()
+            last_seq, _ = process_event_stream(
+                engine, warm, learn=False, fingerprint=f"warm:{session_id}"
+            )
 
         events = _fetch_events(conn, session_id, last_seq, BATCH_SIZE)
         if events:
-            latest = process_event_stream(
-                engine, store, events, session_id, learn=True,
-                fingerprint=f"live:{session_id}",
+            latest, outcomes = process_event_stream(
+                engine, events, learn=True, fingerprint=f"live:{session_id}"
             )
             last_seq = latest
+            training_rows.extend(outcomes)
 
         state = engine.state()
         state["capture_session_id"] = session_id
         state["last_ledger_seq"] = last_seq
-        store.save_state(
+        committed = store.commit_state_and_training_events(
             state_id=STATE_ID,
             model_version=MODEL_VERSION,
             capture_session_id=session_id,
             last_ledger_seq=last_seq,
             state=state,
+            training_rows=training_rows,
         )
+        if not committed:
+            raise RuntimeError("stale_intelligence_state_write_rejected")
+
         return {
             "status": "RUNNING",
             "capture_session_id": session_id,
