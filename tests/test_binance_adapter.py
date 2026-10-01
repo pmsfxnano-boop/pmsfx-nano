@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 import time
 
 import pytest
+import websocket
 
 from gorila_crypto.binance import (
     BinanceAdapterError,
@@ -242,3 +243,23 @@ def test_market_data_stall_watchdog_does_not_fire_between_live_events() -> None:
 
     assert first is not None
     assert second is not None
+
+
+def test_market_data_watchdog_progresses_through_read_timeouts() -> None:
+    class SilentSocket:
+        def recv(self):
+            time.sleep(0.01)
+            raise websocket.WebSocketTimeoutException("read timeout")
+
+    adapter = BinanceSpotMarketAdapter(
+        BinanceStreamConfig(
+            symbols=("BTCUSDT",),
+            streams=("trade",),
+            websocket_read_poll_timeout_s=0.005,
+            market_data_stall_timeout_s=0.025,
+            connection_max_seconds=1.0,
+        )
+    )
+
+    with pytest.raises(BinanceAdapterError, match="market_data_stall_timeout"):
+        next(adapter.iter_events_once(ws=SilentSocket()))
