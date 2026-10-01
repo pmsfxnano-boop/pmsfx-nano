@@ -195,7 +195,10 @@ class ProspectiveCryptoIngestor:
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
         if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
-            self.store.heartbeat_runtime_run(self.run_id)
+            if not self.store.heartbeat_runtime_run(self.run_id):
+                self.last_error = "runtime_lease_lost"
+                self.stop_event.set()
+                return
             self._last_runtime_heartbeat = time.monotonic()
         if status == "CONNECTED":
             self.sequence.new_connection()
@@ -495,7 +498,11 @@ class ProspectiveCryptoIngestor:
                 ):
                     self._flush_pending_events()
                 if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
-                    self.store.heartbeat_runtime_run(self.run_id)
+                    if not self.store.heartbeat_runtime_run(self.run_id):
+                        self.last_error = "runtime_lease_lost"
+                        status = "LEASE_LOST"
+                        self.stop_event.set()
+                        break
                     self._last_runtime_heartbeat = now_monotonic
                 if self.stop_event.is_set():
                     status = "STOPPED"
