@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_crypto_data_gaps_symbol_time
 
 CREATE TABLE IF NOT EXISTS crypto_runtime_runs (
     run_id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at TEXT NOT NULL,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
