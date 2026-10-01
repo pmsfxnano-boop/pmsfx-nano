@@ -87,6 +87,61 @@ def test_crypto_event_persistence_stays_in_crypto_events(tmp_path: Path) -> None
         conn.close()
 
 
+def test_crypto_batch_append_is_atomic_and_idempotent(tmp_path: Path) -> None:
+    db = tmp_path / "batch.sqlite3"
+    store = CryptoStore(sqlite_path=str(db))
+    events = []
+    for trade_id in range(1, 6):
+        events.append(
+            {
+                "symbol": "BTCUSDT",
+                "event_type": "trade",
+                "event_time": f"2026-09-29T15:00:0{trade_id}+00:00",
+                "received_time": f"2026-09-29T15:00:0{trade_id}.010000+00:00",
+                "provider_time": f"2026-09-29T15:00:0{trade_id}+00:00",
+                "source": "binance.websocket.trade",
+                "sequence_start": trade_id,
+                "sequence_end": trade_id,
+                "payload": {"p": str(60000 + trade_id), "q": "0.01"},
+            }
+        )
+
+    first = store.append_events(events)
+    second = store.append_events(events)
+
+    assert len(first) == 5
+    assert all(row["inserted"] for row in first)
+    assert len(second) == 5
+    assert all(not row["inserted"] for row in second)
+    assert [row["ledger_seq"] for row in first] == [row["ledger_seq"] for row in second]
+
+    conn = store.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 5
+    finally:
+        conn.close()
+
+
+def test_crypto_batch_append_rejects_provider_identity_payload_conflict(tmp_path: Path) -> None:
+    db = tmp_path / "batch-conflict.sqlite3"
+    store = CryptoStore(sqlite_path=str(db))
+    base = {
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": "2026-09-29T15:00:00+00:00",
+        "received_time": "2026-09-29T15:00:00.010000+00:00",
+        "provider_time": "2026-09-29T15:00:00+00:00",
+        "source": "binance.websocket.trade",
+        "sequence_start": 100,
+        "sequence_end": 100,
+        "payload": {"p": "60000.0", "q": "0.01"},
+    }
+    store.append_events([base])
+    conflict = dict(base, payload={"p": "60001.0", "q": "0.01"})
+    with pytest.raises(Exception, match="provider_identity_conflict"):
+        store.append_events([conflict])
+
+
 def test_crypto_storage_ignores_legacy_database_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
