@@ -269,6 +269,93 @@ def test_terminal_capture_status_fences_running_session_leases(tmp_path) -> None
         store.close()
 
 
+def test_start_capture_session_fences_terminal_lease(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "start-capture-fence.sqlite3"))
+    store.init()
+    conn = store.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO crypto_studies(
+                study_id,protocol_hash,created_at,status,protocol_json
+            ) VALUES(?,?,?,?,?)
+            """,
+            ("study-1", "protocol-1", "2026-09-29T15:00:00+00:00", "REGISTERED", "{}"),
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_capture_sessions(
+                session_id,study_id,provider,venue,region,instance_id,
+                code_version,symbols_json,streams_json,protocol_hash,
+                started_at,ended_at,status,metadata
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "terminal-session",
+                "study-1",
+                "binance",
+                "BINANCE_SPOT",
+                "test",
+                "instance",
+                "old",
+                "[\"BTCUSDT\"]",
+                "[\"trade\"]",
+                "protocol-1",
+                "2026-09-29T15:00:00+00:00",
+                "2026-09-29T15:01:00+00:00",
+                "ABORTED_STALE",
+                "{}",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_runtime_leases(
+                run_id,session_id,started_at,heartbeat_at,status
+            ) VALUES(?,?,?,?,?)
+            """,
+            (
+                "terminal-run",
+                "terminal-session",
+                "2026-09-29T15:00:00+00:00",
+                "2026-09-29T15:00:59+00:00",
+                "RUNNING",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    new_session = store.start_capture_session(
+        study_id="study-1",
+        protocol_hash="protocol-1",
+        provider="binance",
+        venue="BINANCE_SPOT",
+        symbols=("BTCUSDT",),
+        streams=("trade",),
+        region="test",
+        instance_id="new-instance",
+        code_version="new-code",
+    )
+
+    conn = store.connect()
+    try:
+        lease = conn.execute(
+            "SELECT status FROM crypto_runtime_leases WHERE run_id=?",
+            ("terminal-run",),
+        ).fetchone()
+        session = conn.execute(
+            "SELECT status FROM crypto_capture_sessions WHERE session_id=?",
+            (new_session,),
+        ).fetchone()
+        assert lease["status"] == "ABORTED_STALE"
+        assert session["status"] == "RUNNING"
+    finally:
+        conn.close()
+        store.close()
+
+
 def test_reconcile_fences_lease_from_terminal_capture_session(tmp_path) -> None:
     from gorila_crypto.quant_store import QuantCryptoStore
 
