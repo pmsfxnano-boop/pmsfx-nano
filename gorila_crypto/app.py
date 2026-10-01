@@ -493,9 +493,11 @@ app.add_middleware(
 
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
-    stats = _safe_store_stats()
-    if stats is not None:
-        print("GORILA_PROSPECTIVE_STATS " + json.dumps(stats, sort_keys=True, default=str), flush=True)
+    stats = (
+        _runtime.operational_snapshot()
+        if _runtime is not None
+        else None
+    )
     return {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -770,6 +772,15 @@ def health() -> dict[str, Any]:
     symbols_live = bool(symbol_health) and all(
         row.get("status") == "LIVE" for row in symbol_health
     )
+    runtime_snapshot = (
+        _runtime.operational_snapshot()
+        if _runtime is not None
+        else {
+            "market_plane": "STARTING",
+            "durability": "UNKNOWN",
+            "persistence_queue_batches": 0,
+        }
+    )
     payload = {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -794,6 +805,7 @@ def health() -> dict[str, Any]:
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
         },
         "storage_backend": _storage_backend_status(),
+        "market_plane": runtime_snapshot,
         "health_contract": "lightweight_no_ledger_scan",
         "forecast": {
             "automatic_promotion": False,
