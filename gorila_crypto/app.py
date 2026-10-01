@@ -417,6 +417,7 @@ def health() -> dict[str, Any]:
     }
     if not worker_alive and capture_enabled:
         payload["status"] = "CAPTURE_WORKER_DEAD"
+        raise HTTPException(status_code=503, detail=payload)
     return payload
 
 
