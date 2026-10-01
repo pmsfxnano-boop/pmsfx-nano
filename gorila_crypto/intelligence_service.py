@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .intelligence_runner import run_once
+from .opportunity_intelligence import MODEL_VERSION
 from .intelligence_store import IntelligenceStore
 
 app = FastAPI(title="Gorila Crypto Opportunity Intelligence", version="1")
@@ -52,7 +53,7 @@ def health() -> JSONResponse:
     return JSONResponse(
         {
             "service": "gorila-crypto-opportunity-intelligence",
-            "model_version": "opportunity-clock-intelligence-v1",
+            "model_version": MODEL_VERSION,
             **snapshot,
         }
     )
