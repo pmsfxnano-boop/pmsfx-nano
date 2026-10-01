@@ -1132,6 +1132,31 @@ def run_walk_forward_validation(
         latency_p50 <= 0.50 * float(protocol_horizon_ms)
         and latency_p95 <= 0.75 * float(protocol_horizon_ms)
     )
+    book_age_values = [
+        float(row.snapshot.feature_values.get("leader_book_age_ms", 0.0))
+        for row in oos_rows
+        if row.snapshot.feature_values.get("leader_book_age_ms") is not None
+    ] + [
+        float(row.snapshot.feature_values.get("target_book_age_ms", 0.0))
+        for row in oos_rows
+        if row.snapshot.feature_values.get("target_book_age_ms") is not None
+    ]
+    if book_age_values:
+        book_age_p50 = float(np.percentile(book_age_values, 50))
+        book_age_p95 = float(np.percentile(book_age_values, 95))
+        book_age_p99 = float(np.percentile(book_age_values, 99))
+    else:
+        book_age_p50 = float("inf")
+        book_age_p95 = float("inf")
+        book_age_p99 = float("inf")
+    # Quote confidence decays on a fixed five-second characteristic time because
+    # v4 persists bookTicker snapshots every five seconds. The gate allows a
+    # horizon to use quote state only when the OOS quote age is not systematically
+    # older than the forecast horizon.
+    book_age_feasible = bool(
+        book_age_p50 <= 0.50 * float(protocol_horizon_ms)
+        and book_age_p95 <= 1.00 * float(protocol_horizon_ms)
+    )
     latency_feasibility = {
         "horizon_ms": int(protocol_horizon_ms),
         "p50_transport_latency_ms": latency_p50,
@@ -1139,12 +1164,20 @@ def run_walk_forward_validation(
         "p99_transport_latency_ms": latency_p99,
         "max_p50_ratio": 0.50,
         "max_p95_ratio": 0.75,
-        "passed": latency_feasible,
+        "book_age_p50_ms": book_age_p50,
+        "book_age_p95_ms": book_age_p95,
+        "book_age_p99_ms": book_age_p99,
+        "book_age_max_p50_ratio": 0.50,
+        "book_age_max_p95_ratio": 1.00,
+        "book_age_passed": book_age_feasible,
+        "passed": latency_feasible and book_age_feasible,
     }
 
     research_reasons: list[str] = []
     if not latency_feasible:
         research_reasons.append("SIGNAL_LATENCY_NOT_FEASIBLE")
+    if not book_age_feasible:
+        research_reasons.append("BOOK_STATE_TOO_STALE")
     if not multiple_testing_pass:
         research_reasons.append("MULTIPLE_TESTING_GATE_FAILED")
     if not dsr_pass:
@@ -1179,6 +1212,7 @@ def run_walk_forward_validation(
         and fold_consistency_pass
         and temporal.passed
         and latency_feasible
+        and book_age_feasible
     )
     return ValidationReport(
         status="OOS_EVALUATED",

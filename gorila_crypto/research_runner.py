@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -37,7 +38,7 @@ from .ledger import canonical_replay_row
 
 
 RESEARCH_STATUS_SOURCE = "gorila.crypto.research_runner"
-FEATURE_SET_VERSION = "crypto_microstructure_alpha_v1"
+FEATURE_SET_VERSION = "crypto_microstructure_alpha_v2"
 DEFAULT_BATCH = 5000
 
 
@@ -619,11 +620,13 @@ def _dataset_rows(
                future_point.rt AS label_received_time,
                future_point.price AS future_price,
                lb.event_id AS leader_book_event_id,
+               lb.rt AS leader_book_received_time,
                lb.bid AS leader_bid,
                lb.bid_qty AS leader_bid_qty,
                lb.ask AS leader_ask,
                lb.ask_qty AS leader_ask_qty,
                tb.event_id AS target_book_event_id,
+               tb.rt AS target_book_received_time,
                tb.bid AS target_bid,
                tb.bid_qty AS target_bid_qty,
                tb.ask AS target_ask,
@@ -848,6 +851,34 @@ def _dataset_rows(
             "target_flow_x_queue": target_flow_1s * target_book["target_queue_imbalance"],
             "target_adverse_selection_pressure": target_flow_1s * target_book["target_microprice_gap_bps"],
             "cross_asset_dislocation_bps": leader_return - target_return,
+            "leader_book_age_ms": max(
+                0.0,
+                (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds() * 1000.0,
+            ),
+            "target_book_age_ms": max(
+                0.0,
+                (item["leader_received_time"] - item["target_book_received_time"]).total_seconds() * 1000.0,
+            ),
+            "book_age_gap_ms": (
+                max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds() * 1000.0)
+                - max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds() * 1000.0)
+            ),
+            "leader_book_confidence": math.exp(
+                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
+            ),
+            "target_book_confidence": math.exp(
+                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
+            ),
+            "leader_flow_x_book_confidence": leader_flow_1s * math.exp(
+                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
+            ),
+            "target_flow_x_book_confidence": target_flow_1s * math.exp(
+                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds())
+                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
+            ),
         }
 
         source_ids = (
@@ -1179,7 +1210,7 @@ def run_crypto_research_once(store) -> dict[str, Any]:
                     minimum_quality_rows=report.rows,
                     replay_fingerprint=replay_fp,
                     model_id=f"crypto-microstructure-ridge-logit-wf-{leader_symbol}-{target_symbol}",
-                    model_version="2",
+                    model_version="3",
                     placebo_block_size=PREREGISTERED_CRYPTO_PROTOCOL.placebo_block_size,
                     placebo_iterations=PREREGISTERED_CRYPTO_PROTOCOL.placebo_iterations,
                     stress_scenarios=stress,
