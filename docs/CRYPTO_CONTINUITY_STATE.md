@@ -25,6 +25,8 @@ Backend hardening:
 - PIT horizon cap is anchored to received/information-availability time plus preregistered tolerance.
 - Autonomous research runner with 7-day maturity gate, exact-ledger fingerprinting, Quality Gate, 6 directed pairs x 6 horizons, OOS persistence, and research-run idempotency.
 
+- Pre-QG verification at 2026-10-01T02:03:27Z: current active session had 3,032 BTCUSDT rows, 1,695 ETHUSDT rows, and 408 SOLUSDT rows; event-type totals 4,248 bookTicker / 904 trade; p99 transport latency by symbol 143.8 / 199.2 / 62.8 ms; future events=0, future received timestamps=0, negative latency=0, receive-time reversals=0, persisted gaps=0, duplicate event keys=0.
+
 Current blockers:
 1. The production runtime is currently deployed at commit d6b1e7d2b32e88f0f5ea788e7743d1c7bd9fe2e0.
 2. The exact-current-head CI result is not independently verified in this environment; do not claim CI green without a run record.
