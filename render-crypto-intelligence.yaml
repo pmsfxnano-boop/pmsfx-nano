@@ -1,0 +1,22 @@
+# Separate learner service. It reads the canonical Crypto Postgres ledger and
+# never owns capture. Keeping it separate prevents learner deployments from
+# resetting the prospective capture cohort.
+services:
+  - type: web
+    name: gorila-crypto-opportunity-intelligence
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: gorila-crypto-intelligence
+    buildCommand: pip install -r requirements-gorila.txt
+    startCommand: python -m gorila_crypto.intelligence_runner
+    healthCheckPath: /api/crypto/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pmsfx-nano-db
+          property: connectionString
+      - key: GORILA_INTELLIGENCE_MODEL_VERSION
+        value: opportunity-clock-intelligence-v1
+      - key: GORILA_CRYPTO_SYMBOLS
+        value: BTCUSDT,ETHUSDT,SOLUSDT
