@@ -384,3 +384,88 @@ def test_postgres_connections_require_tls(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert captured
     assert "sslmode=require" in captured[0]
+
+
+def test_postgres_batch_append_uses_returning_for_new_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    class FakeCursor:
+        def __init__(self, conn) -> None:
+            self.conn = conn
+            self._rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            sql_text = str(sql)
+            self.conn.sql.append(sql_text)
+            if "INSERT INTO crypto_events" in sql_text and "RETURNING" in sql_text:
+                self._rows = [(self.conn.key, 101, self.conn.event_id, self.conn.payload_hash)]
+            elif "SELECT event_key,ledger_seq,event_id,payload_hash" in sql_text:
+                self._rows = []
+
+        def executemany(self, *_args, **_kwargs):
+            raise AssertionError("Postgres batch path must not use executemany")
+
+        def fetchall(self):
+            return list(self._rows)
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+            self.key = "event-key-1"
+            self.event_id = "event-id-1"
+            self.payload_hash = "payload-hash"
+            self.commits = 0
+
+        def cursor(self):
+            return FakeCursor(self)
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    fake_conn = FakeConn()
+    store = CryptoStore(
+        database_url="postgresql://user:pass@example.test:5432/crypto_writer_test"
+    )
+    store.init = lambda: None
+    monkeypatch.setattr(store, "connect", lambda: fake_conn)
+
+    event = {
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": "2026-09-29T15:00:00+00:00",
+        "received_time": "2026-09-29T15:00:00.010000+00:00",
+        "provider_time": "2026-09-29T15:00:00+00:00",
+        "source": "binance.websocket.trade",
+        "sequence_start": 101,
+        "sequence_end": 101,
+        "payload": {"p": "60000.0", "q": "0.01"},
+        "event_key": "event-key-1",
+        "event_id": "event-id-1",
+    }
+
+    result = store.append_events([event])
+
+    assert result == [{
+        "inserted": True,
+        "ledger_seq": 101,
+        "event_id": "event-id-1",
+        "event_key": "event-key-1",
+    }]
+    assert fake_conn.commits == 1
+    assert len(fake_conn.sql) == 1
+    assert "INSERT INTO crypto_events" in fake_conn.sql[0]
+    assert "RETURNING event_key,ledger_seq,event_id,payload_hash" in fake_conn.sql[0]
