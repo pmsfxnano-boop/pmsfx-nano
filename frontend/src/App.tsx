@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   fetchConfig,
   fetchEvidence,
@@ -74,7 +75,7 @@ function toneForStatus(status: string | undefined): "good" | "warn" | "bad" | "n
 
 function Icon({ name }: { name: "terminal" | "clock" | "research" | "quality" | "flow" | "pipeline" | "book" | "chart" | "grid" }) {
   const common = { width: 20, height: 20, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  const paths: Record<string, React.ReactNode> = {
+  const paths: Record<string, ReactNode> = {
     terminal: <><path d="M5 4v16M5 14l5-5 4 4 5-6" /><path d="M16 20h4" /></>,
     clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3 2" /></>,
     research: <><path d="M5 19V9M12 19V5M19 19v-7" /><path d="M3 19h18" /></>,
@@ -459,6 +460,7 @@ function App() {
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [selected, setSelected] = useState("BTCUSDT");
   const [cursor, setCursor] = useState(0);
+  const cursorRef = useRef(0);
   const [marketStatus, setMarketStatus] = useState("STARTING");
   const [durabilityStatus, setDurabilityStatus] = useState("UNKNOWN");
   const [lastDurable, setLastDurable] = useState(0);
@@ -479,13 +481,13 @@ function App() {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 5000);
       try {
-        const response = await fetchMarketStream(cursor, 360, controller.signal);
+        const response = await fetchMarketStream(cursorRef.current, 360, controller.signal);
         if (disposed) return;
         setMarketStatus(response.market_status || response.status || "DEGRADED");
         setDurabilityStatus(response.durability_status || "UNKNOWN");
         setLastDurable(response.last_durable_stream_seq || 0);
         setSymbols(response.symbols || []);
-        if (!selected && response.symbols?.[0]) setSelected(response.symbols[0].symbol);
+
         setEvents(prev => {
           const incoming = response.events || [];
           const map = new Map<string, MarketEvent>();
@@ -494,7 +496,8 @@ function App() {
             .sort((a, b) => a.stream_seq - b.stream_seq)
             .slice(-360);
         });
-        setCursor(response.next_cursor || cursor);
+        cursorRef.current = response.next_cursor || cursorRef.current;
+        setCursor(cursorRef.current);
         setError(null);
       } catch (err) {
         if (!disposed) setError(err instanceof Error ? err.message : "market stream unavailable");
@@ -509,7 +512,7 @@ function App() {
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [cursor, selected]);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
