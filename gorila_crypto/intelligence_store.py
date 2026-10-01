@@ -184,8 +184,11 @@ class IntelligenceStore:
                     (state_id, model_version, capture_session_id, int(last_ledger_seq), now, payload),
                 )
                 committed = cur.rowcount > 0
+                if not committed:
+                    conn.rollback()
+                    return False
             conn.commit()
-            return committed
+            return True
         except Exception:
             conn.rollback()
             raise
