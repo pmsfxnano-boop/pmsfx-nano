@@ -173,6 +173,48 @@ def test_symbol_health_accepts_explicit_reference(tmp_path) -> None:
     store.close()
 
 
+def test_feed_watchdog_restarts_when_one_required_symbol_is_stale(tmp_path) -> None:
+    import threading
+    import time
+    from datetime import timedelta
+
+    store = CryptoStore(sqlite_path=str(tmp_path / "symbol-stale-watchdog.sqlite3"))
+    ingestor = ProspectiveCryptoIngestor(
+        store,
+        FakeAdapter([event(trade_id=1)]),
+        now=lambda: BASE + timedelta(seconds=100),
+    )
+    ingestor._feed_stale_timeout_seconds = 90.0
+    ingestor._feed_watchdog_interval_seconds = 0.01
+    ingestor._feed_stop_event = threading.Event()
+    ingestor._capture_started_at = BASE
+
+    ingestor._symbol_first_received = {
+        "BTCUSDT": BASE,
+        "ETHUSDT": BASE,
+        "SOLUSDT": BASE,
+    }
+    ingestor._symbol_last_received = {
+        "BTCUSDT": BASE + timedelta(seconds=99),
+        "ETHUSDT": BASE,
+        "SOLUSDT": BASE + timedelta(seconds=98),
+    }
+
+    thread = threading.Thread(target=ingestor._feed_watchdog, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 2.0
+    while not ingestor._feed_stop_event.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert ingestor._feed_stop_event.is_set()
+    assert "ETHUSDT" in (ingestor.last_error or "")
+
+    ingestor.stop_event.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    store.close()
+
+
 def test_feed_watchdog_survives_first_restart_request(tmp_path) -> None:
     import threading
     import time
