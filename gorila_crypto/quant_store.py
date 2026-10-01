@@ -360,6 +360,32 @@ class QuantCryptoStore(CryptoStore):
                         if age_seconds > stale_after_seconds:
                             cur.execute(
                                 """
+                                UPDATE crypto_runtime_leases
+                                SET status='ABORTED_STALE',heartbeat_at=NOW()::text
+                                WHERE session_id=%s AND status='RUNNING'
+                                """,
+                                (active_session_id,),
+                            )
+                            cur.execute(
+                                """
+                                UPDATE crypto_runtime_runs
+                                SET status='ABORTED_STALE',
+                                    completed_at=NOW()::text,
+                                    result=%s
+                                WHERE run_id IN (
+                                    SELECT run_id
+                                    FROM crypto_runtime_leases
+                                    WHERE session_id=%s AND status='ABORTED_STALE'
+                                )
+                                  AND status='RUNNING'
+                                """,
+                                (
+                                    json.dumps({"reason": "stale_capture_session"}, sort_keys=True),
+                                    active_session_id,
+                                ),
+                            )
+                            cur.execute(
+                                """
                                 UPDATE crypto_capture_sessions
                                 SET status='ABORTED_STALE',ended_at=NOW()::text
                                 WHERE session_id=%s
@@ -527,7 +553,7 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         return run_id
 
-    def heartbeat_runtime_run(self, run_id: str) -> None:
+    def heartbeat_runtime_run(self, run_id: str) -> bool:
         self.init()
         heartbeat = _utc_now()
         conn = self.connect()
@@ -535,15 +561,39 @@ class QuantCryptoStore(CryptoStore):
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE crypto_runtime_leases SET heartbeat_at=%s,status='RUNNING' WHERE run_id=%s",
+                        """
+                        UPDATE crypto_runtime_leases l
+                        SET heartbeat_at=%s,status='RUNNING'
+                        WHERE l.run_id=%s
+                          AND l.status='RUNNING'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM crypto_capture_sessions s
+                              WHERE s.session_id=l.session_id
+                                AND s.status='RUNNING'
+                          )
+                        """,
                         (heartbeat, run_id),
                     )
+                    updated = cur.rowcount
             else:
-                conn.execute(
-                    "UPDATE crypto_runtime_leases SET heartbeat_at=?,status='RUNNING' WHERE run_id=?",
+                cur = conn.execute(
+                    """
+                    UPDATE crypto_runtime_leases
+                    SET heartbeat_at=?,status='RUNNING'
+                    WHERE run_id=?
+                      AND status='RUNNING'
+                      AND session_id IN (
+                          SELECT session_id
+                          FROM crypto_capture_sessions
+                          WHERE status='RUNNING'
+                      )
+                    """,
                     (heartbeat, run_id),
                 )
+                updated = cur.rowcount
             conn.commit()
+            return int(updated) == 1
         finally:
             conn.close()
 
