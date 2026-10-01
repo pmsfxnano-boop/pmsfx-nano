@@ -822,6 +822,12 @@ def _dataset_rows(
             **target_book,
             "leader_flow_x_shock": leader_return * leader_flow_1s,
             "relative_flow_pressure": leader_flow_1s - target_flow_1s,
+            "leader_flow_persistence": leader_flow_1s - leader_flow_5s,
+            "target_flow_persistence": target_flow_1s - target_flow_5s,
+            "leader_flow_x_queue": leader_flow_1s * leader_book["leader_queue_imbalance"],
+            "target_flow_x_queue": target_flow_1s * target_book["target_queue_imbalance"],
+            "target_adverse_selection_pressure": target_flow_1s * target_book["target_microprice_gap_bps"],
+            "cross_asset_dislocation_bps": leader_return - target_return,
         }
 
         source_ids = (
