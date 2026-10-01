@@ -355,13 +355,20 @@ class ProspectiveCryptoIngestor:
             },
         )
 
+        # Market truth is updated immediately, before any durable operation.
+        if event.event_type in {"trade", "bookTicker"}:
+            self.last_event = event
+            MARKET_CACHE.append_observed([event_kwargs])
+        else:
+            self.last_event = event
+
         gap = self.sequence.observe(event)
         if gap is not None:
             expected, observed = gap
             self.gaps_detected += 1
             if self.session_id is not None:
-        try:
-                        self.store.record_gap(
+                try:
+                    self.store.record_gap(
                         symbol=event.symbol,
                         source=event.source,
                         expected_sequence=expected,
@@ -373,25 +380,33 @@ class ProspectiveCryptoIngestor:
                             "crypto_study_id": self.protocol.study_id,
                             "event_type": event.event_type,
                             "ingest_epoch": self.sequence.epoch,
-                            "message": "Continuity gap detected within one connection epoch; "
-                            "missing events were not synthesized.",
+                            "message": (
+                                "Continuity gap detected within one connection epoch; "
+                                "missing events were not synthesized."
+                            ),
                         },
                     )
                 except Exception as exc:
-                    self._persistence_error = f"gap_record:{type(exc).__name__}: {exc}"
-                    MARKET_CACHE.record_persistence_degradation(self._persistence_error)
-
+                    self._persistence_error = (
+                        f"gap_record:{type(exc).__name__}: {exc}"
+                    )
+                    MARKET_CACHE.record_persistence_degradation(
+                        self._persistence_error
+                    )
 
         source = event.source
-        self._health_pending_rows[source] = self._health_pending_rows.get(source, 0) + 1
+        self._health_pending_rows[source] = (
+            self._health_pending_rows.get(source, 0) + 1
+        )
         now_monotonic = time.monotonic()
         last_persisted = self._health_last_persist_monotonic.get(source, 0.0)
         previous_status = self._health_last_status.get(source)
         should_persist_health = (
             previous_status != assessment["status"]
-            or now_monotonic - last_persisted >= self.config.health_flush_interval_seconds
+            or now_monotonic - last_persisted
+            >= self.config.health_flush_interval_seconds
         )
-        if should_persist_health:
+        if should_persist_health and self.session_id is not None:
             try:
                 self.store.upsert_source_health(
                     source=source,
@@ -404,22 +419,20 @@ class ProspectiveCryptoIngestor:
                     error=None,
                 )
             except Exception as exc:
-                self._persistence_error = f"source_health:{type(exc).__name__}: {exc}"
-                MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+                self._persistence_error = (
+                    f"source_health:{type(exc).__name__}: {exc}"
+                )
+                MARKET_CACHE.record_persistence_degradation(
+                    self._persistence_error
+                )
             self._health_last_persist_monotonic[source] = now_monotonic
             self._health_last_status[source] = assessment["status"]
             self._health_pending_rows[source] = 0
+
         with self._symbol_lock:
             symbol = event.symbol.upper()
             self._symbol_first_received.setdefault(symbol, received_time)
             self._symbol_last_received[symbol] = received_time
-        self.last_event = event
-
-        # Hot market state is committed before durability. This is the central
-        # market/evidence plane separation: Postgres outage must not freeze price,
-        # tape or microstructure.
-        if event.event_type in {"trade", "bookTicker"}:
-            MARKET_CACHE.append_observed([event_kwargs])
 
         if self._should_persist(event):
             event_kwargs["metadata"] = {
