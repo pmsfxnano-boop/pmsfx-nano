@@ -24,14 +24,14 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: pmsfx-nano-db
+          name: cryptonita-durable-ledger
           property: connectionString
       - key: GORILA_CRYPTO_PROVIDER
         value: binance
       - key: GORILA_CRYPTO_SYMBOLS
         value: BTCUSDT,ETHUSDT,SOLUSDT
       - key: GORILA_CRYPTO_STREAMS
-        value: trade,bookTicker,depth
+        value: trade,bookTicker
       - key: GORILA_CRYPTO_DEPTH_SPEED
         value: 100ms
       - key: GORILA_CRYPTO_ENVIRONMENT
