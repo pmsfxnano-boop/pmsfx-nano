@@ -16,6 +16,7 @@ from typing import Any
 
 from .market_cache import MARKET_CACHE
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .forecast import FEATURE_SET_VERSION
 from .quant_store import QuantCryptoStore
 
 _EVIDENCE_LOCK = threading.RLock()
@@ -614,6 +615,13 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                 "prospect_days": PREREGISTERED_CRYPTO_PROTOCOL.prospect_days,
                 "min_trade_rows_per_symbol": PREREGISTERED_CRYPTO_PROTOCOL.min_trade_rows_per_symbol,
                 "forecast_horizons_ms": list(PREREGISTERED_CRYPTO_PROTOCOL.forecast_horizons_ms),
+                "alpha_feature_set": FEATURE_SET_VERSION,
+                "alpha_model_version": "2",
+                "promotion_latency_guard": {
+                    "median_max_ratio": 0.50,
+                    "p95_max_ratio": 0.75,
+                    "scope": "forecast_horizon",
+                },
             },
             "cohort": cohort,
             "quality_gate": quality,
