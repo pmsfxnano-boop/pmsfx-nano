@@ -199,12 +199,25 @@ function PrimaryChart({
       price: Number(event.price),
     }));
 
-  // The chart is genuinely live: durable history is used when available,
-  // while the hot market stream supplies an immediate real-time tail.
-  const sourcePoints = durablePoints.length ? durablePoints : livePoints;
+  // Keep durable history for context, but always append the hot stream tail.
+  // The previous implementation preferred durable candles whenever they existed,
+  // which made the primary chart look static even while the market plane moved.
+  const durableTail = durablePoints.slice(-160);
+  const lastDurableTime = durableTail.length
+    ? Date.parse(durableTail[durableTail.length - 1].time)
+    : Number.NEGATIVE_INFINITY;
+  const liveTail = livePoints.filter(point => {
+    const t = Date.parse(point.time);
+    return Number.isFinite(t) && t >= lastDurableTime;
+  }).slice(-60);
+
+  const sourcePoints = durableTail.length
+    ? [...durableTail, ...liveTail.filter(point => Date.parse(point.time) > lastDurableTime)]
+    : liveTail;
+
   const maxPoints = 220;
   const points = sourcePoints.length > maxPoints
-    ? sourcePoints.filter((_, index) => index % Math.ceil(sourcePoints.length / maxPoints) === 0)
+    ? sourcePoints.slice(-maxPoints)
     : sourcePoints;
 
   const values = points.map(point => point.price);
@@ -231,7 +244,7 @@ function PrimaryChart({
   const areaPoints = values.length
     ? `${pad.l},${H - pad.b} ${linePoints} ${x(values.length - 1)},${H - pad.b}`
     : "";
-  const live = sourcePoints === livePoints || !durablePoints.length;
+  const live = liveTail.length > 0;
   const displaySymbol = symbolBase(symbol || history?.symbol || "BTCUSDT");
   const displayQuote = (symbol || history?.symbol || "BTCUSDT").endsWith("USDT") ? "USDT" : "USD";
 
@@ -359,7 +372,7 @@ function PrimaryChart({
       </div>
 
       <div className="primary-chart-foot">
-        <span>{live ? "live Binance market stream" : `${history?.resolution || resolution} · durable market ledger`}</span>
+        <span>{live ? "live Binance market stream · durable context" : `${history?.resolution || resolution} · durable market ledger`}</span>
         <span>{values.length} observations</span>
         <span>low-latency visual read-model</span>
       </div>
