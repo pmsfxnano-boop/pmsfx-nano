@@ -553,6 +553,11 @@ class ProspectiveCryptoIngestor:
 
         if status == "ERROR":
             self.last_error = str(metadata.get("error") or "unknown_error")
+            # Multi-symbol Binance capture deliberately isolates one socket per
+            # symbol.  A malformed control/aggregate socket must not contaminate
+            # the market-data health plane used by the evidence gate.
+            if metadata.get("connection_scope") == "SYMBOL_ISOLATED":
+                return
             self._queue_source_health(
                 source=self.source_family,
                 status=self.config.error_status,
