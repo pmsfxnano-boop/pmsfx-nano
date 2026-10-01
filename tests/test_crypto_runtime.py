@@ -179,9 +179,15 @@ def test_feed_watchdog_restarts_when_one_required_symbol_is_stale(tmp_path) -> N
     from datetime import timedelta
 
     store = CryptoStore(sqlite_path=str(tmp_path / "symbol-stale-watchdog.sqlite3"))
+    class MultiSymbolFakeAdapter:
+        config = BinanceStreamConfig(
+            symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+            streams=("trade", "bookTicker"),
+        )
+
     ingestor = ProspectiveCryptoIngestor(
         store,
-        FakeAdapter([event(trade_id=1)]),
+        MultiSymbolFakeAdapter(),
         now=lambda: BASE + timedelta(seconds=100),
     )
     ingestor._feed_stale_timeout_seconds = 90.0
