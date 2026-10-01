@@ -670,12 +670,50 @@ class DiscreteHazardLearner:
             cdf[horizon] = 1.0 - survival
             previous = horizon
 
+        global_response, global_std = self.global_response_model.predict(features)
+        pair_response_model = self._response_model_for(pair)
+        pair_response, pair_std = pair_response_model.predict(features)
+        pair_response_updates = sum(pair_response_model.health()["updates"].values())
+        response_weight = min(0.90, 0.10 + pair_response_updates / (pair_response_updates + 200.0))
+        conditional_response = {
+            h: max(
+                -MAX_RESPONSE_BPS,
+                min(
+                    MAX_RESPONSE_BPS,
+                    response_weight * pair_response[h]
+                    + (1.0 - response_weight) * global_response[h],
+                ),
+            )
+            for h in self.horizons_ms
+        }
+        response_std = {
+            h: max(
+                MIN_RESPONSE_STD_BPS,
+                response_weight * pair_std[h]
+                + (1.0 - response_weight) * global_std[h],
+            )
+            for h in self.horizons_ms
+        }
+        execution_drag = self._execution_drag_bps(features)
+        expected_net = {
+            h: cdf[h] * conditional_response[h] - execution_drag
+            for h in self.horizons_ms
+        }
+        risk_adjusted_net = {
+            h: cdf[h] * (conditional_response[h] - response_std[h]) - execution_drag
+            for h in self.horizons_ms
+        }
         return HazardForecast(
             pair=pair,
             hazards=hazards,
             probability_by_horizon=cdf,
             survival_by_horizon={h: 1.0 - cdf[h] for h in self.horizons_ms},
             expected_reaction_ms=min(float(self.horizons_ms[-1]), expected),
+            conditional_response_bps=conditional_response,
+            response_std_bps=response_std,
+            expected_net_bps=expected_net,
+            risk_adjusted_net_bps=risk_adjusted_net,
+            execution_drag_bps=execution_drag,
             model_version=MODEL_VERSION,
         )
 
@@ -985,6 +1023,8 @@ class AdaptiveOpportunityClock:
         pair = self._pair(pending.leader_symbol, pending.target_symbol)
         global_out = {}
         pair_out = {}
+        response_global_out: dict[int, float] = {}
+        response_pair_out: dict[int, float] = {}
         if learn:
             global_out = self.global_model.update(
                 pending.features,
@@ -996,6 +1036,17 @@ class AdaptiveOpportunityClock:
                 event_observed=observed,
                 duration_ms=duration_ms,
             )
+            if observed:
+                response_global_out = self.global_response_model.update(
+                    pending.features,
+                    signed_return_bps,
+                    duration_ms,
+                )
+                response_pair_out = self._response_model_for(pair).update(
+                    pending.features,
+                    signed_return_bps,
+                    duration_ms,
+                )
             self.training_updates += 1
         if observed:
             self.resolved += 1
@@ -1015,6 +1066,8 @@ class AdaptiveOpportunityClock:
             "features": dict(zip(FEATURE_NAMES, pending.features)),
             "global_update_bins": global_out,
             "pair_update_bins": pair_out,
+            "response_global_update": response_global_out,
+            "response_pair_update": response_pair_out,
             "model_version": MODEL_VERSION,
         }
 
