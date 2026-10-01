@@ -229,25 +229,7 @@ class ProspectiveCryptoIngestor:
             now = time.monotonic()
             if now - self._last_spool_log_monotonic >= 10.0:
                 stats = self._evidence_spool.stats()
-                print(
-                    "GORILA_EVIDENCE_SPOOL "
-                    + json.dumps(
-                        {
-                            "batch_id": batch_id,
-                            "rows": len(spooled_rows),
-                            "batches": stats["batches"],
-                            "bytes": stats["bytes"],
-                            "max_bytes": stats["max_bytes"],
-                            "max_batches": stats["max_batches"],
-                            "oldest_created_at": stats["oldest_created_at"],
-                        },
-                        sort_keys=True,
-                        default=str,
-                    ),
-                    flush=True,
-                )
-                self._last_spool_log_monotonic = now
-            return True
+                utilization = (\n                    float(stats["bytes"]) / float(stats["max_bytes"])\n                    if stats["max_bytes"] > 0\n                    else 1.0\n                )\n                print(\n                    "GORILA_EVIDENCE_SPOOL "\n                    + json.dumps(\n                        {\n                            "batch_id": batch_id,\n                            "rows": len(spooled_rows),\n                            "batches": stats["batches"],\n                            "bytes": stats["bytes"],\n                            "max_bytes": stats["max_bytes"],\n                            "utilization": utilization,\n                            "guard_ratio": settings.persistence_spool_guard_ratio,\n                            "max_batches": stats["max_batches"],\n                            "oldest_created_at": stats["oldest_created_at"],\n                        },\n                        sort_keys=True,\n                        default=str,\n                    ),\n                    flush=True,\n                )\n                self._last_spool_log_monotonic = now\n                if utilization >= settings.persistence_spool_guard_ratio:\n                    self._persistence_spool_error = "EVIDENCE_SPOOL_GUARD_ACTIVE"\n                    self._persistence_error = "evidence_spool_capacity_guard"\n                    self.stop_event.set()\n                    print(\n                        "GORILA_CAPTURE_STOPPED "\n                        + json.dumps(\n                            {\n                                "reason": self._persistence_error,\n                                "utilization": utilization,\n                                "guard_ratio": settings.persistence_spool_guard_ratio,\n                            },\n                            sort_keys=True,\n                        ),\n                        flush=True,\n                    )\n            return True
         except OverflowError as exc:
             self._persistence_spool_error = str(exc)
             dropped = len(rows)
@@ -654,6 +636,12 @@ class ProspectiveCryptoIngestor:
             ),
             "evidence_spool": spool_stats,
             "evidence_spool_error": self._persistence_spool_error,
+            "evidence_spool_guard_ratio": settings.persistence_spool_guard_ratio,
+            "evidence_spool_utilization": (
+                float(spool_stats["bytes"]) / float(spool_stats["max_bytes"])
+                if spool_stats.get("max_bytes")
+                else None
+            ),
             "durability_live_max_age_seconds": settings.durability_live_max_age_seconds,
             "recovery_gate": self.recovery_gate(),
         }
