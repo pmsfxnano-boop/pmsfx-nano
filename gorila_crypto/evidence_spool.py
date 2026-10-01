@@ -45,17 +45,26 @@ class EvidenceSpool:
         self.max_bytes = int(max_bytes)
         self.max_batches = int(max_batches)
         self._lock = threading.RLock()
+        self._conn: sqlite3.Connection | None = None
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        conn = sqlite3.connect(
-            self.path,
-            timeout=5.0,
-            isolation_level="IMMEDIATE",
-        )
-        conn.row_factory = sqlite3.Row
-        return conn
+        if self._conn is None:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self._conn = sqlite3.connect(
+                self.path,
+                timeout=5.0,
+                isolation_level="IMMEDIATE",
+                check_same_thread=False,
+            )
+            self._conn.row_factory = sqlite3.Row
+        return self._conn
+
+    def close(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _ensure_schema(self) -> None:
         with self._lock:
@@ -69,6 +78,15 @@ class EvidenceSpool:
                         payload_json TEXT NOT NULL,
                         payload_zlib BLOB,
                         byte_count INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS evidence_spool_state (
+                        state_id INTEGER PRIMARY KEY CHECK(state_id = 1),
+                        queued_bytes INTEGER NOT NULL,
+                        queued_batches INTEGER NOT NULL
                     )
                     """
                 )
@@ -109,9 +127,26 @@ class EvidenceSpool:
                     ON evidence_spool_batches(created_at, batch_id)
                     """
                 )
+                state = conn.execute(
+                    "SELECT queued_bytes, queued_batches "
+                    "FROM evidence_spool_state WHERE state_id=1"
+                ).fetchone()
+                if state is None:
+                    aggregate = conn.execute(
+                        "SELECT COALESCE(SUM(byte_count),0), COUNT(*) "
+                        "FROM evidence_spool_batches"
+                    ).fetchone()
+                    conn.execute(
+                        """
+                        INSERT INTO evidence_spool_state(
+                            state_id, queued_bytes, queued_batches
+                        ) VALUES(1,?,?)
+                        """,
+                        (int(aggregate[0]), int(aggregate[1])),
+                    )
                 conn.commit()
             finally:
-                conn.close()
+                pass
 
     @staticmethod
     def _encode(rows: Iterable[dict[str, Any]]) -> tuple[str, int]:
@@ -133,15 +168,16 @@ class EvidenceSpool:
             try:
                 stats = conn.execute(
                     """
-                    SELECT
-                        COALESCE(SUM(byte_count), 0) AS queued_bytes,
-                        COUNT(*) AS queued_batches
-                    FROM evidence_spool_batches
+                    SELECT queued_bytes, queued_batches
+                    FROM evidence_spool_state
+                    WHERE state_id=1
                     """
                 ).fetchone()
+                if stats is None:
+                    raise RuntimeError("evidence_spool_state_missing")
                 queued_bytes = int(stats["queued_bytes"])
                 queued_batches = int(stats["queued_batches"])
-                compressed = zlib.compress(payload.encode("utf-8"), level=6)
+                compressed = zlib.compress(payload.encode("utf-8"), level=3)
                 compressed_bytes = len(compressed)
                 if (
                     queued_bytes + compressed_bytes > self.max_bytes
@@ -162,10 +198,19 @@ class EvidenceSpool:
                         compressed_bytes,
                     ),
                 )
+                conn.execute(
+                    """
+                    UPDATE evidence_spool_state
+                    SET queued_bytes=queued_bytes+?,
+                        queued_batches=queued_batches+1
+                    WHERE state_id=1
+                    """,
+                    (compressed_bytes,),
+                )
                 conn.commit()
                 return int(cursor.lastrowid)
             finally:
-                conn.close()
+                pass
 
     def peek(self) -> SpoolBatch | None:
         with self._lock:
@@ -193,44 +238,68 @@ class EvidenceSpool:
                     byte_count=int(row["byte_count"]),
                 )
             finally:
-                conn.close()
+                pass
 
     def delete(self, batch_id: int) -> None:
         with self._lock:
             conn = self._connect()
             try:
+                row = conn.execute(
+                    """
+                    SELECT byte_count
+                    FROM evidence_spool_batches
+                    WHERE batch_id=?
+                    """,
+                    (int(batch_id),),
+                ).fetchone()
+                if row is None:
+                    return
+                byte_count = int(row["byte_count"])
                 conn.execute(
                     "DELETE FROM evidence_spool_batches WHERE batch_id=?",
                     (int(batch_id),),
                 )
+                conn.execute(
+                    """
+                    UPDATE evidence_spool_state
+                    SET queued_bytes=MAX(0, queued_bytes-?),
+                        queued_batches=MAX(0, queued_batches-1)
+                    WHERE state_id=1
+                    """,
+                    (byte_count,),
+                )
                 conn.commit()
             finally:
-                conn.close()
+                pass
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
             conn = self._connect()
             try:
-                row = conn.execute(
+                state = conn.execute(
                     """
-                    SELECT
-                        COUNT(*) AS batches,
-                        COALESCE(SUM(byte_count), 0) AS bytes,
-                        MIN(created_at) AS oldest_created_at
+                    SELECT queued_bytes, queued_batches
+                    FROM evidence_spool_state
+                    WHERE state_id=1
+                    """
+                ).fetchone()
+                oldest = conn.execute(
+                    """
+                    SELECT MIN(created_at) AS oldest_created_at
                     FROM evidence_spool_batches
                     """
                 ).fetchone()
                 return {
                     "path": self.path,
-                    "batches": int(row["batches"]),
-                    "bytes": int(row["bytes"]),
+                    "batches": int(state["queued_batches"]) if state is not None else 0,
+                    "bytes": int(state["queued_bytes"]) if state is not None else 0,
                     "max_bytes": self.max_bytes,
                     "max_batches": self.max_batches,
                     "oldest_created_at": (
-                        str(row["oldest_created_at"])
-                        if row["oldest_created_at"] is not None
+                        str(oldest["oldest_created_at"])
+                        if oldest["oldest_created_at"] is not None
                         else None
                     ),
                 }
             finally:
-                conn.close()
+                pass

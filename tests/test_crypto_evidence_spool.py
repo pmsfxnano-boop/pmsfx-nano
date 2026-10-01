@@ -83,3 +83,32 @@ def test_evidence_spool_compresses_large_payload_and_roundtrips(tmp_path) -> Non
     assert batch.rows == [row]
     assert batch.byte_count < raw_size
     assert spool.stats()["bytes"] == batch.byte_count
+
+
+def test_evidence_spool_state_accounting_survives_reopen(tmp_path) -> None:
+    path = tmp_path / "state.sqlite3"
+    spool = EvidenceSpool(
+        path=str(path),
+        max_bytes=2 * 1024 * 1024,
+        max_batches=10,
+    )
+    first = spool.append([_row()])
+    second = spool.append([_row("SOLUSDT")])
+    assert first == 1
+    assert second == 2
+    stats = spool.stats()
+    assert stats["batches"] == 2
+    assert stats["bytes"] > 0
+    spool.close()
+
+    reopened = EvidenceSpool(
+        path=str(path),
+        max_bytes=2 * 1024 * 1024,
+        max_batches=10,
+    )
+    assert reopened.stats()["batches"] == 2
+    first_batch = reopened.peek()
+    assert first_batch is not None
+    reopened.delete(first_batch.batch_id)
+    assert reopened.stats()["batches"] == 1
+    reopened.close()
