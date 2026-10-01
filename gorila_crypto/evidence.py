@@ -72,6 +72,29 @@ def _query(conn, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]
     return [dict(zip(cols, row)) for row in rows]
 
 
+def _current_research_fingerprint(
+    conn,
+    session_id: str | None,
+) -> str | None:
+    if not session_id:
+        return None
+    rows = _query(
+        conn,
+        """
+        SELECT replay_fingerprint
+        FROM crypto_research_runs
+        WHERE capture_session_id=%s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (session_id,),
+    )
+    if not rows:
+        return None
+    value = str(rows[0].get("replay_fingerprint") or "").strip()
+    return value or None
+
+
 def _cohort(conn, now: datetime) -> dict[str, Any]:
     rows = _query(
         conn,
@@ -139,7 +162,7 @@ def _quality_gate(conn, cohort: dict[str, Any], now: datetime) -> dict[str, Any]
         SELECT report_id,created_at,replay_fingerprint,status,report_hash,report_json
         FROM crypto_quality_reports
         ORDER BY created_at DESC
-        LIMIT 10
+        LIMIT 1
         """,
     )
     latest = rows[0] if rows else None
@@ -199,7 +222,7 @@ def _research_gate(conn) -> dict[str, Any]:
         FROM crypto_connection_events
         WHERE source='gorila.crypto.research_runner'
         ORDER BY created_at DESC
-        LIMIT 6
+        LIMIT 1
         """,
     )
     latest = rows[0] if rows else None
@@ -213,7 +236,16 @@ def _research_gate(conn) -> dict[str, Any]:
     }
 
 
-def _validation_gate(conn) -> dict[str, Any]:
+def _validation_gate(conn, replay_fingerprint: str | None = None) -> dict[str, Any]:
+    if not replay_fingerprint:
+        return {
+            "state": "BLOCKED",
+            "status": "NO_CURRENT_RESEARCH_FINGERPRINT",
+            "promotion_eligible": False,
+            "oos_rows": 0,
+            "latest": None,
+        }
+
     rows = _query(
         conn,
         """
@@ -221,21 +253,27 @@ def _validation_gate(conn) -> dict[str, Any]:
                target_kind,horizon_ms,status,placebo_p_value,placebo_iterations,
                promotion_eligible,config_json,aggregate_metrics_json,stability_json,stress_json
         FROM crypto_validation_runs
+        WHERE replay_fingerprint=%s
         ORDER BY created_at DESC
-        LIMIT 3
+        LIMIT 1
         """,
+        (replay_fingerprint,),
     )
-    oos_row = _query(conn, "SELECT COUNT(*) AS n FROM crypto_validation_oos")[0]
     latest = rows[0] if rows else None
     if latest is None:
         return {
             "state": "BLOCKED",
             "status": "NO_OOS_RUN",
             "promotion_eligible": False,
-            "oos_rows": int(oos_row["n"]),
+            "oos_rows": 0,
             "latest": None,
         }
 
+    oos_row = _query(
+        conn,
+        "SELECT COUNT(*) AS n FROM crypto_validation_oos WHERE run_id=%s",
+        (latest["run_id"],),
+    )[0]
     aggregate = _json(latest["aggregate_metrics_json"])
     stability = _json(latest["stability_json"])
     stress = _json(latest["stress_json"])
@@ -245,7 +283,7 @@ def _validation_gate(conn) -> dict[str, Any]:
         "state": "PASS" if eligible else "BLOCKED",
         "status": status,
         "promotion_eligible": eligible,
-        "oos_rows": int(oos_row["n"]),
+        "oos_rows": int(oos_row["n"] or 0),
         "latest": {
             "run_id": latest["run_id"],
             "created_at": _iso(latest["created_at"]),
@@ -263,9 +301,36 @@ def _validation_gate(conn) -> dict[str, Any]:
     }
 
 
-def _forecast_shadow(conn) -> dict[str, Any]:
-    count_row = _query(conn, "SELECT COUNT(*) AS n FROM crypto_forecast_shadow")[0]
-    outcome_row = _query(conn, "SELECT COUNT(*) AS n FROM crypto_forecast_outcomes")[0]
+def _forecast_shadow(
+    conn,
+    replay_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    if not replay_fingerprint:
+        return {
+            "count": 0,
+            "outcomes_count": 0,
+            "state": "EMPTY",
+            "latest": None,
+            "recent_probability_mean": None,
+            "recent_probability_min": None,
+            "recent_probability_max": None,
+        }
+
+    count_row = _query(
+        conn,
+        "SELECT COUNT(*) AS n FROM crypto_forecast_shadow WHERE replay_fingerprint=%s",
+        (replay_fingerprint,),
+    )[0]
+    outcome_row = _query(
+        conn,
+        """
+        SELECT COUNT(*) AS n
+        FROM crypto_forecast_outcomes o
+        JOIN crypto_forecast_shadow s ON s.forecast_id=o.forecast_id
+        WHERE s.replay_fingerprint=%s
+        """,
+        (replay_fingerprint,),
+    )[0]
     rows = _query(
         conn,
         """
@@ -273,9 +338,11 @@ def _forecast_shadow(conn) -> dict[str, Any]:
                horizon_ms,target_kind,semantics,probability_response_positive,
                decision_event_time,decision_received_time,feature_set_hash
         FROM crypto_forecast_shadow
+        WHERE replay_fingerprint=%s
         ORDER BY created_at DESC
         LIMIT 8
         """,
+        (replay_fingerprint,),
     )
     latest = rows[0] if rows else None
     probabilities = [
@@ -284,13 +351,9 @@ def _forecast_shadow(conn) -> dict[str, Any]:
         if row.get("probability_response_positive") is not None
     ]
     return {
-        "count": int(count_row["n"]),
-        "outcomes_count": int(outcome_row["n"]),
-        "state": (
-            "EMPTY"
-            if not rows
-            else "SHADOW_READY"
-        ),
+        "count": int(count_row["n"] or 0),
+        "outcomes_count": int(outcome_row["n"] or 0),
+        "state": "EMPTY" if not rows else "SHADOW_READY",
         "latest": (
             {
                 **row,
@@ -306,8 +369,18 @@ def _forecast_shadow(conn) -> dict[str, Any]:
     }
 
 
-def _lead_lag(conn) -> dict[str, Any]:
-    counts = _query(conn, "SELECT COUNT(*) AS n FROM crypto_lead_lag_shadow")
+def _lead_lag(
+    conn,
+    replay_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    if not replay_fingerprint:
+        return {"observation_count": 0, "pairs": []}
+
+    counts = _query(
+        conn,
+        "SELECT COUNT(*) AS n FROM crypto_lead_lag_shadow WHERE replay_fingerprint=%s",
+        (replay_fingerprint,),
+    )
     rows = _query(
         conn,
         """
@@ -316,10 +389,12 @@ def _lead_lag(conn) -> dict[str, Any]:
                AVG(information_lag_ms) AS mean_information_lag_ms,
                percentile_cont(0.50) WITHIN GROUP (ORDER BY information_lag_ms) AS median_information_lag_ms
         FROM crypto_lead_lag_shadow
+        WHERE replay_fingerprint=%s
         GROUP BY leader_symbol,target_symbol,delay_ms
         ORDER BY n DESC
         LIMIT 24
         """,
+        (replay_fingerprint,),
     )
     return {
         "observation_count": int(counts[0]["n"]) if counts else 0,
@@ -338,16 +413,28 @@ def _lead_lag(conn) -> dict[str, Any]:
     }
 
 
-def _opportunity_shadow(conn) -> dict[str, Any]:
-    count_row = _query(conn, "SELECT COUNT(*) AS n FROM crypto_opportunity_shadow")[0]
+def _opportunity_shadow(
+    conn,
+    replay_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    if not replay_fingerprint:
+        return {"count": 0, "state_counts": {}, "latest": []}
+
+    count_row = _query(
+        conn,
+        "SELECT COUNT(*) AS n FROM crypto_opportunity_shadow WHERE replay_fingerprint=%s",
+        (replay_fingerprint,),
+    )[0]
     states = _query(
         conn,
         """
         SELECT status,COUNT(*) AS n
         FROM crypto_opportunity_shadow
+        WHERE replay_fingerprint=%s
         GROUP BY status
         ORDER BY n DESC
         """,
+        (replay_fingerprint,),
     )
     rows = _query(
         conn,
@@ -357,12 +444,14 @@ def _opportunity_shadow(conn) -> dict[str, Any]:
                first_reaction_information_lag_ms,convergence_information_lag_ms,
                max_favorable_excursion_bps,max_adverse_excursion_bps
         FROM crypto_opportunity_shadow
+        WHERE replay_fingerprint=%s
         ORDER BY created_at DESC
         LIMIT 8
         """,
+        (replay_fingerprint,),
     )
     return {
-        "count": int(count_row["n"]),
+        "count": int(count_row["n"] or 0),
         "state_counts": {str(row["status"]): int(row["n"]) for row in states},
         "latest": [
             {
@@ -494,10 +583,16 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             cohort = _cohort(conn, now)
             quality = _quality_gate(conn, cohort, now)
             research = _research_gate(conn)
-            validation = _validation_gate(conn)
-            forecast = _forecast_shadow(conn)
-            lead_lag = _lead_lag(conn)
-            opportunity = _opportunity_shadow(conn)
+            replay_fingerprint = _current_research_fingerprint(
+                conn,
+                cohort.get("session_id"),
+            )
+            if replay_fingerprint is None and quality.get("current_session"):
+                replay_fingerprint = quality.get("replay_fingerprint")
+            validation = _validation_gate(conn, replay_fingerprint)
+            forecast = _forecast_shadow(conn, replay_fingerprint)
+            lead_lag = _lead_lag(conn, replay_fingerprint)
+            opportunity = _opportunity_shadow(conn, replay_fingerprint)
         finally:
             conn.close()
 
