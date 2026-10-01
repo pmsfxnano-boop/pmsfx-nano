@@ -146,7 +146,7 @@ class EvidenceSpool:
                     )
                 conn.commit()
             finally:
-                conn.close()
+                pass
 
     @staticmethod
     def _encode(rows: Iterable[dict[str, Any]]) -> tuple[str, int]:
@@ -168,12 +168,13 @@ class EvidenceSpool:
             try:
                 stats = conn.execute(
                     """
-                    SELECT
-                        COALESCE(SUM(byte_count), 0) AS queued_bytes,
-                        COUNT(*) AS queued_batches
-                    FROM evidence_spool_batches
+                    SELECT queued_bytes, queued_batches
+                    FROM evidence_spool_state
+                    WHERE state_id=1
                     """
                 ).fetchone()
+                if stats is None:
+                    raise RuntimeError("evidence_spool_state_missing")
                 queued_bytes = int(stats["queued_bytes"])
                 queued_batches = int(stats["queued_batches"])
                 compressed = zlib.compress(payload.encode("utf-8"), level=3)
@@ -209,7 +210,7 @@ class EvidenceSpool:
                 conn.commit()
                 return int(cursor.lastrowid)
             finally:
-                conn.close()
+                pass
 
     def peek(self) -> SpoolBatch | None:
         with self._lock:
@@ -237,7 +238,7 @@ class EvidenceSpool:
                     byte_count=int(row["byte_count"]),
                 )
             finally:
-                conn.close()
+                pass
 
     def delete(self, batch_id: int) -> None:
         with self._lock:
@@ -269,7 +270,7 @@ class EvidenceSpool:
                 )
                 conn.commit()
             finally:
-                conn.close()
+                pass
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
@@ -301,4 +302,4 @@ class EvidenceSpool:
                     ),
                 }
             finally:
-                conn.close()
+                pass
