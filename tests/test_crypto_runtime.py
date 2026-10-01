@@ -367,3 +367,11 @@ def test_source_health_is_deferred_off_market_event_path(tmp_path) -> None:
         assert row["rows_last_batch"] == 1
     finally:
         conn.close()
+
+
+def test_runtime_loop_does_not_persist_runtime_heartbeat_per_market_event(tmp_path) -> None:
+    import inspect
+    import gorila_crypto.runtime as runtime_module
+
+    source = inspect.getsource(runtime_module.ProspectiveCryptoIngestor.run)
+    assert "heartbeat_runtime_run" not in source
