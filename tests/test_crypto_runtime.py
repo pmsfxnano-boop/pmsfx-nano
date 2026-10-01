@@ -570,7 +570,7 @@ def test_reconcile_fences_lease_from_terminal_capture_session(tmp_path) -> None:
         conn.execute(
             """
             INSERT INTO crypto_runtime_runs(
-                run_id,kind,started_at,status,result
+                run_id,kind,created_at,status,result
             ) VALUES(?,?,?,?,?)
             """,
             (
