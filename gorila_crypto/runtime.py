@@ -164,16 +164,31 @@ class ProspectiveCryptoIngestor:
                 )
             if age_seconds <= self._feed_stale_timeout_seconds:
                 continue
-            self.last_error = f"market_feed_stale_after_{age_seconds:.1f}s"
-            self._record_connection(
-                "STALE_FEED",
-                {
-                    "age_seconds": age_seconds,
-                    "timeout_seconds": self._feed_stale_timeout_seconds,
-                    "symbol_health": self.symbol_health(reference=now),
-                    "action": "RESTART_FEED_KEEP_SESSION",
-                },
-            )
+            try:
+                self.last_error = f"market_feed_stale_after_{age_seconds:.1f}s"
+                self._record_connection(
+                    "STALE_FEED",
+                    {
+                        "age_seconds": age_seconds,
+                        "timeout_seconds": self._feed_stale_timeout_seconds,
+                        "symbol_health": self.symbol_health(now=now),
+                        "action": "RESTART_FEED_KEEP_SESSION",
+                    },
+                )
+            except Exception as exc:
+                # The watchdog is itself part of the availability boundary:
+                # its own observability failure must not kill the monitor.
+                self.last_error = f"watchdog_error:{type(exc).__name__}: {exc}"
+                try:
+                    self._record_connection(
+                        "WATCHDOG_ERROR",
+                        {
+                            "error": self.last_error,
+                            "capture_session_id": self.session_id,
+                        },
+                    )
+                except Exception:
+                    pass
             feed_stop_event = self._feed_stop_event
             if feed_stop_event is not None:
                 feed_stop_event.set()
