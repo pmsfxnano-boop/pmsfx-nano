@@ -152,52 +152,69 @@ class ProspectiveCryptoIngestor:
             # timestamp does not immediately trigger a second reset.
             if now_monotonic < self._feed_watchdog_grace_until:
                 continue
-            if self.last_event is None:
-                age_seconds = max(
-                    0.0,
-                    (now - self._capture_started_at).total_seconds(),
-                )
-            else:
-                age_seconds = max(
-                    0.0,
-                    (now - self.last_event.received_time).total_seconds(),
-                )
-            if age_seconds <= self._feed_stale_timeout_seconds:
-                continue
-            try:
-                self.last_error = f"market_feed_stale_after_{age_seconds:.1f}s"
-                self._record_connection(
-                    "STALE_FEED",
-                    {
-                        "age_seconds": age_seconds,
-                        "timeout_seconds": self._feed_stale_timeout_seconds,
-                        "symbol_health": self.symbol_health(now=now),
-                        "action": "RESTART_FEED_KEEP_SESSION",
-                    },
-                )
-            except Exception as exc:
-                # The watchdog is itself part of the availability boundary:
-                # its own observability failure must not kill the monitor.
-                self.last_error = f"watchdog_error:{type(exc).__name__}: {exc}"
+
+            symbol_health = self.symbol_health(now=now)
+            stale_symbols = [
+                row["symbol"]
+                for row in symbol_health
+                if row.get("required")
+                and row.get("age_seconds") is not None
+                and float(row["age_seconds"]) > self._feed_stale_timeout_seconds
+            ]
+
+            if stale_symbols:
+                if self.last_event is None:
+                    global_age_seconds = max(
+                        0.0,
+                        (now - self._capture_started_at).total_seconds(),
+                    )
+                else:
+                    global_age_seconds = max(
+                        0.0,
+                        (now - self.last_event.received_time).total_seconds(),
+                    )
                 try:
+                    self.last_error = (
+                        "market_feed_symbol_stale:"
+                        + ",".join(sorted(stale_symbols))
+                    )
                     self._record_connection(
-                        "WATCHDOG_ERROR",
+                        "STALE_FEED",
                         {
-                            "error": self.last_error,
-                            "capture_session_id": self.session_id,
+                            "age_seconds": global_age_seconds,
+                            "timeout_seconds": self._feed_stale_timeout_seconds,
+                            "stale_symbols": sorted(stale_symbols),
+                            "symbol_health": symbol_health,
+                            "action": "RESTART_FEED_KEEP_SESSION",
                         },
                     )
-                except Exception:
-                    pass
-            feed_stop_event = self._feed_stop_event
-            if feed_stop_event is not None:
-                feed_stop_event.set()
-                self._feed_watchdog_grace_until = (
-                    now_monotonic + self._feed_stale_timeout_seconds
-                )
-            # Keep the watchdog alive for the entire durable capture session.
-            # The feed worker is restarted without ending the cohort.
-            continue
+                except Exception as exc:
+                    # The watchdog is itself part of the availability boundary:
+                    # its own observability failure must not kill the monitor.
+                    self.last_error = f"watchdog_error:{type(exc).__name__}: {exc}"
+                    try:
+                        self._record_connection(
+                            "WATCHDOG_ERROR",
+                            {
+                                "error": self.last_error,
+                                "capture_session_id": self.session_id,
+                                "stale_symbols": sorted(stale_symbols),
+                            },
+                        )
+                    except Exception:
+                        pass
+
+                feed_stop_event = self._feed_stop_event
+                if feed_stop_event is not None:
+                    feed_stop_event.set()
+                    self._feed_watchdog_grace_until = (
+                        now_monotonic + self._feed_stale_timeout_seconds
+                    )
+                # Keep the watchdog alive for the entire durable capture session.
+                # Restart the feed if even one required symbol becomes stale.
+                continue
+
+            self.last_error = None
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
