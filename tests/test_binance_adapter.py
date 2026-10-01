@@ -198,6 +198,7 @@ def test_market_data_stall_is_a_hard_transport_failure() -> None:
             symbols=("BTCUSDT",),
             streams=("trade", "bookTicker"),
             recv_timeout_s=1.0,
+            websocket_read_poll_timeout_s=0.005,
             market_data_stall_timeout_s=0.01,
             connection_max_seconds=1.0,
         )
