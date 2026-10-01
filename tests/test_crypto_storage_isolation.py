@@ -344,11 +344,27 @@ def test_postgres_connections_require_tls(monkeypatch: pytest.MonkeyPatch) -> No
     import sys
     from types import SimpleNamespace
 
+    class FakeCursor:
+        def __init__(self, conn) -> None:
+            self.conn = conn
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            self.conn.sql.append(str(sql))
+
     class FakeConnection:
         def __init__(self) -> None:
             self.closed = False
+            self.sql: list[str] = []
+
         def cursor(self):
-            raise AssertionError("cursor should not be needed")
+            return FakeCursor(self)
+
         def close(self):
             self.closed = True
 
