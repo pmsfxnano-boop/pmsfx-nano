@@ -44,3 +44,9 @@ services:
         value: "90"
       - key: GORILA_DELAYED_EVENT_MAX_AGE_SECONDS
         value: "1800"
+      - key: GORILA_RETENTION_TRADE_HOURS
+        value: "168"
+      - key: GORILA_RETENTION_BOOKTICKER_HOURS
+        value: "168"
+      - key: GORILA_RETENTION_DEPTH_HOURS
+        value: "1"
