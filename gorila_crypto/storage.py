@@ -566,6 +566,10 @@ class CryptoStore:
         if vacuum and self._pg:
             vacuum_conn = self.connect()
             try:
+                # connect() establishes schema/search_path in a transaction.
+                # PostgreSQL forbids toggling autocommit while that transaction
+                # is open, so explicitly end it before running VACUUM.
+                vacuum_conn.rollback()
                 vacuum_conn.autocommit = True
                 with vacuum_conn.cursor() as cur:
                     cur.execute("VACUUM (ANALYZE) crypto_events")
