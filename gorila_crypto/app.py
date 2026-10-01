@@ -28,11 +28,13 @@ from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
+from gorila_crypto.research_runner import run_crypto_research_once
 
 
 _runtime: ProspectiveCryptoIngestor | None = None
 _runtime_thread: threading.Thread | None = None
 _quality_thread: threading.Thread | None = None
+_research_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
@@ -265,9 +267,38 @@ def _quality_loop() -> None:
         _stop_event.wait(settings.quality_interval_seconds)
 
 
+def _research_loop() -> None:
+    store = _new_store()
+    while not _stop_event.is_set():
+        try:
+            result = run_crypto_research_once(store)
+            print(
+                "GORILA_CRYPTO_RESEARCH "
+                + json.dumps(result, sort_keys=True, default=str),
+                flush=True,
+            )
+        except Exception as exc:
+            try:
+                store.record_connection(
+                    source="gorila.crypto.research_runner",
+                    status="ERROR",
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception:
+                pass
+            print(
+                "GORILA_CRYPTO_RESEARCH_ERROR "
+                + f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        _stop_event.wait(settings.research_interval_seconds)
+
+
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread, _heartbeat_thread, _capture_block_reason
+    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _capture_block_reason
     _stop_event.clear()
     _capture_block_reason = None
 
@@ -338,6 +369,14 @@ async def lifespan(app: FastAPI):
                 )
                 _quality_thread.start()
 
+            if settings.research_enabled:
+                _research_thread = threading.Thread(
+                    target=_research_loop,
+                    name="gorila-crypto-research",
+                    daemon=True,
+                )
+                _research_thread.start()
+
     yield
 
     _stop_event.set()
@@ -347,6 +386,8 @@ async def lifespan(app: FastAPI):
         _runtime_thread.join(timeout=5.0)
     if _quality_thread is not None:
         _quality_thread.join(timeout=5.0)
+    if _research_thread is not None:
+        _research_thread.join(timeout=5.0)
     if _heartbeat_thread is not None:
         _heartbeat_thread.join(timeout=5.0)
 
