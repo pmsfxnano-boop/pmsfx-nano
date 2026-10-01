@@ -903,4 +903,10 @@ def config_snapshot() -> dict[str, Any]:
         ),
         "durable_storage_required_when_ingesting": settings.ingest_enabled,
         "storage_backend": _storage_backend_status(),
+        "persist_bookticker_interval_seconds": settings.persist_bookticker_interval_seconds,
+        "persistence_queue_batches": settings.persistence_queue_batches,
+        "storage_maintenance_interval_seconds": settings.storage_maintenance_interval_seconds,
+        "retention_trade_hours": settings.retention_trade_hours,
+        "retention_bookticker_hours": settings.retention_bookticker_hours,
+        "retention_depth_hours": settings.retention_depth_hours,
     }
