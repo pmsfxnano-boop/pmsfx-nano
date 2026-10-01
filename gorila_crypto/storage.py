@@ -225,6 +225,22 @@ CREATE TABLE IF NOT EXISTS crypto_forecast_outcomes (
 );
 
 
+CREATE TABLE IF NOT EXISTS crypto_research_runs (
+    research_run_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    study_id TEXT NOT NULL,
+    capture_session_id TEXT NOT NULL,
+    cohort_start TEXT NOT NULL,
+    cohort_end TEXT NOT NULL,
+    replay_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_research_runs_session_fingerprint
+    ON crypto_research_runs(capture_session_id,replay_fingerprint);
+
 CREATE TABLE IF NOT EXISTS crypto_validation_runs (
     run_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
