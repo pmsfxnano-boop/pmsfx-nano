@@ -54,6 +54,7 @@ class CryptoSettings:
     persistence_spool_path: str
     persistence_spool_max_bytes: int
     persistence_spool_max_batches: int
+    persistence_spool_guard_ratio: float
     durability_live_max_age_seconds: float
 
 
@@ -96,6 +97,8 @@ class CryptoSettings:
             raise ValueError("persistence spool max bytes must be >= 1 MiB")
         if self.persistence_spool_max_batches < 1:
             raise ValueError("persistence spool max batches must be positive")
+        if not 0.50 <= self.persistence_spool_guard_ratio < 1.0:
+            raise ValueError("persistence spool guard ratio must be in [0.50,1.0)")
         if self.durability_live_max_age_seconds < 30.0:
             raise ValueError("durability live max age must be >= 30s")
 
@@ -172,6 +175,10 @@ settings = CryptoSettings(
     persistence_spool_max_batches=max(
         1,
         int(os.getenv("GORILA_PERSISTENCE_SPOOL_MAX_BATCHES", "100000")),
+    ),
+    persistence_spool_guard_ratio=min(
+        0.99,
+        max(0.50, float(os.getenv("GORILA_PERSISTENCE_SPOOL_GUARD_RATIO", "0.90"))),
     ),
     durability_live_max_age_seconds=max(
         30.0,
