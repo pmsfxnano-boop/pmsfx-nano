@@ -469,3 +469,46 @@ def test_postgres_batch_append_uses_returning_for_new_rows(
     assert len(fake_conn.sql) == 1
     assert "INSERT INTO crypto_events" in fake_conn.sql[0]
     assert "RETURNING event_key,ledger_seq,event_id,payload_hash" in fake_conn.sql[0]
+
+
+def test_source_health_batch_is_atomic_and_scoped(tmp_path: Path) -> None:
+    db = tmp_path / "health-batch.sqlite3"
+    store = CryptoStore(sqlite_path=str(db))
+
+    store.upsert_source_health_batch(
+        [
+            {
+                "source": "binance.websocket.trade",
+                "status": "LIVE",
+                "last_event_time": "2026-09-29T15:00:00+00:00",
+                "last_received_time": "2026-09-29T15:00:00.050000+00:00",
+                "event_age_seconds": 0.0,
+                "transport_age_seconds": 0.05,
+                "rows_last_batch": 7,
+                "error": None,
+            },
+            {
+                "source": "binance.websocket.bookTicker",
+                "status": "LIVE",
+                "last_event_time": "2026-09-29T15:00:00+00:00",
+                "last_received_time": "2026-09-29T15:00:00.050000+00:00",
+                "event_age_seconds": 0.0,
+                "transport_age_seconds": 0.05,
+                "rows_last_batch": 4,
+                "error": None,
+            },
+        ]
+    )
+
+    conn = store.connect()
+    try:
+        rows = conn.execute(
+            "SELECT source,status,rows_last_batch FROM crypto_source_health ORDER BY source"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [
+        ("binance.websocket.bookTicker", "LIVE", 4),
+        ("binance.websocket.trade", "LIVE", 7),
+    ]
