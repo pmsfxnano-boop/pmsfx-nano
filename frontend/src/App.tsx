@@ -110,7 +110,7 @@ function Brand() {
       <div className="brand-g"><span>G</span><em /></div>
       <div className="brand-text">
         <strong>GORILA</strong>
-        <small>CRYPTO</small>
+        <small>ARGENTUM</small>
       </div>
     </div>
   );
