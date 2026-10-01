@@ -96,3 +96,66 @@ def test_market_stream_fails_closed_when_capture_is_disabled(monkeypatch) -> Non
 
     assert exc.value.status_code == 503
     assert exc.value.detail == "capture_not_enabled"
+
+
+class _HistoryCursor:
+    def execute(self, sql, params) -> None:
+        self.params = params
+
+    def fetchall(self):
+        from datetime import datetime, timezone
+        return [
+            (
+                datetime(2026, 10, 1, 4, 0, tzinfo=timezone.utc),
+                100.0, 102.0, 99.0, 101.0, 12.5, 7,
+            )
+        ]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+class _HistoryConnection:
+    def cursor(self):
+        return _HistoryCursor()
+
+    def close(self) -> None:
+        return None
+
+
+class _HistoryStore:
+    durable = True
+
+    def connect(self):
+        return _HistoryConnection()
+
+
+def test_market_history_returns_real_candle_contract(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "settings",
+        replace(settings, ingest_enabled=True, symbols=("BTCUSDT",)),
+    )
+    monkeypatch.setattr(app_module, "_new_store", lambda: _HistoryStore())
+
+    payload = app_module.market_history(symbol="BTCUSDT", resolution="5m", limit=60)
+
+    assert payload["symbol"] == "BTCUSDT"
+    assert payload["resolution"] == "5m"
+    assert payload["candles"][0]["open"] == 100.0
+    assert payload["candles"][0]["close"] == 101.0
+
+
+def test_market_history_rejects_unsupported_resolution(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "settings",
+        replace(settings, ingest_enabled=True, symbols=("BTCUSDT",)),
+    )
+    with pytest.raises(HTTPException) as exc:
+        app_module.market_history(symbol="BTCUSDT", resolution="13m", limit=60)
+
+    assert exc.value.status_code == 400
