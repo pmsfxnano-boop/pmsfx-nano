@@ -478,8 +478,8 @@ def _opportunity_clock(
     }
 
 
-def build_evidence_snapshot(*, ttl_seconds: float = 3.0) -> dict[str, Any]:
-    """Build the frontend evidence contract with a tiny cache to protect Postgres."""
+def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
+    """Build the frontend evidence contract with a bounded read-model cache to protect Postgres."""
     import time
 
     now_epoch = time.monotonic()
