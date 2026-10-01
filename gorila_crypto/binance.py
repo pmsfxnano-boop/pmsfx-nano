@@ -493,15 +493,32 @@ class BinanceSpotMarketAdapter:
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
         """Yield market events and fail closed when the socket stops producing data.
 
-        A WebSocket can remain TCP-alive while Binance market traffic has stopped.
-        That state must not be treated as healthy: without a market-data watchdog
-        the ingestion worker can remain RUNNING while the frontend freezes on the
-        last durable event indefinitely.
+        The watchdog closes a socket that stops delivering market messages even if
+        the underlying TCP connection remains open. Closing from a side thread is
+        deliberate: it guarantees that a blocking recv is released and the outer
+        reconnect loop can establish a fresh Binance session.
         """
         connected_ns = time.time_ns()
         last_market_event_monotonic = time.monotonic()
-        while (time.time_ns() - connected_ns) / 1_000_000_000 < self.config.connection_max_seconds:
-            try:
+        watchdog_stop = threading.Event()
+
+        def watchdog() -> None:
+            while not watchdog_stop.wait(1.0):
+                if time.monotonic() - last_market_event_monotonic <= self.config.market_data_stall_timeout_s:
+                    continue
+                self.close(ws)
+                return
+
+        watchdog_thread = threading.Thread(
+            target=watchdog,
+            name="binance-market-watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
+
+        try:
+            while (time.time_ns() - connected_ns) / 1_000_000_000 < self.config.connection_max_seconds:
+                try:
                 raw = ws.recv()
             except websocket.WebSocketTimeoutException:
                 now_monotonic = time.monotonic()
@@ -550,9 +567,12 @@ class BinanceSpotMarketAdapter:
                 continue
 
             last_market_event_monotonic = now_monotonic
-            if self.event_sink is not None:
-                self.event_sink(event)
-            yield event
+                if self.event_sink is not None:
+                    self.event_sink(event)
+                yield event
+        finally:
+            watchdog_stop.set()
+            watchdog_thread.join(timeout=1.0)
 
     def close(self, ws) -> None:
         try:
