@@ -365,28 +365,53 @@ class ProspectiveCryptoIngestor:
             stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
             self.store.register_study(self.protocol)
             effective_protocol_hash = self.store.get_study_protocol_hash(self.protocol.study_id)
-            self.session_id = self.store.start_capture_session(
-                study_id=self.protocol.study_id,
-                protocol_hash=effective_protocol_hash,
-                provider=settings.provider,
-                venue=self.protocol.venue,
-                symbols=tuple(self.adapter.config.symbols),
-                streams=tuple(settings.streams),
-                region=os.getenv("RENDER_REGION"),
-                instance_id=os.getenv("RENDER_INSTANCE_ID"),
-                code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-                metadata={"stale_runs_reconciled": stale},
-            )
+            while not self.stop_event.is_set():
+                try:
+                    self.session_id = self.store.start_capture_session(
+                        study_id=self.protocol.study_id,
+                        protocol_hash=effective_protocol_hash,
+                        provider=settings.provider,
+                        venue=self.protocol.venue,
+                        symbols=tuple(self.adapter.config.symbols),
+                        streams=tuple(settings.streams),
+                        region=os.getenv("RENDER_REGION"),
+                        instance_id=os.getenv("RENDER_INSTANCE_ID"),
+                        code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
+                        metadata={"stale_runs_reconciled": stale},
+                    )
+                    break
+                except RuntimeError as exc:
+                    reason = str(exc)
+                    if not reason.startswith("active_capture_session_exists:"):
+                        raise
+                    self._record_connection("WAITING_FOR_ACTIVE_SESSION", {"reason": reason})
+                    self.stop_event.wait(2.0)
+            if self.stop_event.is_set():
+                return {
+                    "status": "STOPPED",
+                    "run_id": None,
+                    "events_inserted": 0,
+                    "events_duplicate": 0,
+                    "gaps_detected": 0,
+                    "last_error": None,
+                    "last_event_time": None,
+                    "automatic_promotion": False,
+                    "forecast": False,
+                    "execution": False,
+                }
             self.run_id = self.store.start_runtime_run_scoped(
                 kind=self.config.kind,
                 session_id=self.session_id,
             )
-            self._record_connection("RUN_STARTED", {
-                "symbols": list(self.adapter.config.symbols),
-                "study_id": self.protocol.study_id,
-                "protocol_hash": effective_protocol_hash,
-                "capture_session_id": self.session_id,
-            })
+            self._record_connection(
+                "RUN_STARTED",
+                {
+                    "symbols": list(self.adapter.config.symbols),
+                    "study_id": self.protocol.study_id,
+                    "protocol_hash": effective_protocol_hash,
+                    "capture_session_id": self.session_id,
+                },
+            )
         else:
             # Legacy/unit-test harness: persistence semantics are still exercised,
             # but production-only study binding is deliberately not activated.
