@@ -518,37 +518,30 @@ class ProspectiveCryptoIngestor:
                 streams=tuple(settings.streams),
             ):
                 raise RuntimeError("runtime_does_not_match_preregistered_protocol")
-            try:
-                stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
-            except Exception as exc:
-                stale = 0
-                self._record_connection(
-                    "STALE_RECONCILE_DEFERRED",
-                    {"error": f"{type(exc).__name__}: {exc}"},
-                )
-            self.store.register_study(self.protocol)
-            effective_protocol_hash = self.store.get_study_protocol_hash(self.protocol.study_id)
+
+            # Durable storage bootstrap is independently retryable. A transient
+            # DNS/TLS/database outage must never terminate the market ingest worker.
+            bootstrap_backoff = 1.0
+            stale = 0
             while not self.stop_event.is_set():
                 try:
-                    self.session_id = self.store.start_capture_session(
-                        study_id=self.protocol.study_id,
-                        protocol_hash=effective_protocol_hash,
-                        provider=settings.provider,
-                        venue=self.protocol.venue,
-                        symbols=tuple(self.adapter.config.symbols),
-                        streams=tuple(settings.streams),
-                        region=os.getenv("RENDER_REGION"),
-                        instance_id=os.getenv("RENDER_INSTANCE_ID"),
-                        code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-                        metadata={"stale_runs_reconciled": stale},
+                    stale = self.store.reconcile_stale_runtime_runs(
+                        stale_after_seconds=120.0
+                    )
+                    self.store.register_study(self.protocol)
+                    effective_protocol_hash = self.store.get_study_protocol_hash(
+                        self.protocol.study_id
                     )
                     break
-                except RuntimeError as exc:
-                    reason = str(exc)
-                    if not reason.startswith("active_capture_session_exists:"):
-                        raise
-                    self._record_connection("WAITING_FOR_ACTIVE_SESSION", {"reason": reason})
-                    self.stop_event.wait(2.0)
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._record_connection(
+                        "STORAGE_BOOTSTRAP_DEGRADED",
+                        {"error": self.last_error},
+                    )
+                    self.stop_event.wait(bootstrap_backoff)
+                    bootstrap_backoff = min(30.0, bootstrap_backoff * 2.0)
+
             if self.stop_event.is_set():
                 return {
                     "status": "STOPPED",
@@ -556,16 +549,82 @@ class ProspectiveCryptoIngestor:
                     "events_inserted": 0,
                     "events_duplicate": 0,
                     "gaps_detected": 0,
-                    "last_error": None,
+                    "last_error": self.last_error,
                     "last_event_time": None,
                     "automatic_promotion": False,
                     "forecast": False,
                     "execution": False,
                 }
-            self.run_id = self.store.start_runtime_run_scoped(
-                kind=self.config.kind,
-                session_id=self.session_id,
-            )
+
+            # Once the study is registered, session ownership is itself an
+            # atomic fence. We may wait on another active writer without
+            # repeating schema/bootstrap work.
+            session_backoff = 2.0
+            while not self.stop_event.is_set():
+                try:
+                    if self.session_id is None:
+                        self.session_id = self.store.start_capture_session(
+                            study_id=self.protocol.study_id,
+                            protocol_hash=effective_protocol_hash,
+                            provider=settings.provider,
+                            venue=self.protocol.venue,
+                            symbols=tuple(self.adapter.config.symbols),
+                            streams=tuple(settings.streams),
+                            region=os.getenv("RENDER_REGION"),
+                            instance_id=os.getenv("RENDER_INSTANCE_ID"),
+                            code_version=os.getenv("RENDER_GIT_COMMIT")
+                            or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
+                            metadata={"stale_runs_reconciled": stale},
+                        )
+                    try:
+                        self.run_id = self.store.start_runtime_run_scoped(
+                            kind=self.config.kind,
+                            session_id=self.session_id,
+                        )
+                    except Exception:
+                        # Keep the acquired session id and retry only the runtime
+                        # lease creation on the next pass.
+                        raise
+                    break
+                except RuntimeError as exc:
+                    reason = str(exc)
+                    if reason.startswith("active_capture_session_exists:"):
+                        self._record_connection(
+                            "WAITING_FOR_ACTIVE_SESSION",
+                            {"reason": reason},
+                        )
+                        self.stop_event.wait(session_backoff)
+                        continue
+                    self.last_error = reason
+                    self._record_connection(
+                        "STORAGE_BOOTSTRAP_DEGRADED",
+                        {"error": reason},
+                    )
+                    self.stop_event.wait(session_backoff)
+                    session_backoff = min(30.0, session_backoff * 2.0)
+                except Exception as exc:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    self._record_connection(
+                        "STORAGE_BOOTSTRAP_DEGRADED",
+                        {"error": self.last_error},
+                    )
+                    self.stop_event.wait(session_backoff)
+                    session_backoff = min(30.0, session_backoff * 2.0)
+
+            if self.stop_event.is_set():
+                return {
+                    "status": "STOPPED",
+                    "run_id": None,
+                    "events_inserted": 0,
+                    "events_duplicate": 0,
+                    "gaps_detected": 0,
+                    "last_error": self.last_error,
+                    "last_event_time": None,
+                    "automatic_promotion": False,
+                    "forecast": False,
+                    "execution": False,
+                }
+
             self._record_connection(
                 "RUN_STARTED",
                 {
@@ -579,7 +638,10 @@ class ProspectiveCryptoIngestor:
             # Legacy/unit-test harness: persistence semantics are still exercised,
             # but production-only study binding is deliberately not activated.
             self.run_id = self.store.start_runtime_run(kind=self.config.kind)
-            self._record_connection("RUN_STARTED", {"symbols": list(self.adapter.config.symbols)})
+            self._record_connection(
+                "RUN_STARTED",
+                {"symbols": list(self.adapter.config.symbols)}
+            )
         self.events_inserted = 0
         self.events_duplicate = 0
         self.gaps_detected = 0
