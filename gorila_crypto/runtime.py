@@ -752,7 +752,11 @@ class ProspectiveCryptoIngestor:
                 "persistence_policy": (
                     "DETERMINISTIC_TRADE_SAMPLE"
                     if event.event_type == "trade"
-                    else "BOOKTICKER_1S_SNAPSHOT"
+                    else (
+                        "BOOKTICKER_5S_SNAPSHOT"
+                        if self.protocol.version == "4"
+                        else "BOOKTICKER_1S_SNAPSHOT"
+                    )
                 ),
                 "sampling_contract": self.protocol.persistence_contract_version,
                 "sampling_rate": sample_rate,
