@@ -735,6 +735,121 @@ def _dataset_rows(
     return tuple(output)
 
 
+def _research_identity(session_id: str, replay_fingerprint: str) -> str:
+    return hashlib.sha256(
+        f"{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{session_id}|{replay_fingerprint}".encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def _claim_research_run(
+    store,
+    *,
+    session_id: str,
+    start: datetime,
+    end: datetime,
+    replay_fingerprint: str,
+    now: datetime,
+) -> tuple[str, str]:
+    run_id = _research_identity(session_id, replay_fingerprint)
+    conn = store.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status,started_at
+                FROM crypto_research_runs
+                WHERE capture_session_id=%s AND replay_fingerprint=%s
+                """,
+                (session_id, replay_fingerprint),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                status = str(existing[0])
+                if status == "COMPLETE":
+                    return run_id, "ALREADY_COMPLETE"
+                cur.execute(
+                    """
+                    UPDATE crypto_research_runs
+                    SET started_at=%s,status='RUNNING',finished_at=NULL,result_json=%s
+                    WHERE capture_session_id=%s AND replay_fingerprint=%s
+                    """,
+                    (
+                        now.isoformat(),
+                        json.dumps({"resumed_at": now.isoformat()}, sort_keys=True),
+                        session_id,
+                        replay_fingerprint,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO crypto_research_runs(
+                        research_run_id,created_at,started_at,study_id,capture_session_id,
+                        cohort_start,cohort_end,replay_fingerprint,status,result_json
+                    )
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'RUNNING',%s)
+                    ON CONFLICT(capture_session_id,replay_fingerprint) DO NOTHING
+                    """,
+                    (
+                        run_id,
+                        now.isoformat(),
+                        now.isoformat(),
+                        PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                        session_id,
+                        start.isoformat(),
+                        end.isoformat(),
+                        replay_fingerprint,
+                        json.dumps({"started_at": now.isoformat()}, sort_keys=True),
+                    ),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        """
+                        SELECT status FROM crypto_research_runs
+                        WHERE capture_session_id=%s AND replay_fingerprint=%s
+                        """,
+                        (session_id, replay_fingerprint),
+                    )
+                    row = cur.fetchone()
+                    if row is not None and str(row[0]) == "COMPLETE":
+                        conn.rollback()
+                        return run_id, "ALREADY_COMPLETE"
+            conn.commit()
+            return run_id, "CLAIMED"
+    finally:
+        conn.close()
+
+
+def _finish_research_run(
+    store,
+    *,
+    session_id: str,
+    replay_fingerprint: str,
+    status: str,
+    result: dict[str, Any],
+) -> None:
+    conn = store.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE crypto_research_runs
+                SET finished_at=%s,status=%s,result_json=%s
+                WHERE capture_session_id=%s AND replay_fingerprint=%s
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    status,
+                    json.dumps(result, sort_keys=True, default=str),
+                    session_id,
+                    replay_fingerprint,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def run_crypto_research_once(store) -> dict[str, Any]:
     """Execute one complete research attempt, or return a hard blocker."""
     now = datetime.now(timezone.utc)
@@ -775,6 +890,22 @@ def run_crypto_research_once(store) -> dict[str, Any]:
         "fingerprint_sha256": replay_fp,
     }
     manifest_id = store.save_replay_manifest(manifest)
+    research_run_id, claim_status = _claim_research_run(
+        store,
+        session_id=session_id,
+        start=start,
+        end=end,
+        replay_fingerprint=replay_fp,
+        now=now,
+    )
+    if claim_status == "ALREADY_COMPLETE":
+        return {
+            "status": "ALREADY_COMPLETE",
+            "capture_session_id": session_id,
+            "replay_fingerprint": replay_fp,
+            "manifest_id": manifest_id,
+            "research_run_id": research_run_id,
+        }
     report = _sql_quality_report(
         store,
         session_id=session_id,
@@ -796,13 +927,22 @@ def run_crypto_research_once(store) -> dict[str, Any]:
                 "manifest_id": manifest_id,
             },
         )
-        return {
+        result = {
             "status": "BLOCKED",
             "reason": "QUALITY_GATE_FAIL",
             "capture_session_id": session_id,
             "replay_fingerprint": replay_fp,
             "quality_reasons": list(report.reasons),
+            "research_run_id": research_run_id,
         }
+        _finish_research_run(
+            store,
+            session_id=session_id,
+            replay_fingerprint=replay_fp,
+            status="BLOCKED",
+            result=result,
+        )
+        return result
 
     walk = WalkForwardConfig(
         purge_ms=PREREGISTERED_CRYPTO_PROTOCOL.purge_ms,
@@ -911,12 +1051,21 @@ def run_crypto_research_once(store) -> dict[str, Any]:
             "blocked_runs": blocked_pairs,
         },
     )
-    return {
+    result = {
         "status": status,
         "capture_session_id": session_id,
         "replay_fingerprint": replay_fp,
         "manifest_id": manifest_id,
+        "research_run_id": research_run_id,
         "total_runs": total_runs,
         "persisted_runs": persisted,
         "blocked_runs": blocked_pairs,
     }
+    _finish_research_run(
+        store,
+        session_id=session_id,
+        replay_fingerprint=replay_fp,
+        status="COMPLETE" if status == "COMPLETE" else "PARTIAL_BLOCKED",
+        result=result,
+    )
+    return result
