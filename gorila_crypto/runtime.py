@@ -22,6 +22,7 @@ from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMa
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .market_cache import MARKET_CACHE
 from .config import settings
+from .evidence_spool import EvidenceSpool
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
@@ -141,6 +142,19 @@ class ProspectiveCryptoIngestor:
         self._persistence_dropped_events = 0
         self._bootstrap_thread: threading.Thread | None = None
         self._bootstrap_stop = threading.Event()
+        self._persistence_spool_overflow = 0
+        self._persistence_spool_error: str | None = None
+        try:
+            self._evidence_spool: EvidenceSpool | None = EvidenceSpool(
+                path=settings.persistence_spool_path,
+                max_bytes=settings.persistence_spool_max_bytes,
+                max_batches=settings.persistence_spool_max_batches,
+            )
+        except Exception as exc:
+            self._evidence_spool = None
+            self._persistence_spool_error = (
+                f"spool_init:{type(exc).__name__}: {exc}"
+            )
         self._last_bookticker_persist_monotonic: dict[str, float] = {}
         self._bookticker_persist_interval = settings.persist_bookticker_interval_seconds
 
@@ -150,51 +164,121 @@ class ProspectiveCryptoIngestor:
     def source_family(self) -> str:
         return str(getattr(self.adapter, "source_family", "crypto.websocket.market"))
 
+    def _write_durable_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        if isinstance(self.store, QuantCryptoStore):
+            if self.session_id is None:
+                raise RuntimeError("capture_session_not_started")
+            return self.store.append_scoped_events(
+                study_id=self.protocol.study_id,
+                capture_session_id=self.session_id,
+                events=rows,
+            )
+        return self.store.append_events(rows)
+
+    def _record_persist_success(
+        self,
+        rows: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+    ) -> None:
+        MARKET_CACHE.mark_persisted(rows, results)
+        self.events_inserted += sum(
+            1 for result in results if result["inserted"]
+        )
+        self.events_duplicate += sum(
+            1 for result in results if not result["inserted"]
+        )
+        self._persistence_error = None
+        self._persistence_spool_error = None
+        self._persistence_last_success_monotonic = time.monotonic()
+
+    def _spool_failed_rows(self, rows: list[dict[str, Any]]) -> bool:
+        if not rows:
+            return True
+        if self._evidence_spool is None:
+            self._persistence_spool_error = (
+                self._persistence_spool_error
+                or "spool_unavailable"
+            )
+            dropped = len(rows)
+            self._persistence_spool_overflow += dropped
+            MARKET_CACHE.record_persistence_drop(dropped)
+            return False
+        try:
+            self._evidence_spool.append(rows)
+            return True
+        except OverflowError as exc:
+            self._persistence_spool_error = str(exc)
+            dropped = len(rows)
+            self._persistence_spool_overflow += dropped
+            MARKET_CACHE.record_persistence_drop(dropped)
+            return False
+        except Exception as exc:
+            self._persistence_spool_error = (
+                f"spool_write:{type(exc).__name__}: {exc}"
+            )
+            dropped = len(rows)
+            self._persistence_spool_overflow += dropped
+            MARKET_CACHE.record_persistence_drop(dropped)
+            return False
+
+    def _drain_one_spool_batch(self) -> bool:
+        spool = self._evidence_spool
+        if spool is None or self.session_id is None:
+            return False
+        batch = spool.peek()
+        if batch is None:
+            return False
+        try:
+            results = self._write_durable_rows(batch.rows)
+            self._record_persist_success(batch.rows, results)
+            spool.delete(batch.batch_id)
+            return True
+        except Exception as exc:
+            self._persistence_error = f"{type(exc).__name__}: {exc}"
+            MARKET_CACHE.record_persistence_degradation(
+                self._persistence_error
+            )
+            return False
+
     def _persistence_worker(self) -> None:
         """Durable writer isolated from the market event loop."""
         backoff = 0.25
         while not self._persistence_stop.is_set() or not self._persistence_queue.empty():
+            if not self._persistence_stop.is_set() and self.session_id is not None:
+                if self._drain_one_spool_batch():
+                    backoff = 0.25
+                    continue
+
             try:
                 rows = self._persistence_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
+
             try:
-                if isinstance(self.store, QuantCryptoStore):
-                    if self.session_id is None:
-                        raise RuntimeError("capture_session_not_started")
-                    results = self.store.append_scoped_events(
-                        study_id=self.protocol.study_id,
-                        capture_session_id=self.session_id,
-                        events=rows,
-                    )
-                else:
-                    results = self.store.append_events(rows)
-                MARKET_CACHE.mark_persisted(rows, results)
-                self.events_inserted += sum(
-                    1 for result in results if result["inserted"]
-                )
-                self.events_duplicate += sum(
-                    1 for result in results if not result["inserted"]
-                )
-                self._persistence_error = None
-                self._persistence_last_success_monotonic = time.monotonic()
+                results = self._write_durable_rows(rows)
+                self._record_persist_success(rows, results)
                 backoff = 0.25
             except Exception as exc:
                 self._persistence_error = f"{type(exc).__name__}: {exc}"
-                MARKET_CACHE.record_persistence_degradation(self._persistence_error)
-                # Keep the exact batch intact and retry in order. The market
-                # plane remains live while durability is degraded.
-                if self.stop_event.is_set():
-                    self._persistence_dropped_events += len(rows)
-                    MARKET_CACHE.record_persistence_drop(len(rows))
+                MARKET_CACHE.record_persistence_degradation(
+                    self._persistence_error
+                )
+                self._spool_failed_rows(rows)
+                backoff = min(10.0, backoff * 2.0)
+                if self._persistence_stop.is_set():
                     continue
                 time.sleep(backoff)
-                backoff = min(10.0, backoff * 2.0)
-                try:
-                    self._persistence_queue.put(rows, timeout=0.25)
-                except queue.Full:
-                    self._persistence_dropped_events += len(rows)
-                    MARKET_CACHE.record_persistence_drop(len(rows))
+
+        # A shutdown/deploy must leave queued evidence in the spool rather
+        # than silently discarding it.
+        while True:
+            try:
+                rows = self._persistence_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._spool_failed_rows(rows)
 
     def _should_persist(self, event: NormalizedMarketEvent) -> bool:
         if event.event_type == "trade":
@@ -315,21 +399,7 @@ class ProspectiveCryptoIngestor:
         try:
             self._persistence_queue.put(rows, timeout=0.05)
         except queue.Full:
-            # Preserve trades preferentially; sampled quotes may be dropped from
-            # durability under sustained storage pressure, but hot market state
-            # continues advancing and the drop is explicitly observable.
-            trades = [row for row in rows if row.get("event_type") == "trade"]
-            if trades:
-                try:
-                    self._persistence_queue.put(trades, timeout=0.05)
-                except queue.Full:
-                    dropped = len(trades)
-                    self._persistence_dropped_events += dropped
-                    MARKET_CACHE.record_persistence_drop(dropped)
-            non_trades = len(rows) - len(trades)
-            if non_trades:
-                self._persistence_dropped_events += non_trades
-                MARKET_CACHE.record_persistence_drop(non_trades)
+            self._spool_failed_rows(rows)
 
     def _ingest(self, event: NormalizedMarketEvent) -> None:
         event_time = event.event_time.astimezone(timezone.utc)
@@ -468,19 +538,41 @@ class ProspectiveCryptoIngestor:
             if self._persistence_last_success_monotonic <= 0
             else max(0.0, now - self._persistence_last_success_monotonic)
         )
+        spool_stats = (
+            self._evidence_spool.stats()
+            if self._evidence_spool is not None
+            else {
+                "batches": 0,
+                "bytes": 0,
+                "max_bytes": settings.persistence_spool_max_bytes,
+                "max_batches": settings.persistence_spool_max_batches,
+                "oldest_created_at": None,
+            }
+        )
+
         durability = "LIVE"
         durability_reason = None
-        if (
-            isinstance(self.store, QuantCryptoStore)
-            and self.session_id is None
-        ):
+        if isinstance(self.store, QuantCryptoStore) and self.session_id is None:
             durability = "DEGRADED"
             durability_reason = "STORAGE_BOOTSTRAP_PENDING"
         elif self._persistence_error is not None:
             durability = "DEGRADED"
             durability_reason = self._persistence_error
-        elif self._persistence_queue.qsize() > max(8, settings.persistence_queue_batches * 0.75):
+        elif spool_stats["batches"] > 0:
             durability = "DEGRADED"
+            durability_reason = "EVIDENCE_SPOOL_PENDING"
+        elif self._persistence_spool_overflow > 0:
+            durability = "DEGRADED"
+            durability_reason = "EVIDENCE_SPOOL_OVERFLOW"
+        elif self._persistence_spool_error is not None:
+            durability = "DEGRADED"
+            durability_reason = self._persistence_spool_error
+        elif self._persistence_queue.qsize() > max(
+            8, settings.persistence_queue_batches * 0.75
+        ):
+            durability = "DEGRADED"
+            durability_reason = "PERSISTENCE_QUEUE_PRESSURE"
+
         return {
             "market_plane": "LIVE" if self.last_event is not None else "STARTING",
             "durability": durability,
@@ -488,7 +580,10 @@ class ProspectiveCryptoIngestor:
             "persistence_error": self._persistence_error,
             "persistence_queue_batches": self._persistence_queue.qsize(),
             "persistence_last_success_age_seconds": last_success_age,
-            "persistence_dropped_events": self._persistence_dropped_events,
+            "persistence_dropped_events": (
+                self._persistence_dropped_events
+                + self._persistence_spool_overflow
+            ),
             "events_inserted": self.events_inserted,
             "events_duplicate": self.events_duplicate,
             "gaps_detected": self.gaps_detected,
@@ -497,6 +592,8 @@ class ProspectiveCryptoIngestor:
                 if self.last_event is not None
                 else None
             ),
+            "evidence_spool": spool_stats,
+            "evidence_spool_error": self._persistence_spool_error,
         }
 
     def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -650,6 +747,8 @@ class ProspectiveCryptoIngestor:
         self._last_bookticker_persist_monotonic.clear()
         self._persistence_error = None
         self._persistence_dropped_events = 0
+        self._persistence_spool_overflow = 0
+        self._persistence_spool_error = None
         self._bootstrap_stop.clear()
         self.run_id = None
         self.session_id = None
