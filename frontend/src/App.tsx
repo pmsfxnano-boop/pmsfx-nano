@@ -10,11 +10,13 @@ import {
 } from "react";
 import {
   API_BASE,
+  fetchEvidence,
   fetchHealth,
   fetchHistory,
   fetchMarketStream,
   fetchProspectiveStatus,
   type Candle,
+  type EvidenceSnapshot,
   type MarketStreamResponse,
   type ProspectiveStatus,
   type StreamEvent,
@@ -338,53 +340,79 @@ function ChartCanvas({
   );
 }
 
-function OpportunityClock({
-  snapshot,
-  resolution,
-}: {
-  snapshot?: SymbolSnapshot;
-  resolution: Resolution;
-}) {
+function OpportunityClock({ evidence }: { evidence: EvidenceSnapshot | null }) {
+  const clock = evidence?.opportunity_clock;
+  const active = clock?.state === "ACTIVE" && clock.validated;
+  const remaining = clock?.remaining_seconds ?? null;
   const [now, setNow] = useState(Date.now());
-  const cfg = RESOLUTIONS.find((r) => r.id === resolution) ?? RESOLUTIONS[1];
-  const baseTime = snapshot?.last_trade_time || snapshot?.last_book_time;
-  const ts = baseTime ? new Date(baseTime).getTime() : now;
-  const elapsed = Math.max(0, now - ts);
-  const progress = Math.min(1, elapsed / cfg.ms);
-  const remaining = Math.max(0, cfg.ms - elapsed);
 
   useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(t);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const mins = Math.floor(remaining / 60_000);
-  const secs = Math.floor((remaining % 60_000) / 1000);
+  void now;
+  const mins = remaining == null ? null : Math.floor(Math.max(0, remaining) / 60);
+  const secs = remaining == null ? null : Math.floor(Math.max(0, remaining) % 60);
+  const progress = active && remaining != null && clock?.horizon_ms
+    ? Math.max(0, Math.min(1, remaining / (clock.horizon_ms / 1000)))
+    : 0;
 
   return (
-    <section className="clock-panel">
-      <div className="panel-kicker"><Icon name="clock" />OPPORTUNITY CLOCK <span>SHADOW</span></div>
+    <section className={active ? "clock-panel active" : "clock-panel locked"}>
+      <div className="panel-kicker">
+        <Icon name="clock" />OPPORTUNITY CLOCK
+        <span>{clock?.mode ?? "SHADOW"}</span>
+      </div>
       <div className="clock-body">
         <div className="clock-ring" style={{ "--progress": progress } as CSSProperties}>
           <div className="clock-core">
-            <small>WINDOW</small>
-            <strong>{cfg.label}</strong>
-            <span>{snapshot?.status ?? "SYNC"}</span>
+            <small>{active ? "WINDOW" : "GATE"}</small>
+            <strong>{active && mins != null && secs != null ? `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}` : "LOCKED"}</strong>
+            <span>{active ? `${Math.round((clock.horizon_ms ?? 0) / 1000)}s` : "PIT / OOS"}</span>
           </div>
         </div>
         <div className="clock-copy">
-          <div className="clock-state"><Status status="LIVE" /><strong>WATCH</strong></div>
-          <p>Temporal workspace for setup age, decay and next evaluation. It is not a trading signal.</p>
+          <div className="clock-state"><Status status={active ? "LIVE" : "GATED"} /><strong>{active ? "VALIDATED WINDOW" : "WAITING FOR EVIDENCE"}</strong></div>
+          <p>
+            {active
+              ? "Temporal state is backed by the validated quantitative evidence contract."
+              : "The clock cannot activate until the prospective cohort, current Quality Gate, PIT/OOS and forecast/opportunity evidence all pass."}
+          </p>
           <div className="clock-metrics">
-            <div><span>WINDOW AGE</span><strong>{Math.floor(elapsed / 60_000)}m</strong></div>
-            <div><span>REMAINING</span><strong>{String(mins).padStart(2, "0")}:{String(secs).padStart(2, "0")}</strong></div>
-            <div><span>LAST UPDATE</span><strong>{timeOf(baseTime)}</strong></div>
+            <div><span>COHORT</span><strong>{evidence?.cohort.status ?? "SYNC"}</strong></div>
+            <div><span>QUALITY</span><strong>{evidence?.quality_gate.state ?? "SYNC"}</strong></div>
+            <div><span>PIT / OOS</span><strong>{evidence?.pit_oos.state ?? "SYNC"}</strong></div>
           </div>
         </div>
       </div>
       <div className="clock-foot">
-        <span>MODEL GATE</span>
-        <strong>NOT PROMOTED</strong>
+        <span>{active ? "MODEL STATE" : "BLOCKERS"}</span>
+        <strong>{active ? "PROMOTION-ELIGIBLE" : String(clock?.blockers?.length ?? 0) + " BLOCKERS"}</strong>
+      </div>
+    </section>
+  );
+}
+
+function EvidenceMatrix({ evidence }: { evidence: EvidenceSnapshot | null }) {
+  const gates = [
+    ["COHORT", evidence?.cohort.status ?? "SYNC", evidence?.cohort.mature],
+    ["QUALITY", evidence?.quality_gate.state ?? "SYNC", evidence?.quality_gate.state === "PASS"],
+    ["PIT / OOS", evidence?.pit_oos.state ?? "SYNC", evidence?.pit_oos.promotion_eligible],
+    ["FORECAST", evidence?.forecast_shadow.state ?? "SYNC", (evidence?.forecast_shadow.count ?? 0) > 0],
+    ["OPPORTUNITY", evidence?.opportunity_shadow.count ? "PRESENT" : "EMPTY", (evidence?.opportunity_shadow.count ?? 0) > 0],
+  ] as const;
+  return (
+    <section className="section-block evidence-matrix">
+      <SectionHead icon="shield" kicker="EVIDENCE BUS" title="Promotion gates" note={evidence?.generated_at ? timeOf(evidence.generated_at) : "SYNC"} />
+      <div className="evidence-grid">
+        {gates.map(([name, state, passed]) => (
+          <div className="evidence-card" key={name}>
+            <span>{name}</span>
+            <strong className={passed ? "positive" : "muted"}>{state}</strong>
+            <small>{passed ? "gate satisfied" : "not yet satisfied"}</small>
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -519,33 +547,48 @@ function Timeline() {
   );
 }
 
-function ResearchView({ status }: { status: ProspectiveStatus | null }) {
+function ResearchView({ status, evidence }: { status: ProspectiveStatus | null; evidence: EvidenceSnapshot | null }) {
   const live = status?.symbols_live;
   const stages = [
-    ["Prospective capture", live ? "LIVE" : "STARTING", "Real market events are being accumulated."],
-    ["Data quality", status?.source_health?.length ? "ACTIVE" : "WAITING", "Freshness, transport and integrity remain separate."],
-    ["PIT / OOS", "GATED", "Promotion stays blocked until the prospective cohort matures."],
-    ["Forecast", "SHADOW", "No automatic promotion."],
-    ["Execution", "OFF", "Execution path is disabled."],
+    ["Prospective capture", evidence?.cohort.status ?? (live ? "LIVE" : "STARTING"), evidence?.cohort.session_id ? `${evidence.cohort.progress_pct.toFixed(2)}% of protocol window` : "No active cohort."],
+    ["Data quality", evidence?.quality_gate.state ?? "WAITING", evidence?.quality_gate.current_session ? "Current capture report" : "Waiting for current-session quality report."],
+    ["PIT / OOS", evidence?.pit_oos.state ?? "BLOCKED", evidence?.pit_oos.oos_rows ? `${compact(evidence.pit_oos.oos_rows)} OOS rows` : "No valid OOS rows yet."],
+    ["Forecast", evidence?.forecast_shadow.state ?? "EMPTY", evidence?.forecast_shadow.count ? `${compact(evidence.forecast_shadow.count)} shadow forecasts` : "Shadow forecast store empty."],
+    ["Execution", "OFF", "Execution remains disabled by design."],
   ];
+  const regimeRows = Object.entries(evidence?.regime.symbols ?? {});
   return (
     <div className="view-stack">
       <section className="hero-panel compact-hero">
         <div>
           <span className="eyebrow">RESEARCH CONTROL</span>
           <h1>Evidence before promotion.</h1>
-          <p>Research state is visible inside the same terminal as market state, without mixing validated evidence with live price action.</p>
+          <p>Research state is now connected to the exact cohort, Quality Gate, PIT/OOS artifacts and forecast shadow persisted by the quantitative backend.</p>
         </div>
-        <div className="research-lock"><Icon name="shield" /><span>MODEL PROMOTION</span><strong>BLOCKED</strong></div>
+        <div className="research-lock"><Icon name="shield" /><span>MODEL PROMOTION</span><strong>{evidence?.pit_oos.promotion_eligible ? "ELIGIBLE" : "BLOCKED"}</strong></div>
       </section>
+      <EvidenceMatrix evidence={evidence} />
       <section className="section-block">
-        <SectionHead icon="research" kicker="STATE MACHINE" title="Research pipeline" note={status?.status ?? "SYNC"} />
+        <SectionHead icon="research" kicker="STATE MACHINE" title="Research pipeline" note={evidence?.research.status ?? "SYNC"} />
         <div className="stage-grid">
           {stages.map(([name, state, detail]) => (
             <div className="stage-card" key={name}>
               <span>{name}</span>
               <strong>{state}</strong>
               <p>{detail}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="section-block">
+        <SectionHead icon="chart" kicker="OBSERVED REGIMES" title="Regime layer" note={evidence?.regime.status ?? "SYNC"} />
+        <div className="regime-grid">
+          {regimeRows.map(([symbol, row]) => (
+            <div className="regime-card" key={symbol}>
+              <span>{symbol.replace("USDT", "")}</span>
+              <strong>{String(row.state)}</strong>
+              <small>{row.n_trades ? `${row.n_trades} recent trades` : "sample not mature"}</small>
+              <b>{row.validated ? "VALIDATED" : "OBSERVED ONLY"}</b>
             </div>
           ))}
         </div>
@@ -558,9 +601,11 @@ function ResearchView({ status }: { status: ProspectiveStatus | null }) {
 function QualityView({
   health,
   status,
+  evidence,
 }: {
   health: Record<string, unknown> | null;
   status: ProspectiveStatus | null;
+  evidence: EvidenceSnapshot | null;
 }) {
   const symbolHealth = (health?.symbol_health as Array<Record<string, unknown>> | undefined) ?? [];
   const sources = status?.source_health ?? [];
@@ -570,10 +615,11 @@ function QualityView({
         <div>
           <span className="eyebrow">DATA QUALITY</span>
           <h1>Every green state has evidence.</h1>
-          <p>Freshness, worker liveness, source status and durable capture are surfaced without scanning the entire ledger on the hot path.</p>
+          <p>Current-session Quality Gate, transport health and PIT/OOS readiness are read from the same persisted evidence contract.</p>
         </div>
         <Status status={String(health?.status ?? "SYNC")} />
       </section>
+      <EvidenceMatrix evidence={evidence} />
       <section className="quality-grid">
         <div className="section-block">
           <SectionHead icon="shield" kicker="SYMBOL HEALTH" title="Required symbols" />
@@ -606,6 +652,14 @@ function QualityView({
           </div>
         </div>
         <div className="section-block full">
+          <SectionHead icon="research" kicker="QUALITY REPORT" title="Current evidence" note={evidence?.quality_gate.status ?? "SYNC"} />
+          <div className="quality-list">
+            <div className="quality-row"><strong>Rows</strong><span>{compact(evidence?.quality_gate.rows ?? null)}</span><span>{evidence?.quality_gate.current_session ? "current cohort" : "historical"}</span></div>
+            <div className="quality-row"><strong>Replay fingerprint</strong><span>{evidence?.quality_gate.replay_fingerprint ? evidence.quality_gate.replay_fingerprint.slice(0, 12) : "—"}</span><span>{evidence?.quality_gate.reasons.length ? `${evidence.quality_gate.reasons.length} reasons` : "no blockers"}</span></div>
+            <div className="quality-row"><strong>PIT/OOS rows</strong><span>{compact(evidence?.pit_oos.oos_rows ?? null)}</span><span>{evidence?.pit_oos.state ?? "—"}</span></div>
+          </div>
+        </div>
+        <div className="section-block full">
           <SectionHead icon="research" kicker="SOURCE HEALTH" title="Ingestion channels" />
           <div className="source-grid">
             {sources.map((source, index) => (
@@ -633,6 +687,7 @@ function TerminalView({
   historyLoading,
   historyError,
   status,
+  evidence,
 }: {
   selected: SymbolId;
   snapshots: SymbolSnapshot[];
@@ -643,6 +698,7 @@ function TerminalView({
   historyLoading: boolean;
   historyError: string | null;
   status: ProspectiveStatus | null;
+  evidence: EvidenceSnapshot | null;
 }) {
   const snapshot = snapshots.find((item) => item.symbol === selected);
   const selectedEvents = events[selected] || [];
@@ -666,7 +722,7 @@ function TerminalView({
             <div><span>Spread</span><strong>{bp(snapshot?.spread_bps)}</strong></div>
           </div>
         </div>
-        <OpportunityClock snapshot={snapshot} resolution={resolution} />
+        <OpportunityClock evidence={evidence} />
       </section>
 
       <section className="section-block chart-panel">
@@ -701,19 +757,19 @@ function TerminalView({
       </div>
 
       <Timeline />
-      <ResearchRibbon status={status} />
+      <ResearchRibbon status={status} evidence={evidence} />
     </div>
   );
 }
 
-function ResearchRibbon({ status }: { status: ProspectiveStatus | null }) {
+function ResearchRibbon({ status, evidence }: { status: ProspectiveStatus | null; evidence: EvidenceSnapshot | null }) {
   return (
     <section className="research-ribbon">
-      <div><span>PROSPECTIVE</span><strong>{status?.symbols_live ? "ACTIVE" : "STARTING"}</strong></div>
-      <div><span>QUALITY</span><strong>SEPARATED</strong></div>
-      <div><span>PIT / OOS</span><strong>GATED</strong></div>
-      <div><span>PROMOTION</span><strong>BLOCKED</strong></div>
-      <div className="ribbon-note">The terminal never treats an unvalidated forecast as a live signal.</div>
+      <div><span>PROSPECTIVE</span><strong>{evidence?.cohort.status ?? (status?.symbols_live ? "ACTIVE" : "STARTING")}</strong></div>
+      <div><span>QUALITY</span><strong>{evidence?.quality_gate.state ?? "WAITING"}</strong></div>
+      <div><span>PIT / OOS</span><strong>{evidence?.pit_oos.state ?? "BLOCKED"}</strong></div>
+      <div><span>PROMOTION</span><strong>{evidence?.pit_oos.promotion_eligible ? "ELIGIBLE" : "BLOCKED"}</strong></div>
+      <div className="ribbon-note">Observed regimes remain descriptive until the exact PIT/OOS evidence gate validates them.</div>
     </section>
   );
 }
@@ -733,6 +789,7 @@ export default function App() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [researchStatus, setResearchStatus] = useState<ProspectiveStatus | null>(null);
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceSnapshot | null>(null);
   const polling = useRef(false);
 
   const loadMarket = useCallback(async (reset = false) => {
@@ -785,12 +842,14 @@ export default function App() {
 
   const loadState = useCallback(async () => {
     try {
-      const [status, healthPayload] = await Promise.all([
+      const [status, healthPayload, evidencePayload] = await Promise.all([
         fetchProspectiveStatus(),
         fetchHealth(),
+        fetchEvidence(),
       ]);
       setResearchStatus(status);
       setHealth(healthPayload);
+      setEvidence(evidencePayload);
     } catch {
       // Market stream remains the primary live channel.
     }
@@ -804,7 +863,7 @@ export default function App() {
     }, 750);
     const stateTimer = window.setInterval(() => {
       if (!document.hidden) loadState();
-    }, 7000);
+    }, 5000);
     return () => {
       window.clearInterval(timer);
       window.clearInterval(stateTimer);
@@ -849,6 +908,7 @@ export default function App() {
             historyLoading={historyLoading}
             historyError={historyError}
             status={researchStatus}
+            evidence={evidence}
           />
         )}
 
@@ -860,7 +920,7 @@ export default function App() {
               <p>The Opportunity Clock lives here as a temporal research layer. Once a validated forecasting model exists, the clock can bind to setup onset, decay and execution windows without redesigning the terminal.</p>
             </section>
             <div className="opportunity-grid">
-              <OpportunityClock snapshot={snapshots.find((item) => item.symbol === selected)} resolution={resolution} />
+              <OpportunityClock evidence={evidence} />
               <Timeline />
             </div>
             <section className="section-block">
@@ -875,8 +935,8 @@ export default function App() {
           </div>
         )}
 
-        {view === "research" && <ResearchView status={researchStatus} />}
-        {view === "quality" && <QualityView health={health} status={researchStatus} />}
+        {view === "research" && <ResearchView status={researchStatus} evidence={evidence} />}
+        {view === "quality" && <QualityView health={health} status={researchStatus} evidence={evidence} />}
       </main>
 
       <footer className="footer-bar">
