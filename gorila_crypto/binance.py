@@ -60,6 +60,7 @@ class BinanceStreamConfig:
     connect_timeout_s: float = 10.0
     ping_interval_s: float | None = None
     recv_timeout_s: float = 20.0
+    market_data_stall_timeout_s: float = 10.0
     connection_max_seconds: float = 23.5 * 3600.0
 
     def __post_init__(self) -> None:
@@ -77,6 +78,8 @@ class BinanceStreamConfig:
             raise ValueError("depth_limit must be between 1 and 5000")
         if self.connect_timeout_s <= 0 or self.recv_timeout_s <= 0:
             raise ValueError("timeouts must be positive")
+        if self.market_data_stall_timeout_s <= 0:
+            raise ValueError("market_data_stall_timeout_s must be positive")
         object.__setattr__(self, "symbols", symbols)
         object.__setattr__(self, "streams", streams)
 
@@ -480,11 +483,29 @@ class BinanceSpotMarketAdapter:
         return ws
 
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
+        """Yield market events and fail closed when the socket stops producing data.
+
+        A WebSocket can remain TCP-alive while Binance market traffic has stopped.
+        That state must not be treated as healthy: without a market-data watchdog
+        the ingestion worker can remain RUNNING while the frontend freezes on the
+        last durable event indefinitely.
+        """
         connected_ns = time.time_ns()
+        last_market_event_monotonic = time.monotonic()
         while (time.time_ns() - connected_ns) / 1_000_000_000 < self.config.connection_max_seconds:
             raw = ws.recv()
             if raw is None:
                 break
+
+            now_monotonic = time.monotonic()
+            stall_seconds = now_monotonic - last_market_event_monotonic
+            if stall_seconds > self.config.market_data_stall_timeout_s:
+                raise BinanceAdapterError(
+                    "market_data_stall_timeout:"
+                    f"{stall_seconds:.3f}s>"
+                    f"{self.config.market_data_stall_timeout_s:.3f}s"
+                )
+
             received_ns = time.time_ns()
             received_time = datetime.fromtimestamp(
                 received_ns / 1_000_000_000,
@@ -508,6 +529,8 @@ class BinanceSpotMarketAdapter:
             )
             if event is None:
                 continue
+
+            last_market_event_monotonic = now_monotonic
             if self.event_sink is not None:
                 self.event_sink(event)
             yield event
