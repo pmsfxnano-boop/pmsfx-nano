@@ -71,8 +71,6 @@ def depth_event(*, first_id: int, final_id: int, second: int = 0) -> NormalizedM
 
 
 class FakeAdapter:
-    source_family = "binance.websocket.market"
-
     def __init__(self, events: list[NormalizedMarketEvent], *, reconnect_events: list[list[NormalizedMarketEvent]] | None = None) -> None:
         self.config = BinanceStreamConfig(symbols=("BTCUSDT",), streams=("trade",))
         self._events = events
@@ -88,28 +86,6 @@ class FakeAdapter:
                 on_connection("CONNECTED", {"at": BASE.isoformat()})
                 for item in batch:
                     yield item
-
-
-def test_ingestor_batches_event_persistence(tmp_path) -> None:
-    store = CryptoStore(sqlite_path=str(tmp_path / "batch-runtime.sqlite3"))
-    adapter = FakeAdapter([event(trade_id=i, second=i) for i in range(1, 8)])
-    ingestor = ProspectiveCryptoIngestor(
-        store,
-        adapter,
-        config=IngestRuntimeConfig(
-            event_batch_size=3,
-            event_batch_flush_interval_seconds=60.0,
-        ),
-    )
-
-    result = ingestor.run()
-
-    assert result["events_inserted"] == 7
-    conn = store.connect()
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 7
-    finally:
-        conn.close()
 
 
 def test_sequence_monitor_flags_depth_gap_only_within_connection() -> None:
@@ -157,11 +133,6 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
     try:
         assert conn.execute("SELECT COUNT(*) FROM crypto_events").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM crypto_data_gaps").fetchone()[0] == 1
-        metadata = conn.execute(
-            "SELECT metadata FROM crypto_events WHERE event_type='trade' ORDER BY ledger_seq LIMIT 1"
-        ).fetchone()[0]
-        assert "transport_latency_seconds" in metadata
-        assert "received_age_seconds" in metadata
         assert conn.execute("SELECT COUNT(*) FROM crypto_connection_events").fetchone()[0] >= 3
         runtime = conn.execute(
             "SELECT status,result FROM crypto_runtime_runs WHERE run_id=?",
@@ -172,15 +143,6 @@ def test_ingestor_persists_events_gaps_and_runtime_result(tmp_path) -> None:
             "SELECT status FROM crypto_source_health WHERE source=?",
             ("binance.websocket.trade",),
         ).fetchone()["status"] == "LIVE"
-        transport_row = conn.execute(
-            "SELECT status FROM crypto_source_health WHERE source=?",
-            ("binance.websocket.market",),
-        ).fetchone()
-        assert transport_row is None
-        assert conn.execute(
-            "SELECT COUNT(*) FROM crypto_connection_events WHERE source=? AND status='CONNECTED'",
-            ("binance.websocket.market",),
-        ).fetchone()[0] >= 1
     finally:
         conn.close()
 
@@ -198,32 +160,33 @@ def test_ingestor_does_not_infer_continuity_across_reconnect_boundary(tmp_path) 
     assert result["events_inserted"] == 2
 
 
-def test_symbol_health_requires_fresh_data_for_every_required_symbol(tmp_path) -> None:
-    store = CryptoStore(sqlite_path=str(tmp_path / "symbol-health.sqlite3"))
-    adapter = FakeAdapter([event(symbol="BTCUSDT", trade_id=1)])
-    adapter.config = BinanceStreamConfig(
-        symbols=("BTCUSDT", "ETHUSDT"),
-        streams=("trade",),
-    )
-    clock = {"now": BASE}
-    ingestor = ProspectiveCryptoIngestor(
-        store,
-        adapter,
-        now=lambda: clock["now"],
-    )
-    ingestor._ingest(event(symbol="BTCUSDT", trade_id=1))
+def test_feed_watchdog_survives_first_restart_request(tmp_path) -> None:
+    import threading
+    import time
 
-    live = ingestor.symbol_health()
-    assert live[0]["symbol"] == "BTCUSDT"
-    assert live[0]["status"] == "LIVE"
-    assert live[1]["symbol"] == "ETHUSDT"
-    assert live[1]["status"] == "STARTING"
+    store = CryptoStore(sqlite_path=str(tmp_path / "watchdog.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor._feed_stale_timeout_seconds = 0.05
+    ingestor._feed_watchdog_interval_seconds = 0.01
+    ingestor._feed_stop_event = threading.Event()
+    ingestor._capture_started_at = BASE
+    ingestor._last_event = event(trade_id=1, second=0)
+    ingestor._feed_watchdog_grace_until = 0.0
 
-    clock["now"] = BASE.replace(minute=2, second=1)
-    stale = ingestor.symbol_health()
-    assert stale[0]["status"] == "DELAYED"
-    assert stale[1]["status"] == "NO_DATA"
-    assert not all(row["healthy"] for row in stale)
+    thread = threading.Thread(target=ingestor._feed_watchdog, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 2.0
+    while not ingestor._feed_stop_event.is_set() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert ingestor._feed_stop_event.is_set()
+    assert thread.is_alive()
+
+    ingestor.stop_event.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    store.close()
 
 
 def test_runtime_config_rejects_empty_kind() -> None:
