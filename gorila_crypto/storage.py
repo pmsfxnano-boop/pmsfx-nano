@@ -572,7 +572,9 @@ class CryptoStore:
                 vacuum_conn.rollback()
                 vacuum_conn.autocommit = True
                 with vacuum_conn.cursor() as cur:
-                    cur.execute("VACUUM (ANALYZE) \"crypto_events\"")
+                    cur.execute(
+                        f'VACUUM (ANALYZE) "{_pg_identifier(CRYPTO_DB_SCHEMA)}"."crypto_events"'
+                    )
             finally:
                 vacuum_conn.close()
 
