@@ -54,6 +54,110 @@ export type HistoryResponse = {
   candles: Candle[];
 };
 
+
+export type EvidenceSnapshot = {
+  generated_at: string;
+  study: {
+    study_id: string;
+    version: string;
+    protocol_hash: string;
+    prospect_days: number;
+    min_trade_rows_per_symbol: number;
+    forecast_horizons_ms: number[];
+  };
+  cohort: {
+    status: string;
+    session_id: string | null;
+    runtime_status?: string;
+    started_at: string | null;
+    ended_at: string | null;
+    expected_end_at: string | null;
+    elapsed_seconds: number;
+    remaining_seconds: number;
+    progress_pct: number;
+    mature: boolean;
+    symbols: string[];
+    protocol_hash?: string;
+    code_version?: string | null;
+  };
+  quality_gate: {
+    state: string;
+    status: string;
+    current_session: boolean;
+    created_at: string | null;
+    age_seconds: number | null;
+    replay_fingerprint: string | null;
+    rows?: number;
+    reasons: string[];
+    symbol_stats: Record<string, Record<string, number>>;
+    event_type_counts: Record<string, number>;
+    report: Record<string, number>;
+  };
+  research: {
+    status: string;
+    reason: string | null;
+    created_at: string | null;
+    metadata?: Record<string, unknown>;
+  };
+  pit_oos: {
+    state: string;
+    status: string;
+    promotion_eligible: boolean;
+    oos_rows: number;
+    latest: null | {
+      run_id: string;
+      created_at: string;
+      replay_fingerprint: string;
+      model_id: string;
+      model_version: string;
+      target_kind: string;
+      horizon_ms: number;
+      placebo_p_value: number | null;
+      placebo_iterations: number;
+      aggregate: Record<string, unknown>;
+      stability: Record<string, unknown>;
+      stress: Record<string, unknown>;
+    };
+  };
+  forecast_shadow: {
+    count: number;
+    outcomes_count: number;
+    state: string;
+    latest: Record<string, unknown> | null;
+    recent_probability_mean: number | null;
+    recent_probability_min: number | null;
+    recent_probability_max: number | null;
+  };
+  lead_lag_shadow: {
+    observation_count: number;
+    pairs: Array<Record<string, unknown>>;
+  };
+  opportunity_shadow: {
+    count: number;
+    state_counts: Record<string, number>;
+    latest: Array<Record<string, unknown>>;
+  };
+  regime: {
+    status: string;
+    validated: boolean;
+    symbols: Record<string, Record<string, number | string | boolean>>;
+    method: {
+      source: string;
+      features: string[];
+      note: string;
+    };
+  };
+  opportunity_clock: {
+    state: "ACTIVE" | "LOCKED";
+    validated: boolean;
+    mode: "VALIDATED" | "SHADOW";
+    horizon_ms: number | null;
+    remaining_seconds: number | null;
+    blockers: string[];
+    rule: string;
+  };
+};
+
 export type ProspectiveStatus = {
   status: string;
   worker_alive: boolean;
@@ -110,6 +214,10 @@ export function fetchProspectiveStatus(signal?: AbortSignal) {
 
 export function fetchHealth(signal?: AbortSignal) {
   return getJson<Record<string, unknown>>("/api/crypto/health", signal);
+}
+
+export function fetchEvidence(signal?: AbortSignal) {
+  return getJson<EvidenceSnapshot>("/api/crypto/evidence", signal);
 }
 
 export { API_BASE };
