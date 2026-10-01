@@ -420,6 +420,35 @@ class ProspectiveCryptoIngestor:
                 self._pending_event_started_monotonic = now_monotonic
             self._pending_event_rows.append(event_kwargs)
 
+    def operational_snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        last_success_age = (
+            None
+            if self._persistence_last_success_monotonic <= 0
+            else max(0.0, now - self._persistence_last_success_monotonic)
+        )
+        durability = "LIVE"
+        if self._persistence_error is not None:
+            durability = "DEGRADED"
+        elif self._persistence_queue.qsize() > max(8, settings.persistence_queue_batches * 0.75):
+            durability = "DEGRADED"
+        return {
+            "market_plane": "LIVE" if self.last_event is not None else "STARTING",
+            "durability": durability,
+            "persistence_error": self._persistence_error,
+            "persistence_queue_batches": self._persistence_queue.qsize(),
+            "persistence_last_success_age_seconds": last_success_age,
+            "persistence_dropped_events": self._persistence_dropped_events,
+            "events_inserted": self.events_inserted,
+            "events_duplicate": self.events_duplicate,
+            "gaps_detected": self.gaps_detected,
+            "last_event_time": (
+                self.last_event.received_time.isoformat()
+                if self.last_event is not None
+                else None
+            ),
+        }
+
     def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
         """Report readiness of every required symbol from observed receive times.
 
