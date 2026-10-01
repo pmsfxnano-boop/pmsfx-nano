@@ -26,7 +26,7 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 .content{padding-top:17px}
 .brandline{display:flex;gap:12px;align-items:center;color:#667b87;font-size:10px;letter-spacing:.14em;margin:8px 2px 15px}
 .brandline b{color:#94a9b4}
-.panel{border:1px solid var(--line);background:linear-gradient(180deg,rgba(12,20,27,.97),rgba(8,14,19,.97));border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 16px 50px rgba(0,0,0,.17)}
+.panel{border:1px solid var(--line);background:linear-gradient(180deg,rgba(12,20,27,.97),rgba(8,14,19,.97));border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 16px 50px rgba(0,0,0,.17);contain:layout paint}
 .section-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:16px}
 .section-head h2{margin:5px 0 0;font-size:23px;line-height:1.06;letter-spacing:-.035em}
 .eyebrow{display:flex;align-items:center;gap:9px;color:#607682;font-size:9px;letter-spacing:.18em;font-weight:800}
@@ -247,4 +247,18 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .section-head h2{font-size:20px}
   .resolution-bar{justify-content:flex-end}
   .bottom-nav{bottom:9px;width:calc(100vw - 20px)}
+}
+
+/* Vanguard terminal surface: keep off-screen panels out of the critical rendering path. */
+.terminal-late-panel{content-visibility:auto;contain-intrinsic-size:280px}
+.primary-chart-canvas{background:
+  radial-gradient(circle at 78% 20%,rgba(105,215,233,.09),transparent 28%),
+  radial-gradient(circle at 16% 88%,rgba(105,215,233,.055),transparent 34%),
+  linear-gradient(180deg,rgba(5,17,23,.98),rgba(4,11,16,.98))}
+.lwc-market-chart{width:100%;height:100%;min-height:0}
+.primary-chart-canvas .chart-live-badge{z-index:2}
+.primary-chart-canvas::after{content:"";position:absolute;inset:44px 0 0;pointer-events:none;background:linear-gradient(180deg,rgba(105,215,233,.02),transparent 24%,transparent 78%,rgba(105,215,233,.025));mix-blend-mode:screen}
+@media(max-width:760px){
+  .terminal-late-panel{contain-intrinsic-size:240px}
+  .primary-chart-canvas::after{inset:34px 0 0}
 }
