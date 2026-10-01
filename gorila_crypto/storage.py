@@ -83,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_crypto_data_gaps_symbol_time
 CREATE TABLE IF NOT EXISTS crypto_runtime_runs (
     run_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
+    started_at TEXT NOT NULL,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     completed_at TEXT,
@@ -1650,22 +1651,23 @@ class CryptoStore:
     def start_runtime_run(self, *, kind: str, run_id: str | None = None) -> str:
         self.init()
         run_id = run_id or str(uuid.uuid4())
-        values = (run_id, _utc_now(), kind, "RUNNING", None, _json({}))
+        started_at = _utc_now()
+        values = (run_id, started_at, started_at, kind, "RUNNING", None, _json({}))
         conn = self.connect()
         try:
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
                         """INSERT INTO crypto_runtime_runs
-                        (run_id,created_at,kind,status,completed_at,result)
-                        VALUES (%s,%s,%s,%s,%s,%s)""",
+                        (run_id,created_at,started_at,kind,status,completed_at,result)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                         values,
                     )
             else:
                 conn.execute(
                     """INSERT INTO crypto_runtime_runs
-                    (run_id,created_at,kind,status,completed_at,result)
-                    VALUES (?,?,?,?,?,?)""",
+                    (run_id,created_at,started_at,kind,status,completed_at,result)
+                    VALUES (?,?,?,?,?,?,?)""",
                     values,
                 )
             conn.commit()
