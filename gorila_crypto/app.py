@@ -35,6 +35,74 @@ _stop_event = threading.Event()
 _capture_block_reason: str | None = None
 
 
+def _retire_legacy_objects_if_enabled(store: CryptoStore) -> None:
+    flag = __import__("os").getenv("GORILA_CRYPTO_RETIRE_LEGACY", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
+    if not store.durable:
+        raise RuntimeError("legacy_retirement_requires_durable_postgres")
+    conn = store.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS crypto_legacy_retirement (
+                    retirement_id TEXT PRIMARY KEY,
+                    executed_at TEXT NOT NULL,
+                    code_version TEXT,
+                    dropped_schema TEXT NOT NULL,
+                    dropped_public_tables_json TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                "DROP SCHEMA IF EXISTS gorila_argentum CASCADE"
+            )
+            cur.execute(
+                """
+                DROP TABLE IF EXISTS
+                    public.backtest_runs,
+                    public.forecast_outcomes,
+                    public.forecasts,
+                    public.model_registry,
+                    public.online_cohort_samples,
+                    public.research_runs
+                CASCADE
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO crypto_legacy_retirement(
+                    retirement_id, executed_at, code_version,
+                    dropped_schema, dropped_public_tables_json
+                )
+                VALUES(%s,%s,%s,%s,%s)
+                """,
+                (
+                    __import__("uuid").uuid4().hex,
+                    datetime.now(timezone.utc).isoformat(),
+                    __import__("os").getenv("RENDER_GIT_COMMIT")
+                    or __import__("os").getenv("GORILA_CRYPTO_CODE_VERSION"),
+                    "gorila_argentum",
+                    json.dumps(
+                        [
+                            "public.backtest_runs",
+                            "public.forecast_outcomes",
+                            "public.forecasts",
+                            "public.model_registry",
+                            "public.online_cohort_samples",
+                            "public.research_runs",
+                        ],
+                        sort_keys=True,
+                    ),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+
 def _new_store() -> CryptoStore:
     return CryptoStore(require_durable=settings.ingest_enabled)
 
@@ -143,6 +211,18 @@ async def lifespan(app: FastAPI):
                 flush=True,
             )
         else:
+            try:
+                _retire_legacy_objects_if_enabled(store)
+            except Exception as exc:
+                _capture_block_reason = f"LEGACY_RETIREMENT_FAILED:{type(exc).__name__}:{exc}"
+                print(
+                    "GORILA_LEGACY_RETIREMENT_FAILED "
+                    + _capture_block_reason,
+                    flush=True,
+                )
+                yield
+                _stop_event.set()
+                return
             adapter = build_market_adapter()
             _runtime = ProspectiveCryptoIngestor(store, adapter)
             _runtime_thread = threading.Thread(
