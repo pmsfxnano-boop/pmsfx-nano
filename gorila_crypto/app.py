@@ -828,29 +828,31 @@ def prospective_status() -> dict[str, Any]:
             "automatic_promotion": False,
             "execution": False,
         }
-    store = _new_store()
     symbol_health = _runtime.symbol_health() if _runtime is not None else []
-    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-        session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
-        health_rows = [
-            row for row in store.health(source_prefix="binance.websocket.")
-            if row.get("last_event_time") is not None
-        ]
-        stats = store.scoped_stats(
-            study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-            capture_session_id=session_id,
-        )
-    else:
-        health_rows = store.health(
-            source_prefix=f"{settings.provider}.websocket.",
-        )
-        stats = store.prospective_stats(
-            source_prefix=f"{settings.provider}.websocket.",
-        )
+    runtime_snapshot = (
+        _runtime.operational_snapshot()
+        if _runtime is not None
+        else {
+            "market_plane": "STARTING",
+            "durability": "UNKNOWN",
+            "persistence_queue_batches": 0,
+        }
+    )
+    store = _new_store()
+    health_rows = [
+        row for row in store.health(source_prefix="binance.websocket.")
+        if row.get("last_event_time") is not None
+    ]
     return {
         "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
-        "ledger": stats,
+        "ledger": {
+            "backend": store.backend,
+            "capture_session_id": store.active_capture_session(
+                PREREGISTERED_CRYPTO_PROTOCOL.study_id
+            ) if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
+            "hot_path": runtime_snapshot,
+        },
         "source_health": health_rows,
         "symbol_health": symbol_health,
         "symbols_live": bool(symbol_health) and all(
