@@ -180,7 +180,9 @@ class ProspectiveCryptoIngestor:
                 self._feed_watchdog_grace_until = (
                     now_monotonic + self._feed_stale_timeout_seconds
                 )
-            return
+            # Keep the watchdog alive for the entire durable capture session.
+            # The feed worker is restarted without ending the cohort.
+            continue
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
