@@ -271,8 +271,14 @@ class SymbolMicrostructure:
             aggressor_sign = -1.0 if bool(payload.get("m")) else 1.0
             signed_notional = aggressor_sign * price * qty
             self.signed_flow.update(signed_notional)
-            mean_flow, var_flow = self.flow_moments.update(signed_notional)
-            raw_flow_z = _zscore(signed_notional, mean_flow, var_flow)
+            prior_mean = self.flow_moments.mean
+            prior_var = self.flow_moments.var
+            raw_flow_z = (
+                _zscore(signed_notional, prior_mean, prior_var)
+                if self.flow_moments.initialized
+                else 0.0
+            )
+            self.flow_moments.update(signed_notional)
             self.flow_z_signal.update(max(-12.0, min(12.0, raw_flow_z)))
             self.trade_excitation.update(received_time)
 
