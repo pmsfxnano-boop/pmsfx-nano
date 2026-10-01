@@ -8,10 +8,13 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },
-  "engines": { "node": "20.x" },
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "lightweight-charts": "^5.2.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.8",
