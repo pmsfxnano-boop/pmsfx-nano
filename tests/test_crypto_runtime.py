@@ -197,12 +197,13 @@ def test_production_feed_exception_restarts_with_same_session(tmp_path, monkeypa
     class FlakyProductionAdapter:
         source_family = "binance.websocket.market"
 
-        def __init__(self, calls: dict[str, int]) -> None:
+        def __init__(self, calls: dict[str, int], control: dict[str, object]) -> None:
             self.config = BinanceStreamConfig(
                 symbols=tuple(runtime.PREREGISTERED_CRYPTO_PROTOCOL.symbols),
                 streams=tuple(runtime.settings.streams),
             )
             self.calls = calls
+            self.control = control
 
         def iter_forever(self, *, stop_event, on_connection):
             self.calls["n"] += 1
@@ -210,11 +211,14 @@ def test_production_feed_exception_restarts_with_same_session(tmp_path, monkeypa
             yield event(trade_id=self.calls["n"])
             if self.calls["n"] == 1:
                 raise RuntimeError("simulated transport failure")
-            stop_event.set()
+            overall_stop = self.control["overall_stop"]
+            assert hasattr(overall_stop, "set")
+            overall_stop.set()
 
     calls = {"n": 0}
-    first = FlakyProductionAdapter(calls)
-    second = FlakyProductionAdapter(calls)
+    control: dict[str, object] = {"overall_stop": None}
+    first = FlakyProductionAdapter(calls, control)
+    second = FlakyProductionAdapter(calls, control)
     adapters = iter([second])
 
     store = QuantCryptoStore(sqlite_path=str(tmp_path / "production-restart.sqlite3"))
@@ -226,6 +230,7 @@ def test_production_feed_exception_restarts_with_same_session(tmp_path, monkeypa
         first,
         now=lambda: BASE,
     )
+    control["overall_stop"] = ingestor.stop_event
 
     result = ingestor.run()
 
