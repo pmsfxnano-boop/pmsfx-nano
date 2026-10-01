@@ -166,7 +166,7 @@ def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
 def test_provider_protocol_registry_keeps_binance_and_kraken_isolated() -> None:
     from gorila_crypto.protocol import (
         BINANCE_CRYPTO_PROTOCOL,
-        BINANCE_CRYPTO_PROTOCOL_V3,
+        BINANCE_CRYPTO_PROTOCOL_V4,
         KRAKEN_CRYPTO_PROTOCOL,
         protocol_for,
     )
