@@ -475,7 +475,7 @@ class QuantCryptoStore(CryptoStore):
             json.dumps(list(streams), sort_keys=True),
             protocol_hash,
             _utc_now(),
-            "STARTING",
+            "RUNNING",
             json.dumps(dict(metadata or {}), sort_keys=True, default=str),
         )
         conn = self.connect()
@@ -514,7 +514,9 @@ class QuantCryptoStore(CryptoStore):
                 ) from exc
         finally:
             conn.close()
-        self.set_capture_session_status(session_id, "RUNNING")
+        # The session is inserted RUNNING atomically with its creation.
+        # The runtime lease is allocated immediately afterwards; any crash in
+        # between is still fenced by started_at/session reconciliation.
         return session_id
 
     def set_capture_session_status(self, session_id: str, status: str) -> None:
