@@ -257,6 +257,24 @@ def label_snapshot(
     if future is None:
         return None
 
+    actual_event_horizon_ms = int(
+        round(
+            (future.event_time - snapshot.decision_event_time).total_seconds()
+            * 1000.0
+        )
+    )
+    actual_receive_horizon_ms = int(
+        round(
+            (future.received_time - snapshot.decision_received_time).total_seconds()
+            * 1000.0
+        )
+    )
+    tolerance = int(target_spec.alignment_tolerance_ms)
+    if actual_event_horizon_ms > target_spec.horizon_ms + tolerance:
+        return None
+    if actual_receive_horizon_ms > target_spec.horizon_ms + tolerance:
+        return None
+
     raw_return = _log_return_bps(future.price, baseline.price)
     direction = 1.0 if snapshot.feature_values["leader_direction"] >= 0 else -1.0
     signed_return = direction * raw_return
@@ -269,8 +287,8 @@ def label_snapshot(
         label_received_time=_dt(future.received_time),
         label_event_id=future.event_id,
         horizon_ms=target_spec.horizon_ms,
-        actual_event_horizon_ms=int(round((future.event_time - snapshot.decision_event_time).total_seconds() * 1000.0)),
-        actual_receive_horizon_ms=int(round((future.received_time - snapshot.decision_received_time).total_seconds() * 1000.0)),
+        actual_event_horizon_ms=actual_event_horizon_ms,
+        actual_receive_horizon_ms=actual_receive_horizon_ms,
     )
 
 
