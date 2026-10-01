@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -788,6 +789,215 @@ def evidence_snapshot() -> dict[str, Any]:
             detail=f"evidence_unavailable:{type(exc).__name__}",
         ) from exc
     return payload
+
+
+@app.get("/api/crypto/operational/e2e")
+def operational_e2e() -> dict[str, Any]:
+    """
+    Bounded end-to-end operational probe.
+
+    This endpoint intentionally sits off the hot market path. It cross-checks
+    the in-process market cursor/freshness plane against durable ledger
+    reachability, bounded history and the quantitative evidence contract.
+    It never promotes a model and returns DEGRADED rather than masking any
+    unavailable stage.
+    """
+    started = time.perf_counter()
+    failures: list[str] = []
+
+    # Hot stream plane.
+    stream_started = time.perf_counter()
+    stream = market_stream(cursor=0, limit=180)
+    stream_latency_ms = (time.perf_counter() - stream_started) * 1000.0
+    events = list(stream.get("events") or [])
+    stream_seqs = [int(event["stream_seq"]) for event in events if event.get("stream_seq") is not None]
+    event_keys = [str(event["event_key"]) for event in events if event.get("event_key")]
+    cursor_integrity = (
+        stream_seqs == sorted(stream_seqs)
+        and len(stream_seqs) == len(set(stream_seqs))
+        and int(stream.get("next_cursor") or 0) >= (max(stream_seqs) if stream_seqs else 0)
+    )
+    if not cursor_integrity:
+        failures.append("STREAM_CURSOR_INTEGRITY")
+
+    freshness = {
+        str(row["symbol"]): {
+            "status": row.get("status"),
+            "freshness_ms": row.get("freshness_ms"),
+        }
+        for row in (stream.get("symbols") or [])
+    }
+    if any(row.get("status") != "LIVE" for row in freshness.values()):
+        failures.append("REQUIRED_SYMBOL_NOT_LIVE")
+
+    now = datetime.now(timezone.utc)
+    received_times = []
+    transport_latencies_ms = []
+    for event in events:
+        received = event.get("received_time")
+        event_time = event.get("event_time")
+        if received:
+            try:
+                received_dt = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
+                received_times.append(received_dt)
+            except ValueError:
+                pass
+        if event_time and received:
+            try:
+                event_dt = datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+                received_dt = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
+                transport_latencies_ms.append(max(0.0, (received_dt - event_dt).total_seconds() * 1000.0))
+            except ValueError:
+                pass
+
+    event_rate_eps = None
+    if len(received_times) >= 2:
+        span_s = max(0.001, (max(received_times) - min(received_times)).total_seconds())
+        event_rate_eps = len(received_times) / span_s
+
+    runtime = _runtime_operational_snapshot()
+    if runtime.get("persistence_dropped_events", 0):
+        failures.append("PERSISTENCE_DROPS")
+    if runtime.get("evidence_spool", {}).get("batches", 0):
+        failures.append("EVIDENCE_SPOOL_PENDING")
+    if runtime.get("persistence_queue_batches", 0):
+        failures.append("PERSISTENCE_QUEUE_PENDING")
+    if runtime.get("durability") != "LIVE":
+        failures.append("DURABILITY_NOT_LIVE")
+
+    # Durable/read-model planes are deliberately bounded and independently timed.
+    ledger: dict[str, Any] = {"status": "UNAVAILABLE"}
+    ledger_latency_ms: float | None = None
+    history: dict[str, Any] = {"status": "UNAVAILABLE"}
+    history_latency_ms: float | None = None
+    evidence: dict[str, Any] = {"status": "UNAVAILABLE"}
+    evidence_latency_ms: float | None = None
+
+    ledger_started = time.perf_counter()
+    try:
+        store = _new_store()
+        conn = store.connect()
+        try:
+            cutoff = (now - timedelta(seconds=60)).isoformat()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(MAX(ledger_seq), 0),
+                        COUNT(*),
+                        MAX(received_time)
+                    FROM crypto_events
+                    WHERE source LIKE %s
+                      AND received_time >= %s
+                    """,
+                    ("binance.websocket.%", cutoff),
+                )
+                row = cur.fetchone()
+            ledger = {
+                "status": "LIVE",
+                "last_ledger_seq": int(row[0] or 0),
+                "rows_last_60s": int(row[1] or 0),
+                "last_received_time": str(row[2]) if row[2] is not None else None,
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        ledger = {
+            "status": "UNAVAILABLE",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        failures.append("LEDGER_UNAVAILABLE")
+    ledger_latency_ms = (time.perf_counter() - ledger_started) * 1000.0
+
+    history_started = time.perf_counter()
+    try:
+        symbols = list(settings.symbols)
+        latest_history: dict[str, Any] = {}
+        for symbol in symbols:
+            result = market_history(symbol=symbol, resolution="1m", limit=30)
+            latest_history[symbol] = {
+                "candles": len(result.get("candles") or []),
+                "last_time": (
+                    result.get("candles")[-1].get("time")
+                    if result.get("candles")
+                    else None
+                ),
+            }
+        history = {"status": "LIVE", "symbols": latest_history}
+    except Exception as exc:
+        history = {
+            "status": "UNAVAILABLE",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        failures.append("HISTORY_UNAVAILABLE")
+    history_latency_ms = (time.perf_counter() - history_started) * 1000.0
+
+    evidence_started = time.perf_counter()
+    try:
+        payload = build_evidence_snapshot()
+        evidence = {
+            "status": "LIVE",
+            "generated_at": payload.get("generated_at"),
+            "cohort": payload.get("cohort", {}).get("status"),
+            "quality_gate": payload.get("quality_gate", {}).get("state"),
+            "pit_oos": payload.get("pit_oos", {}).get("state"),
+            "opportunity_clock": payload.get("opportunity_clock", {}).get("state"),
+        }
+    except Exception as exc:
+        evidence = {
+            "status": "UNAVAILABLE",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        failures.append("EVIDENCE_UNAVAILABLE")
+    evidence_latency_ms = (time.perf_counter() - evidence_started) * 1000.0
+
+    if ledger.get("status") != "LIVE":
+        failures.append("LEDGER_NOT_LIVE")
+    if history.get("status") != "LIVE":
+        failures.append("HISTORY_NOT_LIVE")
+    if evidence.get("status") != "LIVE":
+        failures.append("EVIDENCE_NOT_LIVE")
+
+    # Dedupe reasons so a single outage does not inflate the health state.
+    failures = list(dict.fromkeys(failures))
+    status = "PASS" if not failures else "DEGRADED"
+
+    return {
+        "status": status,
+        "checked_at": now.isoformat(),
+        "latency_ms": {
+            "total": round((time.perf_counter() - started) * 1000.0, 3),
+            "stream": round(stream_latency_ms, 3),
+            "ledger": round(ledger_latency_ms, 3) if ledger_latency_ms is not None else None,
+            "history": round(history_latency_ms, 3) if history_latency_ms is not None else None,
+            "evidence": round(evidence_latency_ms, 3) if evidence_latency_ms is not None else None,
+        },
+        "speed": {
+            "stream_events_returned": len(events),
+            "estimated_events_per_second": event_rate_eps,
+            "transport_latency_ms_max": max(transport_latencies_ms) if transport_latencies_ms else None,
+            "transport_latency_ms_median": (
+                sorted(transport_latencies_ms)[len(transport_latencies_ms) // 2]
+                if transport_latencies_ms
+                else None
+            ),
+        },
+        "stream": {
+            "status": stream.get("status"),
+            "next_cursor": stream.get("next_cursor"),
+            "last_durable_stream_seq": stream.get("last_durable_stream_seq"),
+            "events_returned": len(events),
+            "duplicate_event_keys": len(event_keys) - len(set(event_keys)),
+            "cursor_integrity": cursor_integrity,
+        },
+        "freshness": freshness,
+        "runtime": runtime,
+        "ledger": ledger,
+        "history": history,
+        "evidence": evidence,
+        "failures": failures,
+        "fail_closed": bool(failures),
+    }
 
 
 @app.head("/", include_in_schema=False)
