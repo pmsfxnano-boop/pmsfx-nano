@@ -50,8 +50,8 @@ class IngestRuntimeConfig:
     health_status: str = "HEALTHY"
     error_status: str = "DEGRADED"
     health_flush_interval_seconds: float = 5.0
-    event_batch_size: int = 250
-    event_batch_flush_interval_seconds: float = 0.050
+    event_batch_size: int = settings.event_batch_size
+    event_batch_flush_interval_seconds: float = settings.event_batch_flush_interval_seconds
 
     def validate(self) -> None:
         if not self.kind.strip():
