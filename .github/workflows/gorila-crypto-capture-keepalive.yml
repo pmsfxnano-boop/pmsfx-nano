@@ -15,17 +15,71 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Ping canonical Binance capture service
+      - name: Verify canonical capture and frontend market contract
         run: |
           set -euo pipefail
-          URL="https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"
+
+          BASE="https://gorila-crypto-cleanroom-binance-capture.onrender.com"
+          FRONTEND_ORIGIN="https://gorila-argentum-terminal.onrender.com"
+          HEALTH_URL="$BASE/api/crypto/health"
+          MARKET_URL="$BASE/api/crypto/market/stream?cursor=0&limit=36"
+
           for attempt in 1 2 3 4 5 6; do
-            if curl --fail --silent --show-error --max-time 20 "$URL"; then
-              echo
-              echo "Render heartbeat OK on attempt $attempt"
+            tmp_headers="$(mktemp)"
+            tmp_body="$(mktemp)"
+
+            health_ok=0
+            market_ok=0
+            cors_ok=0
+
+            if curl --fail --silent --show-error --max-time 20 "$HEALTH_URL" >/dev/null; then
+              health_ok=1
+            fi
+
+            if curl --fail --silent --show-error --max-time 20               -D "$tmp_headers"               -H "Origin: $FRONTEND_ORIGIN"               "$MARKET_URL" >"$tmp_body"; then
+              market_ok=1
+              if grep -qi "^access-control-allow-origin: $FRONTEND_ORIGIN$" "$tmp_headers"; then
+                cors_ok=1
+              fi
+            fi
+
+            if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ]; then
+              python - "$tmp_body" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              payload = json.load(fh)
+
+          required = {"status", "next_cursor", "symbols", "events", "forecast"}
+          missing = required - payload.keys()
+          if missing:
+              raise SystemExit(f"market contract missing keys: {sorted(missing)}")
+          if not payload["symbols"]:
+              raise SystemExit("market contract returned no symbols")
+          if not payload["events"]:
+              raise SystemExit("market contract returned no persisted events")
+          forecast = payload["forecast"]
+          if forecast.get("automatic_promotion") is not False:
+              raise SystemExit("automatic promotion must remain disabled")
+          if forecast.get("execution") is not False:
+              raise SystemExit("execution must remain disabled")
+          print(
+              "Market contract OK:",
+              f"status={payload['status']}",
+              f"symbols={len(payload['symbols'])}",
+              f"events={len(payload['events'])}",
+              f"next_cursor={payload['next_cursor']}",
+          )
+          PY
+              rm -f "$tmp_headers" "$tmp_body"
+              echo "Render capture + market contract + CORS OK on attempt $attempt"
               exit 0
             fi
+
+            rm -f "$tmp_headers" "$tmp_body"
             sleep 10
           done
-          echo "Render heartbeat failed after retries"
+
+          echo "Render capture/market contract check failed after retries"
           exit 1
