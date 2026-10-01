@@ -277,24 +277,32 @@ class ProspectiveCryptoIngestor:
 
         if status == "ERROR":
             self.last_error = str(metadata.get("error") or "unknown_error")
-            self.store.upsert_source_health(
-                source=self.source_family,
-                status=self.config.error_status,
-                last_event_time=(
-                    self.last_event.event_time.isoformat()
-                    if self.last_event is not None
-                    else None
-                ),
-                last_received_time=(
-                    self.last_event.received_time.isoformat()
-                    if self.last_event is not None
-                    else None
-                ),
-                event_age_seconds=None,
-                transport_age_seconds=None,
-                rows_last_batch=0,
-                error=self.last_error,
-            )
+            try:
+                self.store.upsert_source_health(
+                    source=self.source_family,
+                    status=self.config.error_status,
+                    last_event_time=(
+                        self.last_event.event_time.isoformat()
+                        if self.last_event is not None
+                        else None
+                    ),
+                    last_received_time=(
+                        self.last_event.received_time.isoformat()
+                        if self.last_event is not None
+                        else None
+                    ),
+                    event_age_seconds=None,
+                    transport_age_seconds=None,
+                    rows_last_batch=0,
+                    error=self.last_error,
+                )
+            except Exception as exc:
+                self._persistence_error = (
+                    f"source_health:{type(exc).__name__}: {exc}"
+                )
+                MARKET_CACHE.record_persistence_degradation(
+                    self._persistence_error
+                )
 
     def _flush_pending_events(self) -> None:
         if not self._pending_event_rows:
@@ -545,6 +553,80 @@ class ProspectiveCryptoIngestor:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def _bootstrap_storage(self) -> None:
+        """Acquire durable study/session ownership without blocking market ingest."""
+        backoff = 1.0
+        stale = 0
+        effective_protocol_hash: str | None = None
+
+        while not self._bootstrap_stop.is_set() and not self.stop_event.is_set():
+            try:
+                stale = self.store.reconcile_stale_runtime_runs(
+                    stale_after_seconds=120.0
+                )
+                self.store.register_study(self.protocol)
+                effective_protocol_hash = self.store.get_study_protocol_hash(
+                    self.protocol.study_id
+                )
+
+                if self.session_id is None:
+                    self.session_id = self.store.start_capture_session(
+                        study_id=self.protocol.study_id,
+                        protocol_hash=effective_protocol_hash,
+                        provider=settings.provider,
+                        venue=self.protocol.venue,
+                        symbols=tuple(self.adapter.config.symbols),
+                        streams=tuple(settings.streams),
+                        region=os.getenv("RENDER_REGION"),
+                        instance_id=os.getenv("RENDER_INSTANCE_ID"),
+                        code_version=(
+                            os.getenv("RENDER_GIT_COMMIT")
+                            or os.getenv("GORILA_CRYPTO_CODE_VERSION")
+                        ),
+                        metadata={"stale_runs_reconciled": stale},
+                    )
+
+                if self.run_id is None:
+                    self.run_id = self.store.start_runtime_run_scoped(
+                        kind=self.config.kind,
+                        session_id=self.session_id,
+                    )
+
+                self._record_connection(
+                    "RUN_STARTED",
+                    {
+                        "symbols": list(self.adapter.config.symbols),
+                        "study_id": self.protocol.study_id,
+                        "protocol_hash": effective_protocol_hash,
+                        "capture_session_id": self.session_id,
+                    },
+                )
+                self._persistence_error = None
+                return
+
+            except RuntimeError as exc:
+                reason = str(exc)
+                if reason.startswith("active_capture_session_exists:"):
+                    self._record_connection(
+                        "WAITING_FOR_ACTIVE_SESSION",
+                        {"reason": reason},
+                    )
+                else:
+                    self.last_error = reason
+                    self._record_connection(
+                        "STORAGE_BOOTSTRAP_DEGRADED",
+                        {"error": reason},
+                    )
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                self._record_connection(
+                    "STORAGE_BOOTSTRAP_DEGRADED",
+                    {"error": self.last_error},
+                )
+
+            self._bootstrap_stop.wait(backoff)
+            backoff = min(30.0, backoff * 2.0)
 
     def run(self) -> dict[str, Any]:
         """Run one market stream while durable capture bootstraps independently."""
