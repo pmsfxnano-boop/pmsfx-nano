@@ -671,6 +671,47 @@ class QuantCryptoStore(CryptoStore):
                     count = cur.rowcount
                     cur.execute(
                         """
+                        UPDATE crypto_runtime_leases l
+                        SET status='ABORTED_STALE'
+                        WHERE l.status='RUNNING'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM crypto_capture_sessions s
+                              WHERE s.session_id=l.session_id
+                                AND s.status NOT IN ('STARTING','RUNNING')
+                          )
+                        """
+                    )
+                    orphan_runtime_runs = cur.rowcount
+                    if orphan_runtime_runs:
+                        cur.execute(
+                            """
+                            UPDATE crypto_runtime_runs r
+                            SET status='ABORTED_STALE',
+                                completed_at=%s,
+                                result=%s
+                            WHERE r.status='RUNNING'
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM crypto_runtime_leases l
+                                  WHERE l.run_id=r.run_id
+                                    AND l.status='ABORTED_STALE'
+                                    AND EXISTS (
+                                        SELECT 1
+                                        FROM crypto_capture_sessions s
+                                        WHERE s.session_id=l.session_id
+                                          AND s.status NOT IN ('STARTING','RUNNING')
+                                    )
+                              )
+                            """,
+                            (
+                                _utc_now(),
+                                json.dumps({"reason": "terminal_capture_session"}, sort_keys=True),
+                            ),
+                        )
+                        count += cur.rowcount
+                    cur.execute(
+                        """
                         UPDATE crypto_runtime_leases
                         SET status='ABORTED_STALE'
                         WHERE status='RUNNING' AND heartbeat_at < %s
@@ -712,6 +753,42 @@ class QuantCryptoStore(CryptoStore):
                     (_utc_now(), json.dumps({"reason": "stale_runtime_lease"}), cutoff),
                 )
                 count = cur.rowcount
+                cur = conn.execute(
+                    """
+                    UPDATE crypto_runtime_leases
+                    SET status='ABORTED_STALE'
+                    WHERE status='RUNNING'
+                      AND session_id IN (
+                          SELECT session_id
+                          FROM crypto_capture_sessions
+                          WHERE status NOT IN ('STARTING','RUNNING')
+                      )
+                    """
+                )
+                orphan_runtime_runs = cur.rowcount
+                if orphan_runtime_runs:
+                    cur = conn.execute(
+                        """
+                        UPDATE crypto_runtime_runs
+                        SET status='ABORTED_STALE',
+                            completed_at=?,
+                            result=?
+                        WHERE status='RUNNING'
+                          AND run_id IN (
+                              SELECT l.run_id
+                              FROM crypto_runtime_leases l
+                              JOIN crypto_capture_sessions s
+                                ON s.session_id=l.session_id
+                              WHERE l.status='ABORTED_STALE'
+                                AND s.status NOT IN ('STARTING','RUNNING')
+                          )
+                        """,
+                        (
+                            _utc_now(),
+                            json.dumps({"reason": "terminal_capture_session"}, sort_keys=True),
+                        ),
+                    )
+                    count += cur.rowcount
                 conn.execute(
                     """
                     UPDATE crypto_runtime_leases
