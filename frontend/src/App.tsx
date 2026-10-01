@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { AreaSeries, createChart, type UTCTimestamp } from "lightweight-charts";
 import {
   fetchConfig,
   fetchEvidence,
@@ -186,74 +187,170 @@ function PrimaryChart({
   resolution: string;
   onResolution: (v: string) => void;
 }) {
-  const durablePoints = (history?.candles || []).map(c => ({
-    time: c.time,
-    price: c.close,
-  }));
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const seriesRef = useRef<any>(null);
+  const lastLiveKeyRef = useRef<string | null>(null);
+  const lastChartTimeRef = useRef<number>(0);
 
-  const livePoints = liveEvents
-    .filter(event => event.price != null)
-    .slice()
-    .sort((a, b) => Date.parse(a.received_time) - Date.parse(b.received_time))
-    .map(event => ({
-      time: event.received_time,
-      price: Number(event.price),
-    }));
-
-  // Keep durable history for context, but always append the hot stream tail.
-  // The previous implementation preferred durable candles whenever they existed,
-  // which made the primary chart look static even while the market plane moved.
-  const durableTail = durablePoints.slice(-160);
-  const lastDurableTime = durableTail.length
-    ? Date.parse(durableTail[durableTail.length - 1].time)
-    : Number.NEGATIVE_INFINITY;
-  const liveTail = livePoints.filter(point => {
-    const t = Date.parse(point.time);
-    return Number.isFinite(t) && t >= lastDurableTime;
-  }).slice(-60);
-
-  const sourcePoints = durableTail.length
-    ? [...durableTail, ...liveTail.filter(point => Date.parse(point.time) > lastDurableTime)]
-    : liveTail;
-
-  const maxPoints = 220;
-  const points = sourcePoints.length > maxPoints
-    ? sourcePoints.slice(-maxPoints)
-    : sourcePoints;
-
-  const values = points.map(point => point.price);
-  const current = values.at(-1) ?? null;
-  const previous = values.length > 1 ? values.at(-2)! : null;
+  const displaySymbol = symbolBase(symbol || history?.symbol || "BTCUSDT");
+  const displayQuote = (symbol || history?.symbol || "BTCUSDT").endsWith("USDT") ? "USDT" : "USD";
+  const latestTrade = liveEvents.length ? liveEvents[liveEvents.length - 1] : null;
+  const current = num(latestTrade?.price) ?? num(history?.candles.at(-1)?.close);
+  const previous = history?.candles.length && history.candles.length > 1
+    ? history.candles[history.candles.length - 2].close
+    : null;
   const change = current != null && previous != null && previous !== 0
     ? ((current / previous) - 1) * 100
     : null;
+  const hasLive = latestTrade?.price != null;
 
-  const W = 1000;
-  const H = 390;
-  const pad = { l: 18, r: 74, t: 22, b: 30 };
-  const rawHigh = values.length ? Math.max(...values) : 1;
-  const rawLow = values.length ? Math.min(...values) : 0;
-  const range = Math.max(rawHigh - rawLow, rawHigh * 0.001, 1e-9);
-  const high = rawHigh + range * 0.09;
-  const low = rawLow - range * 0.09;
-  const span = Math.max(high - low, 1e-9);
-  const innerW = W - pad.l - pad.r;
-  const innerH = H - pad.t - pad.b;
-  const x = (i: number) => pad.l + (i / Math.max(1, values.length - 1)) * innerW;
-  const y = (price: number) => pad.t + ((high - price) / span) * innerH;
-  const linePoints = values.map((value, i) => `${x(i)},${y(value)}`).join(" ");
-  const areaPoints = values.length
-    ? `${pad.l},${H - pad.b} ${linePoints} ${x(values.length - 1)},${H - pad.b}`
-    : "";
-  const live = liveTail.length > 0;
-  const displaySymbol = symbolBase(symbol || history?.symbol || "BTCUSDT");
-  const displayQuote = (symbol || history?.symbol || "BTCUSDT").endsWith("USDT") ? "USDT" : "USD";
+  const toTime = (value: string): UTCTimestamp => {
+    const ms = Date.parse(value);
+    return Math.floor(ms / 1000) as UTCTimestamp;
+  };
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      layout: {
+        background: { type: "solid", color: "transparent" },
+        textColor: "#718792",
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: "rgba(20,37,46,.72)" },
+        horzLines: { color: "rgba(20,37,46,.72)" },
+      },
+      rightPriceScale: {
+        borderColor: "#1a2b34",
+        scaleMargins: { top: 0.10, bottom: 0.10 },
+        minimumWidth: 74,
+      },
+      timeScale: {
+        borderColor: "#1a2b34",
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 3,
+        barSpacing: 8,
+        minBarSpacing: 4,
+      },
+      crosshair: {
+        vertLine: {
+          color: "rgba(105,215,233,.34)",
+          width: 1,
+          style: 3,
+          labelBackgroundColor: "#0b2027",
+        },
+        horzLine: {
+          color: "rgba(105,215,233,.22)",
+          width: 1,
+          style: 3,
+          labelBackgroundColor: "#0b2027",
+        },
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
+      },
+    });
+
+    const series = chart.addSeries(AreaSeries, {
+      lineColor: "#69d7e9",
+      topColor: "rgba(105,215,233,.28)",
+      bottomColor: "rgba(105,215,233,0)",
+      lineWidth: 2,
+      priceLineColor: "#69d7e9",
+      priceLineWidth: 1,
+      priceLineStyle: 3,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 4,
+      crosshairMarkerBorderColor: "#061017",
+      crosshairMarkerBackgroundColor: "#69d7e9",
+      title: displaySymbol,
+    });
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const resizeObserver = new ResizeObserver(() => {
+      chart.applyOptions({});
+    });
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+      lastLiveKeyRef.current = null;
+      lastChartTimeRef.current = 0;
+    };
+  }, [displaySymbol, resolution]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !history?.candles?.length) return;
+
+    const points = history.candles
+      .map(c => ({ time: toTime(c.time), value: c.close }))
+      .filter(p => Number.isFinite(p.time) && Number.isFinite(p.value))
+      .sort((a, b) => Number(a.time) - Number(b.time));
+
+    const deduped: Array<{ time: UTCTimestamp; value: number }> = [];
+    for (const point of points) {
+      const previousPoint = deduped[deduped.length - 1];
+      if (previousPoint && previousPoint.time === point.time) {
+        deduped[deduped.length - 1] = point;
+      } else {
+        deduped.push(point);
+      }
+    }
+
+    series.setData(deduped);
+    lastChartTimeRef.current = Number(deduped.at(-1)?.time || 0);
+    lastLiveKeyRef.current = null;
+    chartRef.current?.timeScale().fitContent();
+  }, [history?.symbol, history?.resolution, history?.candles.length]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !latestTrade?.price || !latestTrade.event_key) return;
+    if (latestTrade.event_key === lastLiveKeyRef.current) return;
+
+    const time = toTime(latestTrade.received_time);
+    if (!Number.isFinite(time)) return;
+
+    const previousTime = lastChartTimeRef.current;
+    if (time < previousTime) {
+      lastLiveKeyRef.current = latestTrade.event_key;
+      return;
+    }
+
+    series.update({ time, value: Number(latestTrade.price) });
+    lastChartTimeRef.current = Number(time);
+    lastLiveKeyRef.current = latestTrade.event_key;
+  }, [latestTrade?.event_key]);
 
   return (
     <section className="panel primary-chart-panel">
       <div className="primary-chart-head">
         <div>
-          <div className="eyebrow"><Icon name="chart" /> PRIMARY MARKET CHART <span className="chart-live-dot" /></div>
+          <div className="eyebrow">
+            <Icon name="chart" />
+            PRIMARY MARKET CHART
+            <span className="chart-live-dot" />
+          </div>
           <div className="primary-chart-title">
             <strong>{displaySymbol}</strong>
             <span>/{displayQuote}</span>
@@ -263,119 +360,30 @@ function PrimaryChart({
         </div>
         <div className="resolution-bar">
           {RESOLUTIONS.map(r => (
-            <button key={r} className={r === resolution ? "active" : ""} onClick={() => onResolution(r)}>
+            <button
+              key={r}
+              className={r === resolution ? "active" : ""}
+              onClick={() => onResolution(r)}
+              type="button"
+            >
               {r}
             </button>
           ))}
         </div>
       </div>
 
-      <div className="primary-chart-frame">
-        {values.length > 1 ? (
-          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-label="Live crypto price chart">
-            <defs>
-              <linearGradient id="primaryChartFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--cyan)" stopOpacity=".30" />
-                <stop offset="52%" stopColor="var(--cyan)" stopOpacity=".10" />
-                <stop offset="100%" stopColor="var(--cyan)" stopOpacity="0" />
-              </linearGradient>
-              <filter id="primaryChartGlow" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="3" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-              <linearGradient id="primaryChartTrace" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor="var(--cyan)" stopOpacity=".55" />
-                <stop offset="78%" stopColor="var(--cyan)" stopOpacity=".90" />
-                <stop offset="100%" stopColor="#baf6ff" stopOpacity="1" />
-              </linearGradient>
-            </defs>
-
-            {[0.16, 0.36, 0.56, 0.76].map(v => (
-              <line
-                key={v}
-                className="primary-gridline"
-                x1={pad.l}
-                x2={W - pad.r}
-                y1={H * v}
-                y2={H * v}
-              />
-            ))}
-
-            {[0.25, 0.5, 0.75].map(v => (
-              <line
-                key={`v-${v}`}
-                className="primary-gridline vertical"
-                x1={pad.l + innerW * v}
-                x2={pad.l + innerW * v}
-                y1={pad.t}
-                y2={H - pad.b}
-              />
-            ))}
-
-            <polygon className="primary-chart-area" points={areaPoints} />
-            <polyline
-              className="primary-chart-line"
-              points={linePoints}
-              stroke="url(#primaryChartTrace)"
-              filter="url(#primaryChartGlow)"
-            />
-
-            {current != null && (
-              <>
-                <line
-                  className="primary-price-line"
-                  x1={pad.l}
-                  x2={W - pad.r}
-                  y1={y(current)}
-                  y2={y(current)}
-                />
-                <circle
-                  className="primary-price-dot"
-                  cx={x(values.length - 1)}
-                  cy={y(current)}
-                  r="5.5"
-                />
-                <rect
-                  className="primary-price-label-bg"
-                  x={W - pad.r + 8}
-                  y={y(current) - 13}
-                  width="56"
-                  height="26"
-                  rx="7"
-                />
-                <text
-                  className="primary-price-label"
-                  x={W - pad.r + 36}
-                  y={y(current) + 4}
-                  textAnchor="middle"
-                >
-                  {fmt(current, current < 10 ? 4 : 1)}
-                </text>
-              </>
-            )}
-
-            {current != null && (
-              <circle
-                className="primary-live-pulse"
-                cx={x(values.length - 1)}
-                cy={y(current)}
-                r="9"
-              />
-            )}
-          </svg>
-        ) : (
-          <div className="empty">Waiting for live market observations.</div>
-        )}
-        <div className="chart-live-badge"><span />{live ? "LIVE STREAM" : "DURABLE HISTORY"}</div>
+      <div className="primary-chart-frame primary-chart-canvas">
+        <div ref={containerRef} className="lwc-market-chart" aria-label={`Live ${displaySymbol}/${displayQuote} market chart`} />
+        <div className="chart-live-badge">
+          <span />
+          {hasLive ? "LIVE STREAM" : "DURABLE HISTORY"}
+        </div>
       </div>
 
       <div className="primary-chart-foot">
-        <span>{live ? "live Binance market stream · durable context" : `${history?.resolution || resolution} · durable market ledger`}</span>
-        <span>{values.length} observations</span>
-        <span>low-latency visual read-model</span>
+        <span>{hasLive ? "Binance hot stream · durable context" : `${history?.resolution || resolution} · durable market ledger`}</span>
+        <span>{history?.candles?.length || 0} durable bars</span>
+        <span>canvas financial renderer</span>
       </div>
     </section>
   );
