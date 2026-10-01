@@ -216,7 +216,7 @@ def test_full_walk_forward_validation_stays_research_only() -> None:
     assert report.temporal_stability.passed is True
     assert "double_costs" in report.stress_results
     assert report.promotion_eligible is False
-    assert report.robustness_status == "BLOCKED"
+    assert report.research_robustness_status == "BLOCKED"
     assert "DSR_GATE_FAILED" in report.research_robustness_reasons
     assert "PBO_GATE_FAILED" in report.research_robustness_reasons
 
