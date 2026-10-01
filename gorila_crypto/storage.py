@@ -401,7 +401,7 @@ class CryptoStore:
             raise ValueError("crypto_sqlite_path_matches_legacy_storage")
         self._pg = bool(self.database_url)
         self._schema_ready = False
-        self._write_conn = None
+        self._write_local = threading.local()
 
     @property
     def backend(self) -> str:
@@ -427,15 +427,17 @@ class CryptoStore:
         return conn
 
     def _write_connection(self):
-        """Return a reusable writer connection for the hot ingestion path."""
+        """Return a reusable writer connection local to the calling thread."""
         self.init()
-        if self._write_conn is None:
-            self._write_conn = self.connect()
-        return self._write_conn
+        conn = getattr(self._write_local, "conn", None)
+        if conn is None or getattr(conn, "closed", False):
+            conn = self.connect()
+            self._write_local.conn = conn
+        return conn
 
     def close(self) -> None:
-        conn = self._write_conn
-        self._write_conn = None
+        conn = getattr(self._write_local, "conn", None)
+        self._write_local.conn = None
         if conn is not None:
             try:
                 conn.close()
