@@ -83,3 +83,60 @@ def test_evidence_spool_compresses_large_payload_and_roundtrips(tmp_path) -> Non
     assert batch.rows == [row]
     assert batch.byte_count < raw_size
     assert spool.stats()["bytes"] == batch.byte_count
+
+
+def test_evidence_spool_migrates_legacy_uncompressed_rows(tmp_path) -> None:
+    import sqlite3
+
+    path = tmp_path / "legacy.sqlite3"
+    row = _row()
+    payload_json = json.dumps(
+        [row], sort_keys=True, separators=(",", ":"), default=str
+    )
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(
+            """
+            CREATE TABLE evidence_spool_batches (
+                batch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                byte_count INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO evidence_spool_batches(
+                created_at,payload_json,byte_count
+            ) VALUES(?,?,?)
+            """,
+            ("2026-10-01T13:00:00+00:00", payload_json, len(payload_json.encode("utf-8"))),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    spool = EvidenceSpool(
+        path=str(path),
+        max_bytes=2 * 1024 * 1024,
+        max_batches=10,
+    )
+
+    batch = spool.peek()
+    assert batch is not None
+    assert batch.batch_id == 1
+    assert batch.rows == [row]
+    assert batch.byte_count < len(payload_json.encode("utf-8"))
+
+    conn = sqlite3.connect(path)
+    try:
+        migrated = conn.execute(
+            "SELECT payload_json,payload_zlib,byte_count FROM evidence_spool_batches WHERE batch_id=1"
+        ).fetchone()
+        assert migrated[0] == ""
+        assert migrated[1] is not None
+        assert migrated[2] == batch.byte_count
+    finally:
+        conn.close()
