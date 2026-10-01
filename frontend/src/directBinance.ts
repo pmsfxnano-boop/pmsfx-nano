@@ -21,6 +21,8 @@ export function createDirectBinanceFeed(
   let stopped = false;
   let reconnectTimer = 0;
   let reconnectMs = 500;
+  let snapshotTimer = 0;
+  let snapshotPending = false;
   let seq = 0;
   const events: MarketEvent[] = [];
   const latest: Record<string, SymbolMarket> = Object.fromEntries(
@@ -45,7 +47,12 @@ export function createDirectBinanceFeed(
   );
 
   const emit = () => {
+    snapshotPending = false;
+    snapshotTimer = 0;
     const now = Date.now();
+    if (events.length > 240) {
+      events.splice(0, events.length - 240);
+    }
     const symbols = SYMBOLS.map((symbol) => {
       const item = latest[symbol];
       const freshnessMs =
@@ -63,7 +70,16 @@ export function createDirectBinanceFeed(
               : "NO_DATA",
       };
     });
-    onSnapshot({ symbols, events: events.slice(-360) });
+    onSnapshot({ symbols, events: events.slice(-240) });
+  };
+
+  // The provider can deliver hundreds of messages per second. React does not
+  // need one component-tree render per tick, so coalesce provider bursts into
+  // ~12.5 visual updates/sec while preserving the latest state and tape.
+  const scheduleEmit = () => {
+    if (stopped || snapshotPending) return;
+    snapshotPending = true;
+    snapshotTimer = window.setTimeout(emit, 80);
   };
 
   const scheduleReconnect = () => {
@@ -81,7 +97,7 @@ export function createDirectBinanceFeed(
       socket = new WebSocket(URL);
       socket.onopen = () => {
         reconnectMs = 500;
-        emit();
+        scheduleEmit();
       };
       socket.onmessage = (message) => {
         try {
@@ -174,7 +190,7 @@ export function createDirectBinanceFeed(
           if (events.length > 720) {
             events.splice(0, events.length - 720);
           }
-          emit();
+          scheduleEmit();
         } catch {
           // Ignore malformed browser-side provider frames and remain connected.
         }
@@ -200,6 +216,7 @@ export function createDirectBinanceFeed(
   return () => {
     stopped = true;
     window.clearInterval(freshnessTimer);
+    if (snapshotTimer) window.clearTimeout(snapshotTimer);
     if (reconnectTimer) window.clearTimeout(reconnectTimer);
     reconnectTimer = 0;
     try {
