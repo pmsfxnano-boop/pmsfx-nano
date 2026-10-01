@@ -60,6 +60,7 @@ class BinanceStreamConfig:
     connect_timeout_s: float = 10.0
     ping_interval_s: float | None = None
     recv_timeout_s: float = 20.0
+    websocket_read_poll_timeout_s: float = 2.0
     market_data_stall_timeout_s: float = 10.0
     connection_max_seconds: float = 23.5 * 3600.0
 
@@ -78,8 +79,12 @@ class BinanceStreamConfig:
             raise ValueError("depth_limit must be between 1 and 5000")
         if self.connect_timeout_s <= 0 or self.recv_timeout_s <= 0:
             raise ValueError("timeouts must be positive")
+        if self.websocket_read_poll_timeout_s <= 0:
+            raise ValueError("websocket_read_poll_timeout_s must be positive")
         if self.market_data_stall_timeout_s <= 0:
             raise ValueError("market_data_stall_timeout_s must be positive")
+        if self.websocket_read_poll_timeout_s >= self.market_data_stall_timeout_s:
+            raise ValueError("websocket_read_poll_timeout_s must be below market_data_stall_timeout_s")
         object.__setattr__(self, "symbols", symbols)
         object.__setattr__(self, "streams", streams)
 
@@ -479,6 +484,9 @@ class BinanceSpotMarketAdapter:
             ping_interval=self.config.ping_interval_s,
             enable_multithread=True,
         )
+        # Keep recv bounded so the application-level market-data watchdog
+        # continues to run even when the underlying TCP/WebSocket stalls.
+        ws.settimeout(self.config.websocket_read_poll_timeout_s)
         ws.send(json.dumps(self.subscription_request(), separators=(",", ":")))
         return ws
 
@@ -493,7 +501,18 @@ class BinanceSpotMarketAdapter:
         connected_ns = time.time_ns()
         last_market_event_monotonic = time.monotonic()
         while (time.time_ns() - connected_ns) / 1_000_000_000 < self.config.connection_max_seconds:
-            raw = ws.recv()
+            try:
+                raw = ws.recv()
+            except websocket.WebSocketTimeoutException:
+                now_monotonic = time.monotonic()
+                stall_seconds = now_monotonic - last_market_event_monotonic
+                if stall_seconds > self.config.market_data_stall_timeout_s:
+                    raise BinanceAdapterError(
+                        "market_data_stall_timeout:"
+                        f"{stall_seconds:.3f}s>"
+                        f"{self.config.market_data_stall_timeout_s:.3f}s"
+                    )
+                continue
             if raw is None:
                 break
 
