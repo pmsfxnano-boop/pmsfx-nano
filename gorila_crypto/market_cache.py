@@ -288,8 +288,11 @@ class MarketReadCache:
                     symbol: book.__dict__ for symbol, book in latest_books.items()
                 },
                 "cache_events_available": all_events,
+                # Advance the cursor only through events actually delivered in
+                # this response. Never skip cached events that are still pending
+                # delivery to the client.
                 "next_cursor": max(
-                    [event.stream_seq for symbol in requested for event in self._events.get(symbol, ())] + [int(cursor)]
+                    [event.stream_seq for event in events] + [int(cursor)]
                 ),
                 "cursor_kind": "market_stream_v1",
                 "last_durable_stream_seq": self._last_durable_stream_seq,
