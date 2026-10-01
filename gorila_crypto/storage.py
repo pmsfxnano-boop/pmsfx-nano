@@ -15,6 +15,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 CRYPTO_DB_SCHEMA = os.getenv("GORILA_CRYPTO_DB_SCHEMA", "gorila_crypto").strip()
 if not CRYPTO_DB_SCHEMA.replace("_", "").isalnum():
@@ -328,6 +329,30 @@ def _pg_identifier(value: str) -> str:
     return value.replace('"', '""')
 
 
+def _rewrite_database_url_for_external_host(
+    database_url: str,
+    external_host: str | None = None,
+) -> str:
+    """Rewrite only the network endpoint for controlled cross-region Postgres use.
+
+    Render's `fromDatabase.connectionString` is private-network scoped. A Frankfurt
+    consumer must use the database's external endpoint with TLS. Credentials remain
+    entirely inside the original URL/env var and are never written to source control.
+    """
+    override = (external_host or os.getenv("GORILA_CRYPTO_DATABASE_HOST_OVERRIDE", "")).strip()
+    if not override:
+        return database_url
+    parsed = urlsplit(database_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.netloc:
+        raise ValueError("invalid_postgres_database_url_for_external_host_override")
+    userinfo = parsed.netloc.rsplit("@", 1)[0] if "@" in parsed.netloc else ""
+    port = parsed.port or 5432
+    netloc = f"{userinfo}@{override}:{port}" if userinfo else f"{override}:{port}"
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["sslmode"] = "require"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
 class LedgerIntegrityError(RuntimeError):
     """Raised when the same provider identity is delivered with different content."""
 
@@ -344,9 +369,10 @@ class CryptoStore:
         sqlite_path: str | None = None,
         require_durable: bool = False,
     ) -> None:
-        self.database_url = (
+        raw_database_url = (
             database_url if database_url is not None else CRYPTO_DATABASE_URL
         ).strip()
+        self.database_url = _rewrite_database_url_for_external_host(raw_database_url)
         self.require_durable = bool(require_durable)
         if self.require_durable and not self.database_url:
             raise RuntimeError(
@@ -364,6 +390,7 @@ class CryptoStore:
             raise ValueError("crypto_sqlite_path_matches_legacy_storage")
         self._pg = bool(self.database_url)
         self._schema_ready = False
+        self._write_conn = None
 
     @property
     def backend(self) -> str:
@@ -390,6 +417,22 @@ class CryptoStore:
         conn = sqlite3.connect(self.sqlite_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _write_connection(self):
+        """Return a reusable writer connection for the hot ingestion path."""
+        self.init()
+        if self._write_conn is None:
+            self._write_conn = self.connect()
+        return self._write_conn
+
+    def close(self) -> None:
+        conn = self._write_conn
+        self._write_conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def init(self) -> None:
         if self._pg:
@@ -493,7 +536,7 @@ class CryptoStore:
             _json(metadata or {}),
             recorded_at,
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -570,8 +613,189 @@ class CryptoStore:
                     }
             conn.commit()
             return result
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
+
+
+    def append_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Append a batch of immutable events in one transaction.
+
+        Event identity and payload integrity use the exact same rules as append_event.
+        The batch path exists to prevent Postgres transaction latency from throttling
+        the live market-data transport. Results preserve input order.
+        """
+        self.init()
+        if not events:
+            return []
+
+        prepared: list[dict[str, Any]] = []
+        for raw in events:
+            item = dict(raw)
+            symbol = str(item["symbol"]).upper()
+            event_type = str(item["event_type"])
+            payload = dict(item["payload"])
+            payload_json = _json(payload)
+            payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+            sequence_start = item.get("sequence_start")
+            sequence_end = item.get("sequence_end")
+            source = str(item["source"])
+            event_time = str(item["event_time"])
+            provider_time = item.get("provider_time")
+            identity = {
+                "source": source,
+                "symbol": symbol,
+                "event_type": event_type,
+                "sequence_start": sequence_start,
+                "sequence_end": sequence_end,
+            }
+            if sequence_start is None or sequence_end is None:
+                identity.update(
+                    {
+                        "event_time": event_time,
+                        "provider_time": provider_time,
+                        "payload_hash": payload_hash,
+                    }
+                )
+            event_key = str(item.get("event_key") or hashlib.sha256(
+                _json(identity).encode("utf-8")
+            ).hexdigest())
+            event_id = str(item.get("event_id") or uuid.uuid4())
+            prepared.append(
+                {
+                    "event_id": event_id,
+                    "event_key": event_key,
+                    "symbol": symbol,
+                    "event_type": event_type,
+                    "event_time": event_time,
+                    "received_time": str(item["received_time"]),
+                    "provider_time": provider_time,
+                    "source": source,
+                    "sequence_start": sequence_start,
+                    "sequence_end": sequence_end,
+                    "payload_hash": payload_hash,
+                    "payload_json": payload_json,
+                    "quality": str(item.get("quality") or "OK"),
+                    "metadata": _json(item.get("metadata") or {}),
+                    "recorded_at": str(item.get("recorded_at") or _utc_now()),
+                }
+            )
+
+        keys = [row["event_key"] for row in prepared]
+        conn = self._write_connection()
+        try:
+            existing: dict[str, tuple[int, str, str]] = {}
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT event_key,ledger_seq,event_id,payload_hash "
+                        "FROM crypto_events WHERE event_key = ANY(%s)",
+                        (keys,),
+                    )
+                    for key, ledger_seq, event_id, payload_hash in cur.fetchall():
+                        existing[str(key)] = (int(ledger_seq), str(event_id), str(payload_hash))
+
+                    sql = """
+                        INSERT INTO crypto_events(
+                            event_id,event_key,symbol,event_type,event_time,received_time,
+                            provider_time,source,sequence_start,sequence_end,payload_hash,
+                            payload_json,quality,metadata,recorded_at
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(event_key) DO NOTHING
+                    """
+                    values = [
+                        (
+                            row["event_id"], row["event_key"], row["symbol"], row["event_type"],
+                            row["event_time"], row["received_time"], row["provider_time"],
+                            row["source"], row["sequence_start"], row["sequence_end"],
+                            row["payload_hash"], row["payload_json"], row["quality"],
+                            row["metadata"], row["recorded_at"],
+                        )
+                        for row in prepared
+                    ]
+                    cur.executemany(sql, values)
+                    cur.execute(
+                        "SELECT event_key,ledger_seq,event_id,payload_hash "
+                        "FROM crypto_events WHERE event_key = ANY(%s)",
+                        (keys,),
+                    )
+                    rows = cur.fetchall()
+                    found = {
+                        str(key): (int(ledger_seq), str(event_id), str(payload_hash))
+                        for key, ledger_seq, event_id, payload_hash in rows
+                    }
+            else:
+                placeholders = ",".join("?" for _ in keys)
+                rows = conn.execute(
+                    "SELECT event_key,ledger_seq,event_id,payload_hash "
+                    f"FROM crypto_events WHERE event_key IN ({placeholders})",
+                    keys,
+                ).fetchall()
+                for row in rows:
+                    existing[str(row[0])] = (int(row[1]), str(row[2]), str(row[3]))
+
+                sql = """
+                    INSERT OR IGNORE INTO crypto_events(
+                        event_id,event_key,symbol,event_type,event_time,received_time,
+                        provider_time,source,sequence_start,sequence_end,payload_hash,
+                        payload_json,quality,metadata,recorded_at
+                    )
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """
+                values = [
+                    (
+                        row["event_id"], row["event_key"], row["symbol"], row["event_type"],
+                        row["event_time"], row["received_time"], row["provider_time"],
+                        row["source"], row["sequence_start"], row["sequence_end"],
+                        row["payload_hash"], row["payload_json"], row["quality"],
+                        row["metadata"], row["recorded_at"],
+                    )
+                    for row in prepared
+                ]
+                conn.executemany(sql, values)
+                placeholders = ",".join("?" for _ in keys)
+                rows = conn.execute(
+                    "SELECT event_key,ledger_seq,event_id,payload_hash "
+                    f"FROM crypto_events WHERE event_key IN ({placeholders})",
+                    keys,
+                ).fetchall()
+                found = {
+                    str(row[0]): (int(row[1]), str(row[2]), str(row[3]))
+                    for row in rows
+                }
+
+            if len(found) != len(set(keys)):
+                raise RuntimeError("event_batch_resolution_failed")
+
+            results: list[dict[str, Any]] = []
+            for row in prepared:
+                resolved = found[row["event_key"]]
+                if resolved[2] != row["payload_hash"]:
+                    raise LedgerIntegrityError(
+                        "provider_identity_conflict: existing payload hash differs"
+                    )
+                was_existing = row["event_key"] in existing
+                results.append(
+                    {
+                        "inserted": not was_existing,
+                        "ledger_seq": resolved[0],
+                        "event_id": resolved[1],
+                        "event_key": row["event_key"],
+                    }
+                )
+
+            conn.commit()
+            return results
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def record_event(
         self,
@@ -614,8 +838,10 @@ class CryptoStore:
         end_received_time: str | None = None,
         start_event_time: str | None = None,
         end_event_time: str | None = None,
+        source_prefix: str | None = None,
         order: str = "ingest",
         limit: int = 100000,
+        include_payload: bool = True,
     ) -> list[dict[str, Any]]:
         """Read immutable ledger rows using an explicit deterministic ordering."""
         self.init()
@@ -638,6 +864,9 @@ class CryptoStore:
         if source is not None:
             clauses.append(f"source={placeholder}")
             params.append(source)
+        if source_prefix is not None:
+            clauses.append(f"source LIKE {placeholder}")
+            params.append(source_prefix.rstrip("%") + "%")
         if start_received_time is not None:
             clauses.append(f"received_time>={placeholder}")
             params.append(start_received_time)
@@ -655,10 +884,11 @@ class CryptoStore:
         limit_sql = f" LIMIT {int(limit)}"
         conn = self.connect()
         try:
+            payload_column = "payload_json" if include_payload else "NULL AS payload_json"
             query = (
                 "SELECT ledger_seq,event_id,event_key,symbol,event_type,event_time,"
                 "received_time,provider_time,source,sequence_start,sequence_end,"
-                "payload_hash,payload_json,quality,metadata,recorded_at "
+                f"payload_hash,{payload_column},quality,metadata,recorded_at "
                 f"FROM crypto_events{where} ORDER BY {order_by}{limit_sql}"
             )
             if self._pg:
@@ -679,7 +909,7 @@ class CryptoStore:
                             "sequence_start": row[9],
                             "sequence_end": row[10],
                             "payload_hash": str(row[11]),
-                            "payload": json.loads(row[12]),
+                            "payload": json.loads(row[12]) if row[12] is not None else None,
                             "quality": str(row[13]),
                             "metadata": json.loads(row[14]),
                             "recorded_at": str(row[15]),
@@ -702,7 +932,7 @@ class CryptoStore:
                     "sequence_start": row["sequence_start"],
                     "sequence_end": row["sequence_end"],
                     "payload_hash": str(row["payload_hash"]),
-                    "payload": json.loads(row["payload_json"]),
+                    "payload": json.loads(row["payload_json"]) if row["payload_json"] is not None else None,
                     "quality": str(row["quality"]),
                     "metadata": json.loads(row["metadata"]),
                     "recorded_at": str(row["recorded_at"]),
@@ -731,7 +961,7 @@ class CryptoStore:
             reason,
             _json(metadata or {}),
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -750,8 +980,12 @@ class CryptoStore:
                 )
             conn.commit()
             return connection_id
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def save_replay_manifest(self, manifest: dict[str, Any]) -> str:
         self.init()
@@ -1299,7 +1533,7 @@ class CryptoStore:
             status,
             _json(metadata or {}),
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -1321,8 +1555,12 @@ class CryptoStore:
                 )
             conn.commit()
             return gap_id
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def upsert_source_health(
         self,
@@ -1348,7 +1586,7 @@ class CryptoStore:
             int(rows_last_batch),
             error,
         )
-        conn = self.connect()
+        conn = self._write_connection()
         try:
             if self._pg:
                 with conn.cursor() as cur:
@@ -1386,8 +1624,12 @@ class CryptoStore:
                     values,
                 )
             conn.commit()
-        finally:
-            conn.close()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
 
     def start_runtime_run(self, *, kind: str, run_id: str | None = None) -> str:
         self.init()
@@ -1534,21 +1776,33 @@ class CryptoStore:
         finally:
             conn.close()
 
-    def read_data_gaps(self, *, limit: int = 10000) -> list[dict[str, Any]]:
+    def read_data_gaps(
+        self,
+        *,
+        source_prefix: str | None = None,
+        limit: int = 10000,
+    ) -> list[dict[str, Any]]:
         self.init()
         if limit < 1:
             raise ValueError("limit must be positive")
         conn = self.connect()
         try:
+            placeholder = "%s" if self._pg else "?"
+            params: list[Any] = []
+            where = ""
+            if source_prefix is not None:
+                where = f" WHERE source LIKE {placeholder}"
+                params.append(source_prefix.rstrip("%") + "%")
             query = (
                 "SELECT gap_id,detected_at,symbol,source,expected_sequence,"
-                "observed_sequence,status,metadata FROM crypto_data_gaps "
-                "ORDER BY detected_at DESC LIMIT "
+                "observed_sequence,status,metadata FROM crypto_data_gaps"
+                + where
+                + " ORDER BY detected_at DESC LIMIT "
                 + str(int(limit))
             )
             if self._pg:
                 with conn.cursor() as cur:
-                    cur.execute(query)
+                    cur.execute(query, params)
                     rows = cur.fetchall()
                     keys = [
                         "gap_id","detected_at","symbol","source",
@@ -1559,7 +1813,7 @@ class CryptoStore:
                          for key, value in zip(keys, row)}
                         for row in rows
                     ]
-            rows = conn.execute(query).fetchall()
+            rows = conn.execute(query, params).fetchall()
             return [
                 {
                     **dict(row),
@@ -1570,10 +1824,20 @@ class CryptoStore:
         finally:
             conn.close()
 
-    def prospective_stats(self) -> dict[str, Any]:
+    def prospective_stats(
+        self,
+        *,
+        source_prefix: str | None = None,
+    ) -> dict[str, Any]:
         self.init()
         conn = self.connect()
         try:
+            placeholder = "%s" if self._pg else "?"
+            params: list[Any] = []
+            event_where = ""
+            if source_prefix is not None:
+                event_where = f" WHERE source LIKE {placeholder}"
+                params.append(source_prefix.rstrip("%") + "%")
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -1582,9 +1846,11 @@ class CryptoStore:
                            MAX(event_time) AS last_event_time,
                            MIN(received_time) AS first_received_time,
                            MAX(received_time) AS last_received_time
-                        FROM crypto_events
-                        GROUP BY symbol,event_type
-                        ORDER BY symbol,event_type"""
+                        FROM crypto_events"""
+                        + event_where
+                        + """ GROUP BY symbol,event_type
+                           ORDER BY symbol,event_type""",
+                        params,
                     )
                     counts = [
                         {
@@ -1598,7 +1864,13 @@ class CryptoStore:
                         }
                         for row in cur.fetchall()
                     ]
-                    cur.execute("SELECT COUNT(*) FROM crypto_data_gaps")
+                    if source_prefix is not None:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM crypto_data_gaps WHERE source LIKE " + placeholder,
+                            [source_prefix.rstrip("%") + "%"],
+                        )
+                    else:
+                        cur.execute("SELECT COUNT(*) FROM crypto_data_gaps")
                     gap_count = int(cur.fetchone()[0])
                     cur.execute(
                         "SELECT status,created_at,result FROM crypto_runtime_runs "
@@ -1614,13 +1886,23 @@ class CryptoStore:
                            MAX(event_time) AS last_event_time,
                            MIN(received_time) AS first_received_time,
                            MAX(received_time) AS last_received_time
-                        FROM crypto_events
-                        GROUP BY symbol,event_type
-                        ORDER BY symbol,event_type"""
+                        FROM crypto_events"""
+                        + event_where
+                        + """ GROUP BY symbol,event_type
+                           ORDER BY symbol,event_type""",
+                        params,
                     ).fetchall()
                 ]
+                gap_query = (
+                    "SELECT COUNT(*) FROM crypto_data_gaps WHERE source LIKE ?"
+                    if source_prefix is not None
+                    else "SELECT COUNT(*) FROM crypto_data_gaps"
+                )
                 gap_count = int(
-                    conn.execute("SELECT COUNT(*) FROM crypto_data_gaps").fetchone()[0]
+                    conn.execute(
+                        gap_query,
+                        [source_prefix.rstrip("%") + "%"] if source_prefix is not None else [],
+                    ).fetchone()[0]
                 )
                 runtime_row = conn.execute(
                     "SELECT status,created_at,result FROM crypto_runtime_runs "
@@ -1643,16 +1925,25 @@ class CryptoStore:
         finally:
             conn.close()
 
-    def health(self) -> list[dict[str, Any]]:
+    def health(self, *, source_prefix: str | None = None) -> list[dict[str, Any]]:
         self.init()
         conn = self.connect()
         try:
+            placeholder = "%s" if self._pg else "?"
+            where = ""
+            params: list[Any] = []
+            if source_prefix is not None:
+                where = f" WHERE source LIKE {placeholder}"
+                params.append(source_prefix.rstrip("%") + "%")
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT source,status,updated_at,last_event_time,last_received_time,"
                         "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                        "FROM crypto_source_health ORDER BY source"
+                        "FROM crypto_source_health"
+                        + where
+                        + " ORDER BY source",
+                        params,
                     )
                     rows = cur.fetchall()
                     return [
@@ -1670,7 +1961,10 @@ class CryptoStore:
             rows = conn.execute(
                 "SELECT source,status,updated_at,last_event_time,last_received_time,"
                 "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                "FROM crypto_source_health ORDER BY source"
+                "FROM crypto_source_health"
+                + where
+                + " ORDER BY source",
+                params,
             ).fetchall()
             return [dict(row) for row in rows]
         finally:
