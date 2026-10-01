@@ -17,7 +17,7 @@ from typing import Mapping
 from .lead_lag import LeadLagConfig, PricePoint
 
 
-FEATURE_SET_VERSION = "crypto_microstructure_alpha_v1"
+FEATURE_SET_VERSION = "crypto_microstructure_alpha_v2"
 
 # Frozen alpha family for the next validation cohort.  The current capture remains
 # descriptive/shadow until the complete prospective protocol is mature.
