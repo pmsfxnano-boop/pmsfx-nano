@@ -361,6 +361,7 @@ def _sql_quality_report(
                            ) AS previous_received
                     FROM crypto_events e
                     WHERE {_scope_where()}
+                      AND e.quality <> 'TRANSPORT_TIME_ONLY'
                 ) x
                 WHERE x.previous_received IS NOT NULL
                   AND x.received_time < x.previous_received
