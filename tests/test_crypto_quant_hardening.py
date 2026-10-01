@@ -119,6 +119,13 @@ def test_research_protocol_declares_candidate_family() -> None:
     assert PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas == (0.1, 1.0, 10.0)
     assert PREREGISTERED_CRYPTO_PROTOCOL.cscv_groups == 6
 
+def test_v3_quality_gate_accounts_for_durable_trade_sampling() -> None:
+    config = PREREGISTERED_CRYPTO_PROTOCOL.quality_config()
+    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "3"
+    assert PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate == 0.05
+    assert config["required_event_type_min_rows"]["trade"] == 5000
+
+
 def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
     from gorila_crypto.ledger import ReplaySpec, replay
 
