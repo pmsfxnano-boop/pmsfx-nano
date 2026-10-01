@@ -275,3 +275,65 @@ def test_crypto_storage_rejects_legacy_sqlite_path_reuse(
     monkeypatch.setenv("GORILA_SQLITE_PATH", str(legacy_path))
     with pytest.raises(ValueError, match="crypto_sqlite_path_matches_legacy_storage"):
         CryptoStore(sqlite_path=str(legacy_path))
+
+
+
+def test_postgres_normal_connections_do_not_take_schema_advisory_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    class FakeCursor:
+        def __init__(self, conn) -> None:
+            self.conn = conn
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            self.conn.sql.append(str(sql))
+
+        def fetchone(self):
+            return None
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.sql = []
+
+        def cursor(self):
+            return FakeCursor(self)
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    conn = FakeConnection()
+    monkeypatch.setitem(
+        sys.modules,
+        "psycopg",
+        SimpleNamespace(connect=lambda _url: conn),
+    )
+
+    db_url = "postgresql://user:pass@example.test:5432/crypto_lock_test"
+    store = CryptoStore(database_url=db_url)
+
+    store.connect().close()
+    assert not any("pg_advisory_xact_lock" in sql for sql in conn.sql)
+
+    store.init()
+    assert any("pg_advisory_xact_lock" in sql for sql in conn.sql)
+
+    before_second_init = len(conn.sql)
+    second = CryptoStore(database_url=db_url)
+    second.init()
+    second_calls = conn.sql[before_second_init:]
+    assert not any("pg_advisory_xact_lock" in sql for sql in second_calls)

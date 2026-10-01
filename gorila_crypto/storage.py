@@ -381,6 +381,7 @@ class CryptoStore:
     """Storage boundary that can only address the Crypto persistence namespace."""
 
     _schema_lock = threading.Lock()
+    _pg_schema_ready_urls: set[str] = set()
 
     def __init__(
         self,
@@ -427,9 +428,6 @@ class CryptoStore:
             conn = psycopg.connect(self.database_url)
             schema = _pg_identifier(CRYPTO_DB_SCHEMA)
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext('gorila_crypto_schema_v1'))"
-                )
                 cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 cur.execute(f'SET search_path TO "{schema}"')
             return conn
@@ -457,13 +455,21 @@ class CryptoStore:
     def init(self) -> None:
         if self._pg:
             with self._schema_lock:
-                if self._schema_ready:
+                if self._schema_ready or self.database_url in self._pg_schema_ready_urls:
+                    self._schema_ready = True
                     return
                 conn = self.connect()
                 try:
                     with conn.cursor() as cur:
+                        # Schema bootstrap is the only operation allowed to hold
+                        # the process-wide PostgreSQL advisory lock. Normal reads
+                        # and writes must never serialize behind schema setup.
+                        cur.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext('gorila_crypto_schema_v1'))"
+                        )
                         cur.execute(SCHEMA)
                     conn.commit()
+                    self._pg_schema_ready_urls.add(self.database_url)
                     self._schema_ready = True
                 except Exception:
                     conn.rollback()
