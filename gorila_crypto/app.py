@@ -910,4 +910,7 @@ def config_snapshot() -> dict[str, Any]:
         "retention_trade_hours": settings.retention_trade_hours,
         "retention_bookticker_hours": settings.retention_bookticker_hours,
         "retention_depth_hours": settings.retention_depth_hours,
+        "persistence_spool_path": settings.persistence_spool_path,
+        "persistence_spool_max_bytes": settings.persistence_spool_max_bytes,
+        "persistence_spool_max_batches": settings.persistence_spool_max_batches,
     }
