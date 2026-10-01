@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import queue
 import threading
 import time
@@ -378,9 +379,48 @@ class ProspectiveCryptoIngestor:
             self._spool_failed_rows(rows)
         self._flush_source_health(force=True)
 
+    def _trade_sample_eligible(self, event: NormalizedMarketEvent) -> bool:
+        """Deterministic, PIT-neutral sampling of durable trade observations."""
+        if event.event_type != "trade":
+            return True
+        trade_id = event.sequence_start
+        if trade_id is None:
+            return False
+        rate = float(self.protocol.trade_persistence_sample_rate)
+        digest = hashlib.sha256(
+            f"{self.protocol.protocol_hash}|{event.symbol.upper()}|{int(trade_id)}".encode("utf-8")
+        ).digest()
+        bucket = int.from_bytes(digest[:8], "big") / float(2**64)
+        return bucket < rate
+
+    @staticmethod
+    def _compact_payload(event: NormalizedMarketEvent) -> dict[str, Any]:
+        """Persist only canonical fields required for PIT/OOS replay."""
+        payload = event.payload
+        if event.event_type == "trade":
+            return {
+                "e": "trade",
+                "s": event.symbol.upper(),
+                "t": int(event.sequence_start) if event.sequence_start is not None else payload.get("t"),
+                "p": payload.get("p"),
+                "q": payload.get("q"),
+                "m": payload.get("m"),
+            }
+        if event.event_type == "bookTicker":
+            return {
+                "e": "bookTicker",
+                "s": event.symbol.upper(),
+                "u": int(event.sequence_end) if event.sequence_end is not None else payload.get("u"),
+                "b": payload.get("b"),
+                "B": payload.get("B"),
+                "a": payload.get("a"),
+                "A": payload.get("A"),
+            }
+        return dict(payload)
+
     def _should_persist(self, event: NormalizedMarketEvent) -> bool:
         if event.event_type == "trade":
-            return True
+            return self._trade_sample_eligible(event)
         if event.event_type == "bookTicker":
             symbol = event.symbol.upper()
             now_monotonic = time.monotonic()
@@ -615,11 +655,8 @@ class ProspectiveCryptoIngestor:
             quality=event.quality,
             metadata={
                 "sequence_kind": event.sequence_kind,
-                "receive_time_ns": event.receive_time_ns,
                 "runtime_run_id": self.run_id,
                 "ingest_epoch": self.sequence.epoch,
-                "event_age_seconds": assessment["event_age_seconds"],
-                "received_age_seconds": assessment["received_age_seconds"],
                 "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
@@ -685,13 +722,22 @@ class ProspectiveCryptoIngestor:
             self._symbol_last_received[symbol] = received_time
 
         if self._should_persist(event):
+            sample_rate = (
+                float(self.protocol.trade_persistence_sample_rate)
+                if event.event_type == "trade"
+                else 1.0
+            )
+            event_kwargs["payload"] = self._compact_payload(event)
             event_kwargs["metadata"] = {
                 **dict(event_kwargs["metadata"]),
                 "persistence_policy": (
-                    "FULL_TRADE"
+                    "DETERMINISTIC_TRADE_SAMPLE"
                     if event.event_type == "trade"
-                    else "SAMPLED_BOOKTICKER"
+                    else "BOOKTICKER_1S_SNAPSHOT"
                 ),
+                "sampling_contract": self.protocol.persistence_contract_version,
+                "sampling_rate": sample_rate,
+                "sample_weight": (1.0 / sample_rate) if sample_rate > 0 else None,
             }
             if self._pending_event_started_monotonic is None:
                 self._pending_event_started_monotonic = now_monotonic
