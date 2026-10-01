@@ -1,0 +1,9 @@
+{
+  "name": "Gorila Argentum",
+  "short_name": "Gorila",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#07090c",
+  "theme_color": "#07090c",
+  "description": "Terminal cuantitativo de investigación para el mercado argentino."
+}
