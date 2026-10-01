@@ -45,6 +45,9 @@ FEATURE_NAMES = (
     "leader_microprice_gap_bps",
     "leader_trade_flow_z",
     "leader_trade_intensity",
+    "leader_trade_excitation",
+    "leader_quote_excitation",
+    "leader_queue_pressure",
     "leader_depth_activity",
     "leader_realized_vol_bps",
     "leader_transport_age_ms",
@@ -53,11 +56,17 @@ FEATURE_NAMES = (
     "target_microprice_gap_bps",
     "target_trade_flow_z",
     "target_trade_intensity",
+    "target_trade_excitation",
+    "target_quote_excitation",
+    "target_queue_pressure",
     "target_depth_activity",
     "target_realized_vol_bps",
     "target_transport_age_ms",
     "cross_imbalance_delta",
     "cross_flow_delta",
+    "cross_trade_excitation_delta",
+    "cross_quote_excitation_delta",
+    "cross_queue_pressure_delta",
     "cross_depth_activity_delta",
     "cross_vol_delta",
     "transport_age_delta_ms",
@@ -163,6 +172,37 @@ class OnlineMoments:
         return obj
 
 
+class DecayIntensity:
+    """Exponentially decaying event intensity, updated online in receive time."""
+
+    def __init__(self, tau_ms: float) -> None:
+        self.tau_ms = float(tau_ms)
+        self.value = 0.0
+        self.last_time: datetime | None = None
+
+    def update(self, received_time: datetime, mark: float = 1.0) -> float:
+        if self.last_time is not None:
+            dt = max(0.0, _ms(received_time, self.last_time))
+            self.value *= math.exp(-dt / max(self.tau_ms, 1e-6))
+        self.value += float(mark)
+        self.last_time = received_time
+        return self.value
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "tau_ms": self.tau_ms,
+            "value": self.value,
+            "last_time": self.last_time.isoformat() if self.last_time else None,
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "DecayIntensity":
+        obj = cls(float(payload.get("tau_ms", 250.0)))
+        obj.value = float(payload.get("value", 0.0))
+        obj.last_time = _dt(payload["last_time"]) if payload.get("last_time") else None
+        return obj
+
+
 @dataclass
 class SymbolMicrostructure:
     symbol: str
@@ -177,7 +217,11 @@ class SymbolMicrostructure:
     last_depth_received: datetime | None = None
     last_market_received: datetime | None = None
     signed_flow: EWMA = field(default_factory=EWMA)
+    flow_z_signal: EWMA = field(default_factory=EWMA)
     trade_intensity: EWMA = field(default_factory=EWMA)
+    trade_excitation: DecayIntensity = field(default_factory=lambda: DecayIntensity(250.0))
+    quote_excitation: DecayIntensity = field(default_factory=lambda: DecayIntensity(150.0))
+    queue_pressure: EWMA = field(default_factory=EWMA)
     realized_vol: EWMA = field(default_factory=EWMA)
     depth_activity: EWMA = field(default_factory=EWMA)
     flow_moments: OnlineMoments = field(default_factory=lambda: OnlineMoments(alpha=0.02))
@@ -187,10 +231,20 @@ class SymbolMicrostructure:
         if event_type in {"bookTicker", "depthUpdate"}:
             if event_type == "bookTicker":
                 self.last_market_received = received_time
+                previous_bid_size = self.bid_size
+                previous_ask_size = self.ask_size
+                previous_total = previous_bid_size + previous_ask_size
                 bid = _safe_float(payload.get("b"), self.bid or 0.0)
                 ask = _safe_float(payload.get("a"), self.ask or 0.0)
                 self.bid_size = max(0.0, _safe_float(payload.get("B"), self.bid_size))
                 self.ask_size = max(0.0, _safe_float(payload.get("A"), self.ask_size))
+                if previous_total > 0:
+                    queue_delta = (
+                        (self.bid_size - previous_bid_size)
+                        - (self.ask_size - previous_ask_size)
+                    ) / previous_total
+                    self.queue_pressure.update(max(-1.0, min(1.0, queue_delta)))
+                self.quote_excitation.update(received_time)
             else:
                 # Binance diff-depth is a delta stream, not a standalone L2 snapshot.
                 # Do not pretend its first level is the best level. Track activity only
@@ -217,7 +271,10 @@ class SymbolMicrostructure:
             aggressor_sign = -1.0 if bool(payload.get("m")) else 1.0
             signed_notional = aggressor_sign * price * qty
             self.signed_flow.update(signed_notional)
-            self.flow_moments.update(signed_notional)
+            mean_flow, var_flow = self.flow_moments.update(signed_notional)
+            raw_flow_z = _zscore(signed_notional, mean_flow, var_flow)
+            self.flow_z_signal.update(max(-12.0, min(12.0, raw_flow_z)))
+            self.trade_excitation.update(received_time)
 
             if self.last_trade_received is not None:
                 dt_ms = max(0.001, _ms(received_time, self.last_trade_received))
@@ -269,7 +326,11 @@ class SymbolMicrostructure:
             "last_depth_received": self.last_depth_received.isoformat() if self.last_depth_received else None,
             "last_market_received": self.last_market_received.isoformat() if self.last_market_received else None,
             "signed_flow": self.signed_flow.state(),
+            "flow_z_signal": self.flow_z_signal.state(),
             "trade_intensity": self.trade_intensity.state(),
+            "trade_excitation": self.trade_excitation.state(),
+            "quote_excitation": self.quote_excitation.state(),
+            "queue_pressure": self.queue_pressure.state(),
             "realized_vol": self.realized_vol.state(),
             "depth_activity": self.depth_activity.state(),
             "flow_moments": self.flow_moments.state(),
@@ -292,7 +353,15 @@ class SymbolMicrostructure:
         obj.last_depth_received = _dt(payload["last_depth_received"]) if payload.get("last_depth_received") else None
         obj.last_market_received = _dt(payload["last_market_received"]) if payload.get("last_market_received") else None
         obj.signed_flow = EWMA.from_state(payload.get("signed_flow") or {})
+        obj.flow_z_signal = EWMA.from_state(payload.get("flow_z_signal") or {})
         obj.trade_intensity = EWMA.from_state(payload.get("trade_intensity") or {})
+        obj.trade_excitation = DecayIntensity.from_state(
+            payload.get("trade_excitation") or {"tau_ms": 250.0}
+        )
+        obj.quote_excitation = DecayIntensity.from_state(
+            payload.get("quote_excitation") or {"tau_ms": 150.0}
+        )
+        obj.queue_pressure = EWMA.from_state(payload.get("queue_pressure") or {})
         obj.realized_vol = EWMA.from_state(payload.get("realized_vol") or {})
         obj.depth_activity = EWMA.from_state(payload.get("depth_activity") or {})
         obj.flow_moments = OnlineMoments.from_state(payload.get("flow_moments") or {})
@@ -315,7 +384,7 @@ class SymbolMicrostructure:
             else mid
         )
         microprice_gap_bps = 10_000.0 * (microprice - mid) / mid if mid > 0 else 0.0
-        flow_z = _zscore(self.signed_flow.value, self.flow_moments.mean, self.flow_moments.var)
+        flow_z = self.flow_z_signal.value
         vol_bps = math.sqrt(max(self.realized_vol.value, 0.0))
         intensity = max(self.trade_intensity.value, 0.0)
         transport_age_ms = _ms(now, self.last_market_received) if self.last_market_received else float("inf")
@@ -325,6 +394,9 @@ class SymbolMicrostructure:
             "microprice_gap_bps": float(max(-1000.0, min(1000.0, microprice_gap_bps))),
             "trade_flow_z": float(max(-12.0, min(12.0, flow_z))),
             "trade_intensity": float(min(1e6, intensity)),
+            "trade_excitation": float(min(1e6, self.trade_excitation.value)),
+            "quote_excitation": float(min(1e6, self.quote_excitation.value)),
+            "queue_pressure": float(max(-1.0, min(1.0, self.queue_pressure.value))),
             "depth_activity": float(min(1e6, self.depth_activity.value)),
             "realized_vol_bps": float(min(1e6, vol_bps)),
             "transport_age_ms": float(transport_age_ms if math.isfinite(transport_age_ms) else 1e9),
@@ -593,6 +665,9 @@ class AdaptiveOpportunityClock:
             max(-50.0, min(50.0, l["microprice_gap_bps"])),
             max(-6.0, min(6.0, l["trade_flow_z"])),
             min(20.0, math.log1p(l["trade_intensity"])),
+            min(20.0, math.log1p(l["trade_excitation"])),
+            min(20.0, math.log1p(l["quote_excitation"])),
+            l["queue_pressure"],
             min(20.0, math.log1p(l["depth_activity"])),
             min(20.0, math.log1p(l["realized_vol_bps"])),
             min(1_000.0, l["transport_age_ms"]),
@@ -601,11 +676,17 @@ class AdaptiveOpportunityClock:
             max(-50.0, min(50.0, t["microprice_gap_bps"])),
             max(-6.0, min(6.0, t["trade_flow_z"])),
             min(20.0, math.log1p(t["trade_intensity"])),
+            min(20.0, math.log1p(t["trade_excitation"])),
+            min(20.0, math.log1p(t["quote_excitation"])),
+            t["queue_pressure"],
             min(20.0, math.log1p(t["depth_activity"])),
             min(20.0, math.log1p(t["realized_vol_bps"])),
             min(1_000.0, t["transport_age_ms"]),
             max(-2.0, min(2.0, l["imbalance"] - t["imbalance"])),
             max(-12.0, min(12.0, l["trade_flow_z"] - t["trade_flow_z"])),
+            max(-20.0, min(20.0, math.log1p(l["trade_excitation"]) - math.log1p(t["trade_excitation"]))),
+            max(-20.0, min(20.0, math.log1p(l["quote_excitation"]) - math.log1p(t["quote_excitation"]))),
+            max(-2.0, min(2.0, l["queue_pressure"] - t["queue_pressure"])),
             max(-10.0, min(10.0, math.log1p(l["depth_activity"]) - math.log1p(t["depth_activity"]))),
             max(-10.0, min(10.0, math.log1p(l["realized_vol_bps"]) - math.log1p(t["realized_vol_bps"]))),
             max(-1_000.0, min(1_000.0, l["transport_age_ms"] - t["transport_age_ms"])),
