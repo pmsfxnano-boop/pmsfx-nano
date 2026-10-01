@@ -8,13 +8,14 @@ are not modified by this module.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from gorila_core.market_freshness import (
     DELAYED_MAX_AGE_SECONDS,
@@ -24,12 +25,16 @@ from gorila_crypto.config import settings
 from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, quality_fingerprint
 from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
 from gorila_crypto.storage import CryptoStore
+from gorila_crypto.quant_store import QuantCryptoStore
+from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
+from gorila_crypto.research_runner import run_crypto_research_once
 
 
 _runtime: ProspectiveCryptoIngestor | None = None
 _runtime_thread: threading.Thread | None = None
 _quality_thread: threading.Thread | None = None
+_research_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
@@ -104,15 +109,24 @@ def _retire_legacy_objects_if_enabled(store: CryptoStore) -> None:
 
 
 def _new_store() -> CryptoStore:
-    return CryptoStore(require_durable=settings.ingest_enabled)
+    return QuantCryptoStore(require_durable=settings.ingest_enabled)
 
 
 def _safe_store_stats() -> dict[str, Any] | None:
     if not settings.ingest_enabled:
         return None
     try:
-        return _new_store().prospective_stats()
-    except RuntimeError as exc:
+        store = _new_store()
+        if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+            session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+            return store.scoped_stats(
+                study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                capture_session_id=session_id,
+            )
+        return store.prospective_stats(
+            source_prefix=f"{settings.provider}.websocket.",
+        )
+    except RuntimeError:
         return None
 
 
@@ -129,7 +143,16 @@ def _heartbeat_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
         try:
-            stats = store.prospective_stats()
+            if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+                session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+                stats = store.scoped_stats(
+                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    capture_session_id=session_id,
+                )
+            else:
+                stats = store.prospective_stats(
+                    source_prefix=f"{settings.provider}.websocket.",
+                )
             print(
                 "GORILA_CAPTURE_HEARTBEAT "
                 + json.dumps(
@@ -151,24 +174,82 @@ def _heartbeat_loop() -> None:
         _stop_event.wait(settings.heartbeat_interval_seconds)
 
 
+def _required_quality_event_types() -> tuple[str, ...]:
+    event_types = ["trade"]
+    if settings.provider == "kraken":
+        if "bookTicker" in settings.streams or "depth" in settings.streams:
+            event_types.append("bookUpdate")
+    else:
+        if "bookTicker" in settings.streams:
+            event_types.append("bookTicker")
+        if "depth" in settings.streams:
+            event_types.append("depthUpdate")
+    return tuple(dict.fromkeys(event_types))
+
+
 def _quality_loop() -> None:
     store = _new_store()
-    config = DataQualityConfig(
-        min_rows_per_symbol=settings.quality_min_rows_per_symbol,
-        min_duration_seconds=settings.quality_min_duration_seconds,
-        max_p99_transport_latency_ms=settings.quality_max_p99_transport_latency_ms,
-        required_event_types=("trade",),
-    )
+    required_event_types = _required_quality_event_types()
+    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+        quality_spec = PREREGISTERED_CRYPTO_PROTOCOL.quality_config()
+        config = DataQualityConfig(
+            min_rows_per_symbol=int(quality_spec["min_rows_per_symbol"]),
+            min_duration_seconds=float(quality_spec["min_duration_seconds"]),
+            max_p99_transport_latency_ms=float(quality_spec["max_p99_transport_latency_ms"]),
+            required_event_types=tuple(quality_spec["required_event_types"]),
+            required_event_type_min_rows=dict(quality_spec["required_event_type_min_rows"]),
+        )
+    else:
+        config = DataQualityConfig(
+            min_rows_per_symbol=settings.quality_min_rows_per_symbol,
+            min_duration_seconds=settings.quality_min_duration_seconds,
+            max_p99_transport_latency_ms=settings.quality_max_p99_transport_latency_ms,
+            required_event_types=required_event_types,
+            required_event_type_min_rows={
+                event_type: settings.quality_min_rows_per_symbol
+                for event_type in required_event_types
+            },
+            required_integrity_event_types=("bookUpdate",) if settings.provider == "kraken" else (),
+        )
     while not _stop_event.is_set():
         try:
-            rows = store.read_events(order="ingest", limit=settings.quality_row_limit)
+            if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+                session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+                if session_id is None:
+                    _stop_event.wait(settings.quality_interval_seconds)
+                    continue
+                rows = store.read_scoped_events(
+                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    capture_session_id=session_id,
+                    source_prefix="binance.websocket.",
+                    order="ingest",
+                    limit=settings.quality_row_limit,
+                    include_payload=False,
+                )
+                gap_rows = store.read_scoped_data_gaps(
+                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    capture_session_id=session_id,
+                    source_prefix="binance.websocket.",
+                    limit=10000,
+                )
+            else:
+                rows = store.read_events(
+                    source_prefix=f"{settings.provider}.websocket.",
+                    order="ingest",
+                    limit=settings.quality_row_limit,
+                    include_payload=False,
+                )
+                gap_rows = store.read_data_gaps(
+                    source_prefix=f"{settings.provider}.websocket.",
+                    limit=10000,
+                )
             if rows:
                 replay_fp = compute_replay_fingerprint(rows)
                 report = evaluate_replay_quality(
                     rows,
                     replay_fingerprint=replay_fp,
                     config=config,
-                    gap_rows=store.read_data_gaps(limit=10000),
+                    gap_rows=gap_rows,
                     reference_time=datetime.now(timezone.utc),
                 )
                 report_json = asdict(report)
@@ -186,13 +267,66 @@ def _quality_loop() -> None:
         _stop_event.wait(settings.quality_interval_seconds)
 
 
+def _research_loop() -> None:
+    store = _new_store()
+    while not _stop_event.is_set():
+        try:
+            result = run_crypto_research_once(store)
+            print(
+                "GORILA_CRYPTO_RESEARCH "
+                + json.dumps(result, sort_keys=True, default=str),
+                flush=True,
+            )
+        except Exception as exc:
+            try:
+                store.record_connection(
+                    source="gorila.crypto.research_runner",
+                    status="ERROR",
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception:
+                pass
+            print(
+                "GORILA_CRYPTO_RESEARCH_ERROR "
+                + f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        _stop_event.wait(settings.research_interval_seconds)
+
+
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread, _heartbeat_thread, _capture_block_reason
+    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _capture_block_reason
     _stop_event.clear()
     _capture_block_reason = None
 
-    if settings.ingest_enabled:
+    retirement_flag = os.getenv("GORILA_CRYPTO_RETIRE_LEGACY", "").strip().lower()
+    print(
+        "GORILA_LEGACY_RETIREMENT_CHECK "
+        + json.dumps(
+            {
+                "enabled": retirement_flag in {"1", "true", "yes", "on"},
+                "ingest_enabled": settings.ingest_enabled,
+                "database_configured": bool(CryptoStore().database_url),
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    if retirement_flag in {"1", "true", "yes", "on"}:
+        try:
+            _retire_legacy_objects_if_enabled(_new_store())
+        except Exception as exc:
+            _capture_block_reason = f"LEGACY_RETIREMENT_FAILED:{type(exc).__name__}:{exc}"
+            print(
+                "GORILA_LEGACY_RETIREMENT_FAILED "
+                + _capture_block_reason,
+                flush=True,
+            )
+
+    if settings.ingest_enabled and _capture_block_reason is None:
         try:
             store = _new_store()
         except RuntimeError as exc:
@@ -211,18 +345,6 @@ async def lifespan(app: FastAPI):
                 flush=True,
             )
         else:
-            try:
-                _retire_legacy_objects_if_enabled(store)
-            except Exception as exc:
-                _capture_block_reason = f"LEGACY_RETIREMENT_FAILED:{type(exc).__name__}:{exc}"
-                print(
-                    "GORILA_LEGACY_RETIREMENT_FAILED "
-                    + _capture_block_reason,
-                    flush=True,
-                )
-                yield
-                _stop_event.set()
-                return
             adapter = build_market_adapter()
             _runtime = ProspectiveCryptoIngestor(store, adapter)
             _runtime_thread = threading.Thread(
@@ -247,6 +369,14 @@ async def lifespan(app: FastAPI):
                 )
                 _quality_thread.start()
 
+            if settings.research_enabled:
+                _research_thread = threading.Thread(
+                    target=_research_loop,
+                    name="gorila-crypto-research",
+                    daemon=True,
+                )
+                _research_thread.start()
+
     yield
 
     _stop_event.set()
@@ -256,6 +386,8 @@ async def lifespan(app: FastAPI):
         _runtime_thread.join(timeout=5.0)
     if _quality_thread is not None:
         _quality_thread.join(timeout=5.0)
+    if _research_thread is not None:
+        _research_thread.join(timeout=5.0)
     if _heartbeat_thread is not None:
         _heartbeat_thread.join(timeout=5.0)
 
@@ -303,7 +435,13 @@ def root_head() -> None:
 
 @app.get("/api/crypto/health")
 def health() -> dict[str, Any]:
-    return {
+    worker_alive = bool(_runtime_thread and _runtime_thread.is_alive())
+    capture_enabled = settings.ingest_enabled and not _capture_block_reason
+    symbol_health = _runtime.symbol_health() if _runtime is not None else []
+    symbols_live = bool(symbol_health) and all(
+        row.get("status") == "LIVE" for row in symbol_health
+    )
+    payload = {
         "service": "gorila-crypto",
         "domain": "crypto",
         "status": (
@@ -313,25 +451,40 @@ def health() -> dict[str, Any]:
         ),
         "runtime_isolated": True,
         "provider": settings.provider,
-        "prospective_capture": settings.ingest_enabled and not _capture_block_reason,
+        "prospective_capture": capture_enabled,
         "capture_block_reason": _capture_block_reason,
-        "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
+        "worker_alive": worker_alive,
         "quality_monitor_alive": bool(_quality_thread and _quality_thread.is_alive()),
         "heartbeat_alive": bool(_heartbeat_thread and _heartbeat_thread.is_alive()),
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
-        "forecast": {
-            "status": "BLOCKED_NO_VALIDATED_MODEL",
-            "semantics": "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)",
-            "automatic_promotion": False,
-        },
+        "symbol_health": symbol_health,
+        "symbols_live": symbols_live,
         "freshness_contract": {
             "live_max_age_seconds": LIVE_MAX_AGE_SECONDS,
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
         },
-        "ledger": _safe_store_stats(),
         "storage_backend": _storage_backend_status(),
+        "health_contract": "lightweight_no_ledger_scan",
+        "forecast": {
+            "automatic_promotion": False,
+            "execution": False,
+        },
     }
+    if not worker_alive and capture_enabled:
+        payload["status"] = "CAPTURE_WORKER_DEAD"
+    return payload
+
+
+@app.get("/api/crypto/readiness")
+def readiness() -> dict[str, Any]:
+    payload = health()
+    capture_enabled = settings.ingest_enabled and not _capture_block_reason
+    if capture_enabled and not payload.get("symbols_live"):
+        payload["status"] = "CAPTURE_DATA_STALE"
+        raise HTTPException(status_code=503, detail=payload)
+    payload["status"] = "CAPTURE_READY"
+    return payload
 
 
 @app.get("/api/crypto/prospective/status")
@@ -347,13 +500,33 @@ def prospective_status() -> dict[str, Any]:
             "execution": False,
         }
     store = _new_store()
-    health_rows = store.health()
-    stats = store.prospective_stats()
+    symbol_health = _runtime.symbol_health() if _runtime is not None else []
+    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
+        session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+        health_rows = [
+            row for row in store.health(source_prefix="binance.websocket.")
+            if row.get("last_event_time") is not None
+        ]
+        stats = store.scoped_stats(
+            study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+            capture_session_id=session_id,
+        )
+    else:
+        health_rows = store.health(
+            source_prefix=f"{settings.provider}.websocket.",
+        )
+        stats = store.prospective_stats(
+            source_prefix=f"{settings.provider}.websocket.",
+        )
     return {
         "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
         "ledger": stats,
         "source_health": health_rows,
+        "symbol_health": symbol_health,
+        "symbols_live": bool(symbol_health) and all(
+            row.get("status") == "LIVE" for row in symbol_health
+        ),
         "automatic_promotion": False,
         "execution": False,
     }
@@ -364,6 +537,9 @@ def config_snapshot() -> dict[str, Any]:
     return {
         "environment": settings.environment,
         "provider": settings.provider,
+        "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
+        "protocol_version": PREREGISTERED_CRYPTO_PROTOCOL.version if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
+        "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
         "symbols": list(settings.symbols),
         "streams": list(settings.streams),
         "depth_speed": settings.depth_speed,
@@ -374,6 +550,14 @@ def config_snapshot() -> dict[str, Any]:
         "quality_min_rows_per_symbol": settings.quality_min_rows_per_symbol,
         "quality_min_duration_seconds": settings.quality_min_duration_seconds,
         "quality_max_p99_transport_latency_ms": settings.quality_max_p99_transport_latency_ms,
+        "quality_required_event_types": list(_required_quality_event_types()),
+        "quality_required_event_type_min_rows": {
+            event_type: settings.quality_min_rows_per_symbol
+            for event_type in _required_quality_event_types()
+        },
+        "quality_required_integrity_event_types": (
+            ["bookUpdate"] if settings.provider == "kraken" else []
+        ),
         "durable_storage_required_when_ingesting": settings.ingest_enabled,
         "storage_backend": _storage_backend_status(),
     }
