@@ -110,13 +110,19 @@ class CryptoStudyProtocol:
                 raise ValueError("Binance study streams are immutable")
             if self.normalized_event_types not in {(), ("trade", "bookTicker")}:
                 raise ValueError("invalid Binance normalized event types")
-            if self.version == "3":
+            if self.version in {"3", "4"}:
                 if self.trade_persistence_sample_rate != 0.05:
-                    raise ValueError("Binance v3 trade persistence sampling is immutable at 5%")
+                    raise ValueError("Binance v3/v4 trade persistence sampling is immutable at 5%")
+            if self.version == "3":
                 if self.bookticker_persistence_interval_seconds != 1.0:
                     raise ValueError("Binance v3 bookTicker persistence interval is immutable at 1s")
                 if self.persistence_contract_version != "deterministic_sample_v1":
                     raise ValueError("Binance v3 persistence contract is immutable")
+            if self.version == "4":
+                if self.bookticker_persistence_interval_seconds != 5.0:
+                    raise ValueError("Binance v4 bookTicker persistence interval is immutable at 5s")
+                if self.persistence_contract_version != "deterministic_sample_v2_compact":
+                    raise ValueError("Binance v4 persistence contract is immutable")
         else:
             if self.venue != "kraken_spot":
                 raise ValueError("Kraken provider requires Kraken Spot venue")
@@ -213,6 +219,19 @@ BINANCE_CRYPTO_PROTOCOL_V3 = CryptoStudyProtocol(
 )
 BINANCE_CRYPTO_PROTOCOL_V3.validate()
 
+BINANCE_CRYPTO_PROTOCOL_V4 = CryptoStudyProtocol(
+    study_id="crypto-binance-spot-prospective-v4",
+    version="4",
+    provider="binance",
+    venue="binance_spot",
+    symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+    streams=("trade", "bookTicker"),
+    normalized_event_types=("trade", "bookTicker"),
+    bookticker_persistence_interval_seconds=5.0,
+    persistence_contract_version="deterministic_sample_v2_compact",
+)
+BINANCE_CRYPTO_PROTOCOL_V4.validate()
+
 KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
     study_id="crypto-kraken-spot-prospective-v1",
     version="1",
@@ -225,7 +244,7 @@ KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
 KRAKEN_CRYPTO_PROTOCOL.validate()
 
 CRYPTO_PROTOCOLS: Mapping[str, CryptoStudyProtocol] = {
-    "binance": BINANCE_CRYPTO_PROTOCOL_V3,
+    "binance": BINANCE_CRYPTO_PROTOCOL_V4,
     "kraken": KRAKEN_CRYPTO_PROTOCOL,
 }
 
@@ -237,4 +256,4 @@ def protocol_for(provider: str) -> CryptoStudyProtocol:
         raise ValueError(f"no preregistered crypto protocol for provider={provider!r}") from exc
 
 
-PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V3
+PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V4
