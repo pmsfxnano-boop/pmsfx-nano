@@ -1137,4 +1137,5 @@ def config_snapshot() -> dict[str, Any]:
         "persistence_spool_path": settings.persistence_spool_path,
         "persistence_spool_max_bytes": settings.persistence_spool_max_bytes,
         "persistence_spool_max_batches": settings.persistence_spool_max_batches,
+        "persistence_spool_guard_ratio": settings.persistence_spool_guard_ratio,
     }
