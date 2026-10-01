@@ -269,6 +269,89 @@ def test_terminal_capture_status_fences_running_session_leases(tmp_path) -> None
         store.close()
 
 
+def test_reconcile_fences_lease_from_terminal_capture_session(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "reconcile-lease.sqlite3"))
+    store.init()
+    conn = store.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO crypto_capture_sessions(
+                session_id,study_id,provider,venue,region,instance_id,
+                code_version,symbols_json,streams_json,protocol_hash,
+                started_at,ended_at,status,metadata
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "session-terminal",
+                "study-1",
+                "binance",
+                "BINANCE_SPOT",
+                "test",
+                "instance",
+                "code",
+                "[\"BTCUSDT\"]",
+                "[\"trade\"]",
+                "protocol",
+                "2026-09-29T15:00:00+00:00",
+                "2026-09-29T15:00:05+00:00",
+                "ABORTED_STALE",
+                "{}",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_runtime_runs(
+                run_id,kind,started_at,status,result
+            ) VALUES(?,?,?,?,?)
+            """,
+            (
+                "run-terminal",
+                "test",
+                "2026-09-29T15:00:00+00:00",
+                "RUNNING",
+                "{}",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO crypto_runtime_leases(
+                run_id,session_id,started_at,heartbeat_at,status
+            ) VALUES(?,?,?,?,?)
+            """,
+            (
+                "run-terminal",
+                "session-terminal",
+                "2026-09-29T15:00:00+00:00",
+                "2026-09-29T15:00:04+00:00",
+                "RUNNING",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
+
+    conn = store.connect()
+    try:
+        lease = conn.execute(
+            "SELECT status FROM crypto_runtime_leases WHERE run_id=?",
+            ("run-terminal",),
+        ).fetchone()
+        runtime = conn.execute(
+            "SELECT status FROM crypto_runtime_runs WHERE run_id=?",
+            ("run-terminal",),
+        ).fetchone()
+        assert lease["status"] == "ABORTED_STALE"
+        assert runtime["status"] == "ABORTED_STALE"
+    finally:
+        conn.close()
+        store.close()
+
+
 def test_build_prospective_runtime_fails_closed_without_durable_database(monkeypatch) -> None:
     import gorila_crypto.runtime as runtime
 
