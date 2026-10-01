@@ -335,3 +335,30 @@ def test_recovery_gate_blocks_pending_production_evidence(tmp_path) -> None:
     gate = ingestor.recovery_gate()
     assert gate["status"] == "BLOCKED"
     assert "EVIDENCE_SPOOL_PENDING" in gate["reasons"]
+
+
+def test_source_health_is_deferred_off_market_event_path(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / "deferred-health.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+
+    ingestor._ingest(event(trade_id=1))
+
+    conn = store.connect()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM crypto_source_health").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    ingestor._flush_source_health(force=True)
+
+    conn = store.connect()
+    try:
+        row = conn.execute(
+            "SELECT status,rows_last_batch FROM crypto_source_health WHERE source=?",
+            ("binance.websocket.trade",),
+        ).fetchone()
+        assert row["status"] == "LIVE"
+        assert row["rows_last_batch"] == 1
+    finally:
+        conn.close()
