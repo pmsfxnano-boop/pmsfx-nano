@@ -25,6 +25,7 @@ from gorila_core.market_freshness import (
 from gorila_crypto.config import settings
 from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, quality_fingerprint
 from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
+from gorila_crypto.market_cache import MARKET_CACHE
 from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
@@ -450,257 +451,108 @@ def root() -> dict[str, Any]:
 
 @app.get("/api/crypto/market/stream")
 def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
-    """Low-latency read contract for the web terminal.
+    """Low-latency read contract backed by the durable-commit market cache.
 
-    The endpoint is deliberately incremental: after the initial bootstrap, callers
-    pass the last ledger sequence and receive only newer trade/bookTicker rows.
-    No quality/research state is mutated here and the query is bounded.
+    PostgreSQL remains the ledger of record. The hot read path serves only a
+    bounded in-process projection that is updated after successful persistence,
+    keeping frontend latency independent of database query latency.
     """
     if not settings.ingest_enabled:
         raise HTTPException(status_code=503, detail="capture_not_enabled")
-    store = _new_store()
-    try:
-        if not store.durable:
-            store.init()
-        conn = store.connect()
-        try:
-            safe_limit = max(32, min(int(limit), 600))
-            symbols = tuple(settings.symbols)
-            if not symbols:
-                return {
-                    "status": "READY",
-                    "server_time": datetime.now(timezone.utc).isoformat(),
-                    "next_cursor": int(cursor),
-                    "symbols": [],
-                    "events": [],
-                    "forecast": {"automatic_promotion": False, "execution": False},
-                }
 
-            if store.backend == "postgres":
-                placeholders = ",".join(["%s"] * len(symbols))
-                if int(cursor) <= 0:
-                    per_symbol = max(24, min(160, safe_limit // max(len(symbols), 1)))
-                    sql_events = f"""
-                        SELECT ledger_seq, symbol, event_type, event_time,
-                               received_time, payload_json
-                        FROM (
-                            SELECT
-                                ledger_seq, symbol, event_type, event_time,
-                                received_time, payload_json,
-                                ROW_NUMBER() OVER (
-                                    PARTITION BY symbol ORDER BY ledger_seq DESC
-                                ) AS rn
-                            FROM crypto_events
-                            WHERE symbol IN ({placeholders})
-                              AND event_type = 'trade'
-                        ) ranked
-                        WHERE rn <= %s
-                        ORDER BY ledger_seq ASC
-                    """
-                    event_params: tuple[Any, ...] = (*symbols, per_symbol)
-                else:
-                    sql_events = f"""
-                        SELECT ledger_seq, symbol, event_type, event_time,
-                               received_time, payload_json
-                        FROM crypto_events
-                        WHERE ledger_seq > %s
-                          AND symbol IN ({placeholders})
-                          AND event_type IN ('trade','bookTicker')
-                        ORDER BY ledger_seq ASC
-                        LIMIT %s
-                    """
-                    event_params = (int(cursor), *symbols, safe_limit)
+    safe_limit = max(32, min(int(limit), 600))
+    symbols = tuple(settings.symbols)
+    snapshot = MARKET_CACHE.snapshot(
+        symbols=symbols,
+        cursor=int(cursor),
+        limit=safe_limit,
+    )
+    events = list(snapshot["events"])
+    latest_book = dict(snapshot["latest_books"])
 
-                latest_books_sql = f"""
-                    SELECT DISTINCT ON (symbol)
-                        ledger_seq, symbol, event_time, received_time, payload_json
-                    FROM crypto_events
-                    WHERE symbol IN ({placeholders})
-                      AND event_type = 'bookTicker'
-                    ORDER BY symbol, ledger_seq DESC
-                """
-                with conn.cursor() as cur:
-                    cur.execute(sql_events, event_params)
-                    event_rows = cur.fetchall()
-                    cur.execute(latest_books_sql, symbols)
-                    latest_book_rows = cur.fetchall()
-            else:
-                placeholders = ",".join(["?"] * len(symbols))
-                if int(cursor) <= 0:
-                    per_symbol = max(24, min(160, safe_limit // max(len(symbols), 1)))
-                    sql_events = f"""
-                        SELECT ledger_seq, symbol, event_type, event_time,
-                               received_time, payload_json
-                        FROM (
-                            SELECT
-                                ledger_seq, symbol, event_type, event_time,
-                                received_time, payload_json,
-                                ROW_NUMBER() OVER (
-                                    PARTITION BY symbol ORDER BY ledger_seq DESC
-                                ) AS rn
-                            FROM crypto_events
-                            WHERE symbol IN ({placeholders})
-                              AND event_type = 'trade'
-                        ) ranked
-                        WHERE rn <= ?
-                        ORDER BY ledger_seq ASC
-                    """
-                    event_params = (*symbols, per_symbol)
-                else:
-                    sql_events = f"""
-                        SELECT ledger_seq, symbol, event_type, event_time,
-                               received_time, payload_json
-                        FROM crypto_events
-                        WHERE ledger_seq > ?
-                          AND symbol IN ({placeholders})
-                          AND event_type IN ('trade','bookTicker')
-                        ORDER BY ledger_seq ASC
-                        LIMIT ?
-                    """
-                    event_params = (int(cursor), *symbols, safe_limit)
-                latest_books_sql = f"""
-                    SELECT ledger_seq, symbol, event_time, received_time, payload_json
-                    FROM (
-                        SELECT
-                            ledger_seq, symbol, event_time, received_time, payload_json,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY symbol ORDER BY ledger_seq DESC
-                            ) AS rn
-                        FROM crypto_events
-                        WHERE symbol IN ({placeholders})
-                          AND event_type = 'bookTicker'
-                    ) ranked
-                    WHERE rn = 1
-                    ORDER BY symbol
-                """
-                with conn:
-                    event_rows = conn.execute(sql_events, event_params).fetchall()
-                    latest_book_rows = conn.execute(latest_books_sql, symbols).fetchall()
+    health_rows = _runtime.symbol_health() if _runtime is not None else []
+    health_by_symbol = {str(row.get("symbol")): row for row in health_rows}
 
-            def _row_value(row: Any, idx: int, key: str) -> Any:
-                if isinstance(row, dict):
-                    return row.get(key)
-                try:
-                    return row[idx]
-                except (IndexError, KeyError, TypeError):
-                    return None
+    latest_price: dict[str, float] = {}
+    first_price: dict[str, float] = {}
+    for event in events:
+        if event["event_type"] == "trade" and event["price"] is not None:
+            first_price.setdefault(event["symbol"], float(event["price"]))
+            latest_price[event["symbol"]] = float(event["price"])
 
-            def _event_view(row: Any) -> dict[str, Any]:
-                payload = json.loads(_row_value(row, 5, "payload_json") or "{}")
-                event_type = str(_row_value(row, 2, "event_type"))
-                symbol = str(_row_value(row, 1, "symbol"))
-                price = None
-                quantity = None
-                side = None
-                if event_type == "trade":
-                    price = float(payload["p"])
-                    quantity = float(payload["q"])
-                    side = "SELL" if bool(payload.get("m")) else "BUY"
-                elif event_type == "bookTicker":
-                    bid = float(payload["b"])
-                    ask = float(payload["a"])
-                    price = (bid + ask) / 2.0
-                return {
-                    "ledger_seq": int(_row_value(row, 0, "ledger_seq")),
-                    "symbol": symbol,
-                    "event_type": event_type,
-                    "event_time": str(_row_value(row, 3, "event_time")),
-                    "received_time": str(_row_value(row, 4, "received_time")),
-                    "price": price,
-                    "quantity": quantity,
-                    "side": side,
-                }
+    now = datetime.now(timezone.utc)
+    summary: list[dict[str, Any]] = []
+    for symbol in symbols:
+        book = latest_book.get(symbol)
+        price = latest_price.get(symbol)
+        if price is None and book:
+            price = float(book["price"])
 
-            events = [_event_view(row) for row in event_rows]
-            latest_book: dict[str, dict[str, Any]] = {}
-            for row in latest_book_rows:
-                payload = json.loads(_row_value(row, 4, "payload_json") or "{}")
-                latest_book[str(_row_value(row, 1, "symbol"))] = {
-                    "ledger_seq": int(_row_value(row, 0, "ledger_seq")),
-                    "event_time": str(_row_value(row, 2, "event_time")),
-                    "received_time": str(_row_value(row, 3, "received_time")),
-                    "bid": float(payload["b"]),
-                    "ask": float(payload["a"]),
-                    "bid_qty": float(payload.get("B", 0.0)),
-                    "ask_qty": float(payload.get("A", 0.0)),
-                }
+        window_change = None
+        if symbol in first_price and price is not None and first_price[symbol]:
+            window_change = (price / first_price[symbol] - 1.0) * 100.0
 
-            health_rows = _runtime.symbol_health() if _runtime is not None else []
-            health_by_symbol = {str(row.get("symbol")): row for row in health_rows}
-            latest_price: dict[str, float] = {}
-            first_price: dict[str, float] = {}
-            for event in events:
-                if event["event_type"] == "trade" and event["price"] is not None:
-                    first_price.setdefault(event["symbol"], float(event["price"]))
-                    latest_price[event["symbol"]] = float(event["price"])
+        trade_times = [
+            event["received_time"]
+            for event in events
+            if event["symbol"] == symbol and event["event_type"] == "trade"
+        ]
+        freshest = list(trade_times)
+        if book:
+            freshest.append(str(book["received_time"]))
 
-            now = datetime.now(timezone.utc)
-            summary = []
-            for symbol in symbols:
-                book = latest_book.get(symbol)
-                price = latest_price.get(symbol)
-                if price is None and book:
-                    price = (book["bid"] + book["ask"]) / 2.0
-                window_change = None
-                if symbol in first_price and price is not None and first_price[symbol]:
-                    window_change = (price / first_price[symbol] - 1.0) * 100.0
-                spread_bps = None
-                if book and book["bid"] > 0:
-                    spread_bps = (book["ask"] / book["bid"] - 1.0) * 10000.0
-                freshest = []
-                if book:
-                    freshest.append(book["received_time"])
-                trade_times = [
-                    e["received_time"] for e in events
-                    if e["symbol"] == symbol and e["price"] is not None
-                ]
-                if trade_times:
-                    freshest.append(trade_times[-1])
+        freshness_ms = None
+        if freshest:
+            try:
+                newest = max(freshest)
+                freshness_ms = max(
+                    0.0,
+                    (
+                        now
+                        - datetime.fromisoformat(newest.replace("Z", "+00:00"))
+                    ).total_seconds()
+                    * 1000.0,
+                )
+            except ValueError:
                 freshness_ms = None
-                if freshest:
-                    try:
-                        freshness_ms = max(
-                            0.0,
-                            (now - datetime.fromisoformat(max(freshest).replace("Z", "+00:00"))).total_seconds() * 1000.0,
-                        )
-                    except ValueError:
-                        freshness_ms = None
-                status = health_by_symbol.get(symbol, {}).get("status", "UNKNOWN")
-                summary.append({
-                    "symbol": symbol,
-                    "status": status,
-                    "price": price,
-                    "window_change_pct": window_change,
-                    "bid": book["bid"] if book else None,
-                    "ask": book["ask"] if book else None,
-                    "bid_qty": book["bid_qty"] if book else None,
-                    "ask_qty": book["ask_qty"] if book else None,
-                    "spread_bps": spread_bps,
-                    "freshness_ms": freshness_ms,
-                    "last_trade_time": trade_times[-1] if trade_times else None,
-                    "last_book_time": book["received_time"] if book else None,
-                })
 
-            # The cursor advances only through rows delivered in `events`.
-            # The latest-book query is a side snapshot and must never skip ledger rows.
-            next_cursor = max(
-                [int(e["ledger_seq"]) for e in events] + [int(cursor)]
-            )
-            return {
-                "status": "LIVE" if summary and all(s["status"] == "LIVE" for s in summary) else "DEGRADED",
-                "server_time": now.isoformat(),
-                "next_cursor": next_cursor,
-                "symbols": summary,
-                "events": events,
-                "forecast": {"automatic_promotion": False, "execution": False},
+        status = health_by_symbol.get(symbol, {}).get("status", "UNKNOWN")
+        summary.append(
+            {
+                "symbol": symbol,
+                "status": status,
+                "price": price,
+                "window_change_pct": window_change,
+                "bid": None,
+                "ask": None,
+                "bid_qty": None,
+                "ask_qty": None,
+                "spread_bps": None,
+                "freshness_ms": freshness_ms,
+                "last_trade_time": trade_times[-1] if trade_times else None,
+                "last_book_time": book["received_time"] if book else None,
             }
-        finally:
-            conn.close()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"market_stream_unavailable:{type(exc).__name__}",
-        ) from exc
+        )
+
+    next_cursor = max(
+        [int(event["ledger_seq"]) for event in events] + [int(cursor)]
+    )
+    status = (
+        "LIVE"
+        if summary and all(row["status"] == "LIVE" for row in summary) and events
+        else "DEGRADED"
+    )
+
+    return {
+        "status": status,
+        "server_time": now.isoformat(),
+        "next_cursor": next_cursor,
+        "symbols": summary,
+        "events": events,
+        "cache_events_available": snapshot["cache_events_available"],
+        "forecast": {"automatic_promotion": False, "execution": False},
+    }
+
 
 @app.head("/", include_in_schema=False)
 def root_head() -> None:
