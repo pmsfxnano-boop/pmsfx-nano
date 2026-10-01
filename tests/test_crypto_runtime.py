@@ -340,7 +340,11 @@ def test_recovery_gate_blocks_pending_production_evidence(tmp_path) -> None:
 def test_source_health_is_deferred_off_market_event_path(tmp_path) -> None:
     store = CryptoStore(sqlite_path=str(tmp_path / "deferred-health.sqlite3"))
     adapter = FakeAdapter([event(trade_id=1)])
-    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor = ProspectiveCryptoIngestor(
+        store,
+        adapter,
+        now=lambda: BASE,
+    )
     store.init()
 
     ingestor._ingest(event(trade_id=1))
