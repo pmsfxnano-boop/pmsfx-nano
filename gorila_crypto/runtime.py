@@ -368,7 +368,9 @@ class ProspectiveCryptoIngestor:
         if gap is not None:
             expected, observed = gap
             self.gaps_detected += 1
-            if self.session_id is not None:
+            if self.session_id is not None or not isinstance(
+                self.store, QuantCryptoStore
+            ):
                 try:
                     self.store.record_gap(
                         symbol=event.symbol,
@@ -408,7 +410,9 @@ class ProspectiveCryptoIngestor:
             or now_monotonic - last_persisted
             >= self.config.health_flush_interval_seconds
         )
-        if should_persist_health and self.session_id is not None:
+        if should_persist_health and (
+            self.session_id is not None or not isinstance(self.store, QuantCryptoStore)
+        ):
             try:
                 self.store.upsert_source_health(
                     source=source,
