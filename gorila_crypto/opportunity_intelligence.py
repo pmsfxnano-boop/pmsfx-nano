@@ -144,7 +144,8 @@ class SymbolMicrostructure:
     last_trade_price: float | None = None
     last_trade_received: datetime | None = None
     last_book_received: datetime | None = None
-    last_event_received: datetime | None = None
+    last_depth_received: datetime | None = None
+    last_market_received: datetime | None = None
     signed_flow: EWMA = field(default_factory=EWMA)
     trade_intensity: EWMA = field(default_factory=EWMA)
     realized_vol: EWMA = field(default_factory=EWMA)
@@ -153,10 +154,9 @@ class SymbolMicrostructure:
     recent_trades: deque[tuple[datetime, float]] = field(default_factory=lambda: deque(maxlen=256))
 
     def feed(self, event_type: str, payload: Mapping[str, Any], received_time: datetime) -> None:
-        self.last_event_received = received_time
-
         if event_type in {"bookTicker", "depthUpdate"}:
             if event_type == "bookTicker":
+                self.last_market_received = received_time
                 bid = _safe_float(payload.get("b"), self.bid or 0.0)
                 ask = _safe_float(payload.get("a"), self.ask or 0.0)
                 self.bid_size = max(0.0, _safe_float(payload.get("B"), self.bid_size))
@@ -169,13 +169,14 @@ class SymbolMicrostructure:
                 ask_deltas = payload.get("a") or payload.get("asks") or []
                 update_count = len(bid_deltas) + len(ask_deltas)
                 self.depth_activity.update(float(update_count))
-                self.last_book_received = received_time
+                self.last_depth_received = received_time
                 return
             if bid > 0:
                 self.bid = bid
             if ask > 0:
                 self.ask = ask
             self.last_book_received = received_time
+            self.last_market_received = received_time
             self._update_mid()
 
         elif event_type == "trade":
@@ -199,6 +200,7 @@ class SymbolMicrostructure:
 
             self.last_trade_price = price
             self.last_trade_received = received_time
+            self.last_market_received = received_time
             if self.bid is None or self.ask is None:
                 self.bid = price
                 self.ask = price
@@ -239,7 +241,7 @@ class SymbolMicrostructure:
         flow_z = _zscore(self.signed_flow.value, self.flow_moments.mean, self.flow_moments.var)
         vol_bps = math.sqrt(max(self.realized_vol.value, 0.0))
         intensity = max(self.trade_intensity.value, 0.0)
-        transport_age_ms = _ms(now, self.last_event_received) if self.last_event_received else float("inf")
+        transport_age_ms = _ms(now, self.last_market_received) if self.last_market_received else float("inf")
         return {
             "imbalance": float(max(-1.0, min(1.0, imbalance))),
             "spread_bps": float(max(0.0, spread_bps)),
