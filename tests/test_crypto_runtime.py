@@ -375,3 +375,9 @@ def test_runtime_loop_does_not_persist_runtime_heartbeat_per_market_event(tmp_pa
 
     source = inspect.getsource(runtime_module.ProspectiveCryptoIngestor.run)
     assert "heartbeat_runtime_run" not in source
+
+
+def test_runtime_default_batching_is_throughput_safe() -> None:
+    config = IngestRuntimeConfig()
+    assert config.event_batch_size >= 1000
+    assert config.event_batch_flush_interval_seconds >= 0.50

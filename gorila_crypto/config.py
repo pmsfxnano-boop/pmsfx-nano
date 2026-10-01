@@ -47,6 +47,8 @@ class CryptoSettings:
     event_delayed_max_age_seconds: float
     persist_bookticker_interval_seconds: float
     persistence_queue_batches: int
+    event_batch_size: int
+    event_batch_flush_interval_seconds: float
     storage_maintenance_interval_seconds: float
     retention_trade_hours: float
     retention_bookticker_hours: float
@@ -83,6 +85,10 @@ class CryptoSettings:
             raise ValueError("bookTicker persistence interval must be >= 0.25s")
         if self.persistence_queue_batches < 8:
             raise ValueError("persistence queue must have at least 8 batches")
+        if self.event_batch_size < 128:
+            raise ValueError("event batch size must be >= 128")
+        if self.event_batch_flush_interval_seconds < 0.10:
+            raise ValueError("event batch flush interval must be >= 0.10s")
         if self.storage_maintenance_interval_seconds < 300:
             raise ValueError("storage maintenance interval must be >= 300s")
         if self.retention_trade_hours <= 0:
@@ -155,6 +161,14 @@ settings = CryptoSettings(
     persistence_queue_batches=max(
         8,
         int(os.getenv("GORILA_PERSISTENCE_QUEUE_BATCHES", "256")),
+    ),
+    event_batch_size=max(
+        128,
+        int(os.getenv("GORILA_CRYPTO_EVENT_BATCH_SIZE", "1000")),
+    ),
+    event_batch_flush_interval_seconds=max(
+        0.10,
+        float(os.getenv("GORILA_CRYPTO_EVENT_BATCH_FLUSH_INTERVAL_SECONDS", "0.50")),
     ),
     storage_maintenance_interval_seconds=max(
         300.0,
