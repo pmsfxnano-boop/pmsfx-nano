@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
+import time
 
 import pytest
 
 from gorila_crypto.binance import (
     BinanceAdapterError,
+    BinanceSpotMarketAdapter,
     BinanceStreamConfig,
     DepthGapDetected,
     InvalidMarketEvent,
@@ -182,3 +185,60 @@ def test_depth_bootstrap_rejects_a_missing_bridge_instead_of_skipping() -> None:
             snapshot=snapshot,
             buffered_events=buffered,
         )
+
+def test_market_data_stall_is_a_hard_transport_failure() -> None:
+    class SilentControlSocket:
+        def recv(self):
+            time.sleep(0.02)
+            return {"result": None, "id": "ack"}
+
+    adapter = BinanceSpotMarketAdapter(
+        BinanceStreamConfig(
+            symbols=("BTCUSDT",),
+            streams=("trade", "bookTicker"),
+            recv_timeout_s=1.0,
+            market_data_stall_timeout_s=0.01,
+            connection_max_seconds=1.0,
+        )
+    )
+
+    with pytest.raises(BinanceAdapterError, match="market_data_stall_timeout"):
+        next(adapter.iter_events_once(ws=SilentControlSocket()))
+
+
+def test_market_data_stall_watchdog_does_not_fire_between_live_events() -> None:
+    class MarketSocket:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def recv(self):
+            self.n += 1
+            time.sleep(0.01)
+            return json.dumps({
+                "stream": "btcusdt@bookTicker",
+                "data": {
+                    "u": 400900217 + self.n,
+                    "s": "BTCUSDT",
+                    "b": "60000.0",
+                    "B": "1.2",
+                    "a": "60001.0",
+                    "A": "1.1",
+                },
+            })
+
+    adapter = BinanceSpotMarketAdapter(
+        BinanceStreamConfig(
+            symbols=("BTCUSDT",),
+            streams=("bookTicker",),
+            recv_timeout_s=1.0,
+            market_data_stall_timeout_s=0.05,
+            connection_max_seconds=1.0,
+        )
+    )
+
+    iterator = adapter.iter_events_once(ws=MarketSocket())
+    first = next(iterator)
+    second = next(iterator)
+
+    assert first is not None
+    assert second is not None
