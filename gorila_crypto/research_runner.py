@@ -38,7 +38,7 @@ from .ledger import canonical_replay_row
 
 
 RESEARCH_STATUS_SOURCE = "gorila.crypto.research_runner"
-FEATURE_SET_VERSION = "crypto_microstructure_alpha_v1"
+FEATURE_SET_VERSION = "crypto_microstructure_alpha_v2"
 DEFAULT_BATCH = 5000
 
 
@@ -1210,7 +1210,7 @@ def run_crypto_research_once(store) -> dict[str, Any]:
                     minimum_quality_rows=report.rows,
                     replay_fingerprint=replay_fp,
                     model_id=f"crypto-microstructure-ridge-logit-wf-{leader_symbol}-{target_symbol}",
-                    model_version="2",
+                    model_version="3",
                     placebo_block_size=PREREGISTERED_CRYPTO_PROTOCOL.placebo_block_size,
                     placebo_iterations=PREREGISTERED_CRYPTO_PROTOCOL.placebo_iterations,
                     stress_scenarios=stress,
