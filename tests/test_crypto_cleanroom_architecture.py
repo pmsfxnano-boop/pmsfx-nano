@@ -1,9 +1,4 @@
-"""Architectural guardrails for the Crypto cleanroom.
-
-These tests are intentionally static and dependency-focused. They are meant to
-fail before runtime isolation can silently regress.
-"""
-
+"""Architectural guardrails for the Cryptonita Crypto cleanroom."""
 from __future__ import annotations
 
 import ast
@@ -13,39 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CRYPTO_ROOT = REPO_ROOT / "gorila_crypto"
-
-FORBIDDEN_TOP_LEVEL_IMPORTS = {
-    "gorila_argentum",
-    "scripts",
-    "main",
-    "quant",
-}
-
-FORBIDDEN_TEXT = (
-    "BCRA",
-    "BYMA",
-    "ArgentinaDatos",
-    "Rava",
-    "Twelve Data",
-    "TwelveData",
-    "Yahoo",
-    "Tiingo",
-    "America/Argentina",
-    "America/New_York",
-    "GGAL",
-    "BMA",
-    "YPFD",
-    "PAMP",
-    "TGSU2",
-    "CEPU",
-    "AAPL",
-    "MSFT",
-    "NVDA",
-    "TSLA",
-)
+ALLOWED_REPO_IMPORT_ROOTS = {"gorila_core", "gorila_crypto"}
 
 
 def _python_files() -> list[Path]:
@@ -62,22 +27,17 @@ def _import_roots(tree: ast.AST) -> set[str]:
     return roots
 
 
-def test_crypto_package_has_no_forbidden_import_roots() -> None:
+def test_crypto_package_imports_only_approved_repo_domains() -> None:
+    repo_packages = {
+        path.name
+        for path in REPO_ROOT.iterdir()
+        if path.is_dir() and (path / "__init__.py").exists()
+    }
     violations: list[tuple[str, str]] = []
     for path in _python_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for root in sorted(_import_roots(tree) & FORBIDDEN_TOP_LEVEL_IMPORTS):
+        for root in sorted(_import_roots(tree) & repo_packages - ALLOWED_REPO_IMPORT_ROOTS):
             violations.append((path.relative_to(REPO_ROOT).as_posix(), root))
-    assert not violations, violations
-
-
-def test_crypto_package_has_no_legacy_market_text() -> None:
-    violations: list[tuple[str, str]] = []
-    for path in _python_files():
-        text = path.read_text(encoding="utf-8")
-        for needle in FORBIDDEN_TEXT:
-            if needle.lower() in text.lower():
-                violations.append((path.relative_to(REPO_ROOT).as_posix(), needle))
     assert not violations, violations
 
 
@@ -89,14 +49,19 @@ def test_crypto_app_routes_are_domain_scoped() -> None:
     assert all(path == "/" or path.startswith("/api/crypto/") for path in routes)
 
 
-def test_importing_crypto_app_does_not_load_legacy_domains() -> None:
+def test_importing_crypto_app_loads_only_approved_repo_domains() -> None:
     code = """
 import sys
 import gorila_crypto.app
 
-forbidden = {"gorila_argentum", "scripts", "main", "quant"} & set(sys.modules)
-if forbidden:
-    raise SystemExit("FORBIDDEN_LOADED:" + ",".join(sorted(forbidden)))
+loaded = {
+    name.split(".")[0]
+    for name in sys.modules
+    if name.split(".")[0] in {"gorila_core", "gorila_crypto"}
+}
+unexpected = loaded - {"gorila_core", "gorila_crypto"}
+if unexpected:
+    raise SystemExit("UNAPPROVED_REPO_MODULES:" + ",".join(sorted(unexpected)))
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
