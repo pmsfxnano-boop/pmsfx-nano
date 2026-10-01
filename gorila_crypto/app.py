@@ -33,7 +33,7 @@ from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
-from gorila_crypto.research_runner import run_crypto_research_once
+from gorila_crypto.research_runner import run_crypto_research_once, run_research_preflight_once
 
 
 _runtime: ProspectiveCryptoIngestor | None = None
@@ -320,6 +320,20 @@ def _research_loop() -> None:
                 )
                 _stop_event.wait(settings.research_interval_seconds)
                 continue
+
+            try:
+                preflight = run_research_preflight_once(store)
+                print(
+                    "GORILA_CRYPTO_RESEARCH_PREFLIGHT "
+                    + json.dumps(preflight, sort_keys=True, default=str),
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    "GORILA_CRYPTO_RESEARCH_PREFLIGHT_ERROR "
+                    + f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
             result = run_crypto_research_once(store)
             print(

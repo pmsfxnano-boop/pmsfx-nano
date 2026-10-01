@@ -1051,6 +1051,142 @@ def _finish_research_run(
         conn.close()
 
 
+
+def run_research_preflight_once(store) -> dict[str, Any]:
+    """Exercise the exact PIT dataset builder before the 7-day cohort matures.
+
+    This is a non-promoting smoke test. It uses only the active prospective
+    capture session, a bounded recent window and the same feature/label builder
+    used by the eventual OOS run. It exists to surface schema, SQL, PIT and
+    finite-value regressions days before the promotion gate can ever open.
+    """
+    now = datetime.now(timezone.utc)
+    session = None
+    conn = store.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT session_id,started_at,ended_at,status,protocol_hash
+                FROM crypto_capture_sessions
+                WHERE study_id=%s AND provider=%s AND venue=%s AND status='RUNNING'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (
+                    PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                    PREREGISTERED_CRYPTO_PROTOCOL.provider,
+                    PREREGISTERED_CRYPTO_PROTOCOL.venue,
+                ),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                session = {
+                    "session_id": str(row[0]),
+                    "started_at": _dt(row[1]),
+                    "ended_at": _dt(row[2]) if row[2] else None,
+                    "status": str(row[3]),
+                    "protocol_hash": str(row[4]),
+                }
+    finally:
+        conn.close()
+
+    if session is None:
+        return {"status": "BLOCKED", "reason": "NO_ACTIVE_PROSPECTIVE_SESSION"}
+
+    start = max(
+        session["started_at"],
+        now - timedelta(minutes=5),
+    )
+    end = now - timedelta(seconds=10)
+    if end <= start:
+        return {
+            "status": "WARMING",
+            "capture_session_id": session["session_id"],
+            "window_seconds": max(0.0, (end - start).total_seconds()),
+        }
+
+    spec = ForecastTargetSpec(
+        horizon_ms=5_000,
+        alignment_tolerance_ms=PREREGISTERED_CRYPTO_PROTOCOL.horizon_alignment_tolerance_ms,
+    )
+    expected_features = set(MICROSTRUCTURE_FEATURES)
+    pair_rows: dict[str, int] = {}
+    total_rows = 0
+    max_latency_ms = 0.0
+    max_leader_book_age_ms = 0.0
+    max_target_book_age_ms = 0.0
+
+    for leader_symbol in PREREGISTERED_CRYPTO_PROTOCOL.symbols:
+        for target_symbol in PREREGISTERED_CRYPTO_PROTOCOL.symbols:
+            if leader_symbol == target_symbol:
+                continue
+            dataset = _dataset_rows(
+                store,
+                session_id=session["session_id"],
+                start=start,
+                end=end,
+                leader_symbol=leader_symbol,
+                target_symbol=target_symbol,
+                target_spec=spec,
+            )
+            key = f"{leader_symbol}->{target_symbol}"
+            pair_rows[key] = len(dataset)
+            total_rows += len(dataset)
+            for row in dataset:
+                if row.snapshot.feature_set_version != FEATURE_SET_VERSION:
+                    raise ResearchRunBlocked(
+                        f"FEATURE_SET_VERSION_MISMATCH:{row.snapshot.feature_set_version}"
+                    )
+                if set(row.snapshot.feature_values) != expected_features:
+                    raise ResearchRunBlocked(
+                        f"FEATURE_SCHEMA_MISMATCH:{leader_symbol}->{target_symbol}"
+                    )
+                for value in row.snapshot.feature_values.values():
+                    if not math.isfinite(float(value)):
+                        raise ResearchRunBlocked(
+                            f"NON_FINITE_FEATURE:{leader_symbol}->{target_symbol}"
+                        )
+                if row.snapshot.decision_received_time > row.label.label_received_time:
+                    raise ResearchRunBlocked(
+                        f"PIT_ORDER_VIOLATION:{leader_symbol}->{target_symbol}"
+                    )
+                max_latency_ms = max(
+                    max_latency_ms,
+                    float(row.snapshot.feature_values.get("leader_transport_latency_ms", 0.0)),
+                )
+                max_leader_book_age_ms = max(
+                    max_leader_book_age_ms,
+                    float(row.snapshot.feature_values.get("leader_book_age_ms", 0.0)),
+                )
+                max_target_book_age_ms = max(
+                    max_target_book_age_ms,
+                    float(row.snapshot.feature_values.get("target_book_age_ms", 0.0)),
+                )
+
+    result = {
+        "status": "PASS" if total_rows else "PASS_EMPTY_SAMPLE",
+        "capture_session_id": session["session_id"],
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+        "window_seconds": max(0.0, (end - start).total_seconds()),
+        "horizon_ms": spec.horizon_ms,
+        "feature_set_version": FEATURE_SET_VERSION,
+        "rows": total_rows,
+        "pair_rows": pair_rows,
+        "max_leader_transport_latency_ms": max_latency_ms,
+        "max_leader_book_age_ms": max_leader_book_age_ms,
+        "max_target_book_age_ms": max_target_book_age_ms,
+    }
+    store.record_connection(
+        source="gorila.crypto.research_preflight",
+        status=result["status"],
+        reason=None,
+        metadata=result,
+    )
+    return result
+
+
 def run_crypto_research_once(store) -> dict[str, Any]:
     """Execute one complete research attempt, or return a hard blocker."""
     now = datetime.now(timezone.utc)
