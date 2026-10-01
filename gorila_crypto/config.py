@@ -6,6 +6,9 @@ import os
 from dataclasses import dataclass
 
 
+BINANCE_PROSPECTIVE_RETENTION_HOURS = 7 * 24
+
+
 def _csv_items(value: str, *, upper: bool = False) -> tuple[str, ...]:
     items = tuple(
         dict.fromkeys(
@@ -84,8 +87,16 @@ class CryptoSettings:
             raise ValueError("storage maintenance interval must be >= 300s")
         if self.retention_trade_hours <= 0:
             raise ValueError("trade retention must be positive")
+        if self.provider == "binance" and self.retention_trade_hours < BINANCE_PROSPECTIVE_RETENTION_HOURS:
+            raise ValueError(
+                "Binance trade retention cannot be shorter than the 7-day prospective cohort"
+            )
         if self.retention_bookticker_hours <= 0:
             raise ValueError("bookTicker retention must be positive")
+        if self.provider == "binance" and self.retention_bookticker_hours < BINANCE_PROSPECTIVE_RETENTION_HOURS:
+            raise ValueError(
+                "Binance bookTicker retention cannot be shorter than the 7-day prospective cohort"
+            )
         if self.retention_depth_hours <= 0:
             raise ValueError("depth retention must be positive")
         if not self.persistence_spool_path.strip():
@@ -151,11 +162,11 @@ settings = CryptoSettings(
     ),
     retention_trade_hours=max(
         1.0,
-        float(os.getenv("GORILA_RETENTION_TRADE_HOURS", "48")),
+        float(os.getenv("GORILA_RETENTION_TRADE_HOURS", str(BINANCE_PROSPECTIVE_RETENTION_HOURS))),
     ),
     retention_bookticker_hours=max(
         1.0,
-        float(os.getenv("GORILA_RETENTION_BOOKTICKER_HOURS", "24")),
+        float(os.getenv("GORILA_RETENTION_BOOKTICKER_HOURS", str(BINANCE_PROSPECTIVE_RETENTION_HOURS))),
     ),
     retention_depth_hours=max(
         0.25,
