@@ -385,7 +385,7 @@ class ProspectiveCryptoIngestor:
         """Deterministic, PIT-neutral sampling of durable trade observations."""
         if event.event_type != "trade":
             return True
-        if not isinstance(self.store, QuantCryptoStore) or self.protocol.version != "3":
+        if not isinstance(self.store, QuantCryptoStore) or self.protocol.version not in {"3", "4"}:
             return True
         trade_id = event.sequence_start
         if trade_id is None:
@@ -642,6 +642,26 @@ class ProspectiveCryptoIngestor:
             received_time,
             now=self.now(),
         )
+        compact_v4 = (
+            isinstance(self.store, QuantCryptoStore)
+            and self.protocol.version == "4"
+        )
+        event_metadata = (
+            {
+                "sequence_kind": event.sequence_kind,
+                "ingest_epoch": self.sequence.epoch,
+            }
+            if compact_v4
+            else {
+                "sequence_kind": event.sequence_kind,
+                "receive_time_ns": event.receive_time_ns,
+                "runtime_run_id": self.run_id,
+                "ingest_epoch": self.sequence.epoch,
+                "event_age_seconds": assessment["event_age_seconds"],
+                "received_age_seconds": assessment["received_age_seconds"],
+                "transport_latency_seconds": assessment["transport_latency_seconds"],
+            }
+        )
         event_kwargs = dict(
             symbol=event.symbol,
             event_type=event.event_type,
@@ -657,15 +677,7 @@ class ProspectiveCryptoIngestor:
             sequence_start=event.sequence_start,
             sequence_end=event.sequence_end,
             quality=event.quality,
-            metadata={
-                "sequence_kind": event.sequence_kind,
-                "receive_time_ns": event.receive_time_ns,
-                "runtime_run_id": self.run_id,
-                "ingest_epoch": self.sequence.epoch,
-                "event_age_seconds": assessment["event_age_seconds"],
-                "received_age_seconds": assessment["received_age_seconds"],
-                "transport_latency_seconds": assessment["transport_latency_seconds"],
-            },
+            metadata=event_metadata,
         )
 
         # Market truth is updated immediately, before any durable operation.
@@ -967,7 +979,7 @@ class ProspectiveCryptoIngestor:
                 )
                 if (
                     isinstance(self.store, QuantCryptoStore)
-                    and self.protocol.version == "3"
+                    and self.protocol.version in {"3", "4"}
                 ):
                     self.store.purge_legacy_unvalidated_events(
                         keep_study_id=self.protocol.study_id
