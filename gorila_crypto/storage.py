@@ -55,6 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_crypto_events_sequence
     ON crypto_events(symbol, sequence_start, sequence_end);
 CREATE INDEX IF NOT EXISTS idx_crypto_events_received
     ON crypto_events(received_time, ledger_seq);
+CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_type_ledger
+    ON crypto_events(symbol, event_type, ledger_seq);
 
 CREATE TABLE IF NOT EXISTS crypto_connection_events (
     connection_id TEXT PRIMARY KEY,

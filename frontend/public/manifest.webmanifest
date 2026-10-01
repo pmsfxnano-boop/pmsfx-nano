@@ -1,0 +1,11 @@
+{
+  "name": "Gorila Argentum",
+  "short_name": "Gorila",
+  "description": "Terminal cuantitativo en tiempo real.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#07090c",
+  "theme_color": "#07090c",
+  "orientation": "any",
+  "categories": ["finance", "business", "productivity"]
+}
