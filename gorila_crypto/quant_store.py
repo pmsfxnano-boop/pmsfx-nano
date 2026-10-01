@@ -1028,6 +1028,7 @@ class QuantCryptoStore(CryptoStore):
             raise ValueError("limit must be positive")
         order_by = {
             "ingest": "e.ledger_seq ASC",
+            "ingest_desc": "e.ledger_seq DESC",
             "event_time": "e.event_time ASC, e.received_time ASC, e.ledger_seq ASC",
         }.get(order)
         if order_by is None:
