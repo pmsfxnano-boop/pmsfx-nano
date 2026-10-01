@@ -32,7 +32,7 @@ SHOCK_THRESHOLD_BPS = 5.0
 REACTION_THRESHOLD_BPS = 2.0
 CONVERGENCE_FRACTION = 0.70
 MAX_OPPORTUNITY_MS = 5_000
-MAX_TARGET_AGE_MS = 500.0
+MAX_TARGET_AGE_MS = 1_000.0
 REFRACTORY_MS = 1_000
 EWMA_ALPHA = 0.08
 EPS = 1e-9
@@ -670,50 +670,17 @@ class DiscreteHazardLearner:
             cdf[horizon] = 1.0 - survival
             previous = horizon
 
-        global_response, global_std = self.global_response_model.predict(features)
-        pair_response_model = self._response_model_for(pair)
-        pair_response, pair_std = pair_response_model.predict(features)
-        pair_response_updates = sum(pair_response_model.health()["updates"].values())
-        response_weight = min(0.90, 0.10 + pair_response_updates / (pair_response_updates + 200.0))
-        conditional_response = {
-            h: max(
-                -MAX_RESPONSE_BPS,
-                min(
-                    MAX_RESPONSE_BPS,
-                    response_weight * pair_response[h]
-                    + (1.0 - response_weight) * global_response[h],
-                ),
-            )
-            for h in self.horizons_ms
-        }
-        response_std = {
-            h: max(
-                MIN_RESPONSE_STD_BPS,
-                response_weight * pair_std[h]
-                + (1.0 - response_weight) * global_std[h],
-            )
-            for h in self.horizons_ms
-        }
-        execution_drag = self._execution_drag_bps(features)
-        expected_net = {
-            h: cdf[h] * conditional_response[h] - execution_drag
-            for h in self.horizons_ms
-        }
-        risk_adjusted_net = {
-            h: cdf[h] * (conditional_response[h] - response_std[h]) - execution_drag
-            for h in self.horizons_ms
-        }
         return HazardForecast(
             pair=pair,
             hazards=hazards,
             probability_by_horizon=cdf,
             survival_by_horizon={h: 1.0 - cdf[h] for h in self.horizons_ms},
             expected_reaction_ms=min(float(self.horizons_ms[-1]), expected),
-            conditional_response_bps=conditional_response,
-            response_std_bps=response_std,
-            expected_net_bps=expected_net,
-            risk_adjusted_net_bps=risk_adjusted_net,
-            execution_drag_bps=execution_drag,
+            conditional_response_bps={},
+            response_std_bps={},
+            expected_net_bps={},
+            risk_adjusted_net_bps={},
+            execution_drag_bps=0.0,
             model_version=MODEL_VERSION,
         )
 
@@ -1106,12 +1073,53 @@ class AdaptiveOpportunityClock:
             cdf[h] = 1.0 - survival
             previous = h
 
+        global_response, global_std = self.global_response_model.predict(features)
+        pair_response_model = self._response_model_for(pair)
+        pair_response, pair_std = pair_response_model.predict(features)
+        pair_response_updates = sum(pair_response_model.health()["updates"].values())
+        response_weight = min(
+            0.90,
+            0.10 + pair_response_updates / (pair_response_updates + 200.0),
+        )
+        conditional_response = {
+            h: max(
+                -MAX_RESPONSE_BPS,
+                min(
+                    MAX_RESPONSE_BPS,
+                    response_weight * pair_response[h]
+                    + (1.0 - response_weight) * global_response[h],
+                ),
+            )
+            for h in self.horizons_ms
+        }
+        response_std = {
+            h: max(
+                MIN_RESPONSE_STD_BPS,
+                response_weight * pair_std[h]
+                + (1.0 - response_weight) * global_std[h],
+            )
+            for h in self.horizons_ms
+        }
+        execution_drag = self._execution_drag_bps(features)
+        expected_net = {
+            h: cdf[h] * conditional_response[h] - execution_drag
+            for h in self.horizons_ms
+        }
+        risk_adjusted_net = {
+            h: cdf[h] * (conditional_response[h] - response_std[h]) - execution_drag
+            for h in self.horizons_ms
+        }
         return HazardForecast(
             pair=pair,
             hazards=hazards,
             probability_by_horizon=cdf,
             survival_by_horizon={h: 1.0 - cdf[h] for h in self.horizons_ms},
             expected_reaction_ms=min(float(self.horizons_ms[-1]), expected),
+            conditional_response_bps=conditional_response,
+            response_std_bps=response_std,
+            expected_net_bps=expected_net,
+            risk_adjusted_net_bps=risk_adjusted_net,
+            execution_drag_bps=execution_drag,
             model_version=MODEL_VERSION,
         )
 
