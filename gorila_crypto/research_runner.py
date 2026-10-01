@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .forecast import DetectionFeatureSnapshot, ForecastTargetSpec
+from .forecast import DetectionFeatureSnapshot, ForecastTargetSpec, MICROSTRUCTURE_FEATURES
 from .lead_lag import LeadLagConfig
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quality import (
@@ -37,7 +37,7 @@ from .ledger import canonical_replay_row
 
 
 RESEARCH_STATUS_SOURCE = "gorila.crypto.research_runner"
-FEATURE_SET_VERSION = "crypto_detection_v1"
+FEATURE_SET_VERSION = "crypto_microstructure_alpha_v1"
 DEFAULT_BATCH = 5000
 
 
@@ -476,6 +476,12 @@ def _dataset_rows(
     target_symbol: str,
     target_spec: ForecastTargetSpec,
 ) -> tuple[ForecastDatasetRow, ...]:
+    """Build PIT-safe forecast rows with a frozen microstructure alpha feature family.
+
+    All features are sourced only from observations whose receive time is no later
+    than the decision receive time.  BookTicker is used only as a top-of-book state;
+    no future depth or trade information enters the feature vector.
+    """
     tol_ms = int(target_spec.alignment_tolerance_ms)
     horizon_ms = int(target_spec.horizon_ms)
     conn = store.connect()
@@ -492,9 +498,11 @@ def _dataset_rows(
         WITH leader_base AS (
             SELECT e.ledger_seq,
                    e.event_id,
-                   e.event_time::timestamptz AS event_time,
-                   e.received_time::timestamptz AS received_time,
-                   (e.payload_json->>'p')::double precision AS price
+                   e.event_time::timestamptz AS et,
+                   e.received_time::timestamptz AS rt,
+                   (e.payload_json::jsonb->>'p')::double precision AS price,
+                   (e.payload_json::jsonb->>'q')::double precision AS quantity,
+                   (e.payload_json::jsonb->>'m')::boolean AS buyer_maker
             FROM crypto_events e
             WHERE e.metadata->>'crypto_study_id' = %s
               AND e.metadata->>'capture_session_id' = %s
@@ -503,6 +511,43 @@ def _dataset_rows(
               AND e.event_type = 'trade'
               AND e.event_time::timestamptz >= %s
               AND e.event_time::timestamptz < %s
+              AND e.received_time::timestamptz >= %s
+              AND e.received_time::timestamptz < %s
+        ),
+        target_base AS (
+            SELECT e.ledger_seq,
+                   e.event_id,
+                   e.event_time::timestamptz AS et,
+                   e.received_time::timestamptz AS rt,
+                   (e.payload_json::jsonb->>'p')::double precision AS price,
+                   (e.payload_json::jsonb->>'q')::double precision AS quantity,
+                   (e.payload_json::jsonb->>'m')::boolean AS buyer_maker
+            FROM crypto_events e
+            WHERE e.metadata->>'crypto_study_id' = %s
+              AND e.metadata->>'capture_session_id' = %s
+              AND e.source = 'binance.websocket.trade'
+              AND e.symbol = %s
+              AND e.event_type = 'trade'
+              AND e.event_time::timestamptz >= %s
+              AND e.event_time::timestamptz < %s
+              AND e.received_time::timestamptz >= %s
+              AND e.received_time::timestamptz < %s
+        ),
+        book_base AS (
+            SELECT e.ledger_seq,
+                   e.event_id,
+                   e.symbol,
+                   e.received_time::timestamptz AS rt,
+                   (e.payload_json::jsonb->>'b')::double precision AS bid,
+                   (e.payload_json::jsonb->>'B')::double precision AS bid_qty,
+                   (e.payload_json::jsonb->>'a')::double precision AS ask,
+                   (e.payload_json::jsonb->>'A')::double precision AS ask_qty
+            FROM crypto_events e
+            WHERE e.metadata->>'crypto_study_id' = %s
+              AND e.metadata->>'capture_session_id' = %s
+              AND e.source = 'binance.websocket.bookTicker'
+              AND e.event_type = 'bookTicker'
+              AND e.symbol IN (%s,%s)
               AND e.received_time::timestamptz >= %s
               AND e.received_time::timestamptz < %s
         ),
@@ -515,17 +560,17 @@ def _dataset_rows(
             CROSS JOIN LATERAL (
                 SELECT p.event_id,p.price
                 FROM leader_base p
-                WHERE p.event_time <= l.event_time - interval '1 second'
-                  AND p.received_time <= l.received_time
-                ORDER BY p.event_time DESC,p.received_time DESC,p.ledger_seq DESC
+                WHERE p.et <= l.et - interval '1 second'
+                  AND p.rt <= l.rt
+                ORDER BY p.et DESC,p.rt DESC,p.ledger_seq DESC
                 LIMIT 1
             ) prev
             WHERE abs(10000.0 * ln(l.price / prev.price)) >= 5.0
         ),
         candidate_gap AS (
             SELECT c.*,
-                   LAG(c.event_time) OVER (
-                       ORDER BY c.event_time,c.received_time,c.ledger_seq
+                   LAG(c.et) OVER (
+                       ORDER BY c.et,c.rt,c.ledger_seq
                    ) AS previous_candidate_time
             FROM leader_candidates c
         ),
@@ -533,101 +578,161 @@ def _dataset_rows(
             SELECT *
             FROM candidate_gap
             WHERE previous_candidate_time IS NULL
-               OR event_time - previous_candidate_time >= interval '1 second'
+               OR et - previous_candidate_time >= interval '1 second'
         )
         SELECT i.ledger_seq AS leader_ledger_seq,
                i.event_id AS leader_event_id,
-               i.event_time AS leader_event_time,
-               i.received_time AS leader_received_time,
+               i.et AS leader_event_time,
+               i.rt AS leader_received_time,
                i.price AS leader_price,
                i.leader_return_bps,
                baseline.event_id AS baseline_event_id,
-               baseline.event_time AS baseline_event_time,
-               baseline.received_time AS baseline_received_time,
+               baseline.et AS baseline_event_time,
+               baseline.rt AS baseline_received_time,
                baseline.price AS baseline_price,
                prior_point.event_id AS prior_event_id,
-               prior_point.event_time AS prior_event_time,
-               prior_point.received_time AS prior_received_time,
+               prior_point.et AS prior_event_time,
+               prior_point.rt AS prior_received_time,
                prior_point.price AS prior_price,
                future_point.event_id AS label_event_id,
-               future_point.event_time AS label_event_time,
-               future_point.received_time AS label_received_time,
-               future_point.price AS future_price
+               future_point.et AS label_event_time,
+               future_point.rt AS label_received_time,
+               future_point.price AS future_price,
+               lb.event_id AS leader_book_event_id,
+               lb.bid AS leader_bid,
+               lb.bid_qty AS leader_bid_qty,
+               lb.ask AS leader_ask,
+               lb.ask_qty AS leader_ask_qty,
+               tb.event_id AS target_book_event_id,
+               tb.bid AS target_bid,
+               tb.bid_qty AS target_bid_qty,
+               tb.ask AS target_ask,
+               tb.ask_qty AS target_ask_qty,
+               lf.signed_qty_1s / NULLIF(lf.gross_qty_1s, 0.0) AS leader_flow_imbalance_1s,
+               lf.signed_qty_5s / NULLIF(lf.gross_qty_5s, 0.0) AS leader_flow_imbalance_5s,
+               LN(1.0 + lf.count_1s) AS leader_trade_intensity_1s,
+               LN(1.0 + lf.count_5s) AS leader_trade_intensity_5s,
+               tf.signed_qty_1s / NULLIF(tf.gross_qty_1s, 0.0) AS target_flow_imbalance_1s,
+               tf.signed_qty_5s / NULLIF(tf.gross_qty_5s, 0.0) AS target_flow_imbalance_5s,
+               LN(1.0 + tf.count_1s) AS target_trade_intensity_1s,
+               LN(1.0 + tf.count_5s) AS target_trade_intensity_5s
         FROM impulses i
         CROSS JOIN LATERAL (
-            SELECT e.event_id,e.event_time::timestamptz AS event_time,
-                   e.received_time::timestamptz AS received_time,
-                   (e.payload_json->>'p')::double precision AS price
-            FROM crypto_events e
-            WHERE e.metadata->>'crypto_study_id' = %s
-              AND e.metadata->>'capture_session_id' = %s
-              AND e.source = 'binance.websocket.trade'
-              AND e.symbol = %s
-              AND e.event_type = 'trade'
-              AND e.event_time::timestamptz <= i.event_time
-              AND e.received_time::timestamptz <= i.received_time
-              AND e.event_time::timestamptz >= %s
-            ORDER BY e.event_time DESC,e.received_time DESC,e.ledger_seq DESC
+            SELECT e.event_id,e.et,e.rt,e.price
+            FROM target_base e
+            WHERE e.et <= i.et
+              AND e.rt <= i.rt
+            ORDER BY e.et DESC,e.rt DESC,e.ledger_seq DESC
             LIMIT 1
         ) baseline
         CROSS JOIN LATERAL (
-            SELECT e.event_id,e.event_time::timestamptz AS event_time,
-                   e.received_time::timestamptz AS received_time,
-                   (e.payload_json->>'p')::double precision AS price
-            FROM crypto_events e
-            WHERE e.metadata->>'crypto_study_id' = %s
-              AND e.metadata->>'capture_session_id' = %s
-              AND e.source = 'binance.websocket.trade'
-              AND e.symbol = %s
-              AND e.event_type = 'trade'
-              AND e.event_time::timestamptz <= i.event_time - interval '1 second'
-              AND e.received_time::timestamptz <= i.received_time
-              AND e.event_time::timestamptz >= %s
-            ORDER BY e.event_time DESC,e.received_time DESC,e.ledger_seq DESC
+            SELECT e.event_id,e.et,e.rt,e.price
+            FROM target_base e
+            WHERE e.et <= i.et - interval '1 second'
+              AND e.rt <= i.rt
+            ORDER BY e.et DESC,e.rt DESC,e.ledger_seq DESC
             LIMIT 1
         ) prior_point
         CROSS JOIN LATERAL (
-            SELECT e.event_id,e.event_time::timestamptz AS event_time,
-                   e.received_time::timestamptz AS received_time,
-                   (e.payload_json->>'p')::double precision AS price
-            FROM crypto_events e
-            WHERE e.metadata->>'crypto_study_id' = %s
-              AND e.metadata->>'capture_session_id' = %s
-              AND e.source = 'binance.websocket.trade'
-              AND e.symbol = %s
-              AND e.event_type = 'trade'
-              AND e.event_time::timestamptz >= GREATEST(
-                  i.event_time + (%s || ' milliseconds')::interval,
-                  i.received_time + (%s || ' milliseconds')::interval
-              )
-              AND e.event_time::timestamptz <= GREATEST(
-                  i.event_time + (%s || ' milliseconds')::interval,
-                  i.received_time + (%s || ' milliseconds')::interval
-              ) + (%s || ' milliseconds')::interval
-              AND e.received_time::timestamptz >= i.received_time
-              AND e.received_time::timestamptz <= i.received_time
-                    + (%s || ' milliseconds')::interval
-                    + (%s || ' milliseconds')::interval
-            ORDER BY e.event_time ASC,e.received_time ASC,e.ledger_seq ASC
+            SELECT e.event_id,e.et,e.rt,e.price
+            FROM target_base e
+            WHERE e.et >= GREATEST(
+                      i.et + (%s || ' milliseconds')::interval,
+                      i.rt + (%s || ' milliseconds')::interval
+                  )
+              AND e.et <= GREATEST(
+                      i.et + (%s || ' milliseconds')::interval,
+                      i.rt + (%s || ' milliseconds')::interval
+                  ) + (%s || ' milliseconds')::interval
+              AND e.rt >= i.rt
+              AND e.rt <= i.rt + (%s || ' milliseconds')::interval + (%s || ' milliseconds')::interval
+            ORDER BY e.et ASC,e.rt ASC,e.ledger_seq ASC
             LIMIT 1
         ) future_point
+        CROSS JOIN LATERAL (
+            SELECT b.*
+            FROM book_base b
+            WHERE b.symbol = %s
+              AND b.rt <= i.rt
+            ORDER BY b.rt DESC,b.ledger_seq DESC
+            LIMIT 1
+        ) lb
+        CROSS JOIN LATERAL (
+            SELECT b.*
+            FROM book_base b
+            WHERE b.symbol = %s
+              AND b.rt <= i.rt
+            ORDER BY b.rt DESC,b.ledger_seq DESC
+            LIMIT 1
+        ) tb
+        CROSS JOIN LATERAL (
+            SELECT
+                COALESCE(SUM(
+                    CASE
+                        WHEN e.buyer_maker IS TRUE THEN -1.0 * COALESCE(e.quantity,0.0)
+                        WHEN e.buyer_maker IS FALSE THEN 1.0 * COALESCE(e.quantity,0.0)
+                        ELSE 0.0
+                    END
+                ) FILTER (WHERE e.et > i.et - interval '1 second'), 0.0) AS signed_qty_1s,
+                COALESCE(SUM(COALESCE(e.quantity,0.0)) FILTER (WHERE e.et > i.et - interval '1 second'), 0.0) AS gross_qty_1s,
+                COUNT(*) FILTER (WHERE e.et > i.et - interval '1 second') AS count_1s,
+                COALESCE(SUM(
+                    CASE
+                        WHEN e.buyer_maker IS TRUE THEN -1.0 * COALESCE(e.quantity,0.0)
+                        WHEN e.buyer_maker IS FALSE THEN 1.0 * COALESCE(e.quantity,0.0)
+                        ELSE 0.0
+                    END
+                ) FILTER (WHERE e.et > i.et - interval '5 seconds'), 0.0) AS signed_qty_5s,
+                COALESCE(SUM(COALESCE(e.quantity,0.0)) FILTER (WHERE e.et > i.et - interval '5 seconds'), 0.0) AS gross_qty_5s,
+                COUNT(*) FILTER (WHERE e.et > i.et - interval '5 seconds') AS count_5s
+            FROM leader_base e
+            WHERE e.et <= i.et
+              AND e.rt <= i.rt
+        ) lf
+        CROSS JOIN LATERAL (
+            SELECT
+                COALESCE(SUM(
+                    CASE
+                        WHEN e.buyer_maker IS TRUE THEN -1.0 * COALESCE(e.quantity,0.0)
+                        WHEN e.buyer_maker IS FALSE THEN 1.0 * COALESCE(e.quantity,0.0)
+                        ELSE 0.0
+                    END
+                ) FILTER (WHERE e.et > i.et - interval '1 second'), 0.0) AS signed_qty_1s,
+                COALESCE(SUM(COALESCE(e.quantity,0.0)) FILTER (WHERE e.et > i.et - interval '1 second'), 0.0) AS gross_qty_1s,
+                COUNT(*) FILTER (WHERE e.et > i.et - interval '1 second') AS count_1s,
+                COALESCE(SUM(
+                    CASE
+                        WHEN e.buyer_maker IS TRUE THEN -1.0 * COALESCE(e.quantity,0.0)
+                        WHEN e.buyer_maker IS FALSE THEN 1.0 * COALESCE(e.quantity,0.0)
+                        ELSE 0.0
+                    END
+                ) FILTER (WHERE e.et > i.et - interval '5 seconds'), 0.0) AS signed_qty_5s,
+                COALESCE(SUM(COALESCE(e.quantity,0.0)) FILTER (WHERE e.et > i.et - interval '5 seconds'), 0.0) AS gross_qty_5s,
+                COUNT(*) FILTER (WHERE e.et > i.et - interval '5 seconds') AS count_5s
+            FROM target_base e
+            WHERE e.et <= i.et
+              AND e.rt <= i.rt
+        ) tf
         WHERE baseline.event_id <> prior_point.event_id
+          AND lb.event_id IS NOT NULL
+          AND tb.event_id IS NOT NULL
+          AND lf.gross_qty_1s > 0
+          AND lf.gross_qty_5s > 0
+          AND tf.gross_qty_1s > 0
+          AND tf.gross_qty_5s > 0
         """
         params = (
-            *common_scope[:2],
-            leader_symbol,
+            *common_scope,
+            PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+            session_id,
+            target_symbol,
             *common_scope[2:],
             PREREGISTERED_CRYPTO_PROTOCOL.study_id,
             session_id,
+            leader_symbol,
             target_symbol,
             start.isoformat(),
-            PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-            session_id,
-            target_symbol,
-            start.isoformat(),
-            PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-            session_id,
-            target_symbol,
+            end.isoformat(),
             horizon_ms,
             horizon_ms,
             horizon_ms,
@@ -635,6 +740,8 @@ def _dataset_rows(
             tol_ms,
             horizon_ms,
             tol_ms,
+            leader_symbol,
+            target_symbol,
         )
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -643,21 +750,48 @@ def _dataset_rows(
     finally:
         conn.close()
 
+    import math
+
     output: list[ForecastDatasetRow] = []
-    direction_multiplier = 1.0
     for raw in rows:
         item = dict(zip(cols, raw))
         leader_return = float(item["leader_return_bps"])
-        direction_multiplier = 1.0 if leader_return >= 0 else -1.0
         baseline_price = float(item["baseline_price"])
         prior_price = float(item["prior_price"])
         future_price = float(item["future_price"])
         if baseline_price <= 0 or prior_price <= 0 or future_price <= 0:
             continue
 
-        target_return = 10000.0 * __import__("math").log(baseline_price / prior_price)
-        realized_raw = 10000.0 * __import__("math").log(future_price / baseline_price)
+        target_return = 10000.0 * math.log(baseline_price / prior_price)
+        realized_raw = 10000.0 * math.log(future_price / baseline_price)
+        direction_multiplier = 1.0 if leader_return >= 0 else -1.0
         signed = direction_multiplier * realized_raw
+
+        def _book_features(prefix: str) -> dict[str, float]:
+            bid = float(item[f"{prefix}_bid"])
+            ask = float(item[f"{prefix}_ask"])
+            bid_qty = float(item[f"{prefix}_bid_qty"])
+            ask_qty = float(item[f"{prefix}_ask_qty"])
+            depth = bid_qty + ask_qty
+            mid = 0.5 * (bid + ask)
+            micro = (
+                (ask * bid_qty + bid * ask_qty) / depth
+                if depth > 0
+                else mid
+            )
+            return {
+                f"{prefix}_queue_imbalance": (bid_qty - ask_qty) / depth if depth > 0 else 0.0,
+                f"{prefix}_spread_bps": ((ask / bid) - 1.0) * 10_000.0 if bid > 0 else 0.0,
+                f"{prefix}_microprice_gap_bps": ((micro / mid) - 1.0) * 10_000.0 if mid > 0 else 0.0,
+            }
+
+        leader_book = _book_features("leader")
+        target_book = _book_features("target")
+        leader_flow_1s = float(item["leader_flow_imbalance_1s"])
+        leader_flow_5s = float(item["leader_flow_imbalance_5s"])
+        target_flow_1s = float(item["target_flow_imbalance_1s"])
+        target_flow_5s = float(item["target_flow_imbalance_5s"])
+
         features = {
             "leader_return_bps": leader_return,
             "leader_abs_return_bps": abs(leader_return),
@@ -676,11 +810,26 @@ def _dataset_rows(
                 0.0,
                 (item["leader_event_time"] - item["baseline_event_time"]).total_seconds() * 1000.0,
             ),
+            "leader_flow_imbalance_1s": leader_flow_1s,
+            "leader_flow_imbalance_5s": leader_flow_5s,
+            "leader_trade_intensity_1s": float(item["leader_trade_intensity_1s"]),
+            "leader_trade_intensity_5s": float(item["leader_trade_intensity_5s"]),
+            "target_flow_imbalance_1s": target_flow_1s,
+            "target_flow_imbalance_5s": target_flow_5s,
+            "target_trade_intensity_1s": float(item["target_trade_intensity_1s"]),
+            "target_trade_intensity_5s": float(item["target_trade_intensity_5s"]),
+            **leader_book,
+            **target_book,
+            "leader_flow_x_shock": leader_return * leader_flow_1s,
+            "relative_flow_pressure": leader_flow_1s - target_flow_1s,
         }
+
         source_ids = (
             str(item["leader_event_id"]),
             str(item["baseline_event_id"]),
             str(item["prior_event_id"]),
+            str(item["leader_book_event_id"]),
+            str(item["target_book_event_id"]),
         )
         feature_hash = _feature_hash(
             leader_symbol=leader_symbol,
@@ -702,14 +851,10 @@ def _dataset_rows(
             feature_set_hash=feature_hash,
         )
         actual_event_horizon_ms = int(
-            round(
-                (item["label_event_time"] - item["leader_event_time"]).total_seconds() * 1000.0
-            )
+            round((item["label_event_time"] - item["leader_event_time"]).total_seconds() * 1000.0)
         )
         actual_receive_horizon_ms = int(
-            round(
-                (item["label_received_time"] - item["leader_received_time"]).total_seconds() * 1000.0
-            )
+            round((item["label_received_time"] - item["leader_received_time"]).total_seconds() * 1000.0)
         )
         label = ForecastLabel(
             realized_target=1 if signed > 0 else 0,
@@ -733,7 +878,6 @@ def _dataset_rows(
         )
     )
     return tuple(output)
-
 
 def _research_identity(session_id: str, replay_fingerprint: str) -> str:
     return hashlib.sha256(
@@ -996,7 +1140,10 @@ def run_crypto_research_once(store) -> dict[str, Any]:
                         f"{leader_symbol}->{target_symbol}@{target_spec.horizon_ms}:INSUFFICIENT_DATASET"
                     )
                     continue
-                feature_names = tuple(sorted(dataset[0].snapshot.feature_values))
+                feature_names = tuple(MICROSTRUCTURE_FEATURES)
+                if any(set(row.snapshot.feature_values) != set(feature_names) for row in dataset):
+                    blocked_pairs.append(f"{leader_symbol}->{target_symbol}@{target_spec.horizon_ms}:FEATURE_SCHEMA_MISMATCH")
+                    continue
                 report_oos = run_quality_gated_walk_forward(
                     dataset,
                     feature_names,
@@ -1005,8 +1152,8 @@ def run_crypto_research_once(store) -> dict[str, Any]:
                     quality_report=asdict(report),
                     minimum_quality_rows=report.rows,
                     replay_fingerprint=replay_fp,
-                    model_id=f"crypto-ridge-logit-wf-{leader_symbol}-{target_symbol}",
-                    model_version="1",
+                    model_id=f"crypto-microstructure-ridge-logit-wf-{leader_symbol}-{target_symbol}",
+                    model_version="2",
                     placebo_block_size=PREREGISTERED_CRYPTO_PROTOCOL.placebo_block_size,
                     placebo_iterations=PREREGISTERED_CRYPTO_PROTOCOL.placebo_iterations,
                     stress_scenarios=stress,

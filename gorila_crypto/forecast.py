@@ -17,7 +17,36 @@ from typing import Mapping
 from .lead_lag import LeadLagConfig, PricePoint
 
 
-FEATURE_SET_VERSION = "crypto_detection_v1"
+FEATURE_SET_VERSION = "crypto_microstructure_alpha_v1"
+
+# Frozen alpha family for the next validation cohort.  The current capture remains
+# descriptive/shadow until the complete prospective protocol is mature.
+MICROSTRUCTURE_FEATURES = (
+    "leader_return_bps",
+    "leader_abs_return_bps",
+    "leader_direction",
+    "leader_transport_latency_ms",
+    "target_return_bps_lookback",
+    "target_abs_return_bps_lookback",
+    "target_information_age_ms",
+    "target_market_age_ms",
+    "leader_flow_imbalance_1s",
+    "leader_flow_imbalance_5s",
+    "leader_trade_intensity_1s",
+    "leader_trade_intensity_5s",
+    "target_flow_imbalance_1s",
+    "target_flow_imbalance_5s",
+    "target_trade_intensity_1s",
+    "target_trade_intensity_5s",
+    "leader_queue_imbalance",
+    "leader_spread_bps",
+    "leader_microprice_gap_bps",
+    "target_queue_imbalance",
+    "target_spread_bps",
+    "target_microprice_gap_bps",
+    "leader_flow_x_shock",
+    "relative_flow_pressure",
+)
 FORECAST_SEMANTICS = "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)"
 
 
