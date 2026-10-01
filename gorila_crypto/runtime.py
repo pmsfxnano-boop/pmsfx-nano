@@ -616,6 +616,22 @@ class ProspectiveCryptoIngestor:
         ):
             durability = "DEGRADED"
             durability_reason = "PERSISTENCE_QUEUE_PRESSURE"
+        elif (
+            isinstance(self.store, QuantCryptoStore)
+            and self.session_id is not None
+            and self.last_event is not None
+            and self._persistence_last_success_monotonic <= 0
+        ):
+            durability = "DEGRADED"
+            durability_reason = "DURABLE_WRITE_UNCONFIRMED"
+        elif (
+            isinstance(self.store, QuantCryptoStore)
+            and self.session_id is not None
+            and last_success_age is not None
+            and last_success_age > settings.durability_live_max_age_seconds
+        ):
+            durability = "DEGRADED"
+            durability_reason = "DURABLE_WRITE_STALE"
 
         return {
             "market_plane": "LIVE" if self.last_event is not None else "STARTING",
@@ -638,6 +654,64 @@ class ProspectiveCryptoIngestor:
             ),
             "evidence_spool": spool_stats,
             "evidence_spool_error": self._persistence_spool_error,
+            "durability_live_max_age_seconds": settings.durability_live_max_age_seconds,
+            "recovery_gate": self.recovery_gate(),
+        }
+
+    def recovery_gate(self) -> dict[str, Any]:
+        """Block research until durable evidence is complete and fresh."""
+        production_scoped = isinstance(self.store, QuantCryptoStore)
+        if not production_scoped:
+            return {
+                "status": "NOT_APPLICABLE",
+                "production_scoped": False,
+                "reasons": [],
+            }
+
+        now = time.monotonic()
+        last_success_age = (
+            None
+            if self._persistence_last_success_monotonic <= 0
+            else max(0.0, now - self._persistence_last_success_monotonic)
+        )
+        spool_stats = (
+            self._evidence_spool.stats()
+            if self._evidence_spool is not None
+            else {"batches": 0, "bytes": 0}
+        )
+        dropped = self._persistence_dropped_events + self._persistence_spool_overflow
+        symbols = self.symbol_health()
+        reasons: list[str] = []
+
+        if self.session_id is None:
+            reasons.append("STORAGE_SESSION_PENDING")
+        if spool_stats["batches"] > 0:
+            reasons.append("EVIDENCE_SPOOL_PENDING")
+        if self._persistence_queue.qsize() > 0:
+            reasons.append("PERSISTENCE_QUEUE_PENDING")
+        if dropped > 0:
+            reasons.append("PERSISTENCE_DROPS")
+        if last_success_age is None:
+            reasons.append("DURABLE_WRITE_UNCONFIRMED")
+        elif last_success_age > settings.durability_live_max_age_seconds:
+            reasons.append("DURABLE_WRITE_STALE")
+        if not symbols or not all(row["status"] == "LIVE" for row in symbols):
+            reasons.append("REQUIRED_SYMBOL_NOT_LIVE")
+
+        return {
+            "status": "PASS" if not reasons else "BLOCKED",
+            "production_scoped": True,
+            "reasons": reasons,
+            "capture_session_id": self.session_id,
+            "last_durable_success_age_seconds": last_success_age,
+            "durability_live_max_age_seconds": settings.durability_live_max_age_seconds,
+            "evidence_spool": {
+                "batches": int(spool_stats.get("batches", 0)),
+                "bytes": int(spool_stats.get("bytes", 0)),
+            },
+            "persistence_queue_batches": self._persistence_queue.qsize(),
+            "persistence_dropped_events": dropped,
+            "symbols": symbols,
         }
 
     def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
