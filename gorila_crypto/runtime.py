@@ -187,7 +187,15 @@ class ProspectiveCryptoIngestor:
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
             "status": status,
-            "metadata": metadata or {},
+            "metadata": {
+                "run_id": self.run_id,
+                **(
+                    {"capture_session_id": self.session_id}
+                    if self.session_id is not None
+                    else {}
+                ),
+                **(metadata or {}),
+            },
             "run_id": self.run_id,
         }
         print(
