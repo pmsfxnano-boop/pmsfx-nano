@@ -144,6 +144,7 @@ class ProspectiveCryptoIngestor:
         self._bootstrap_stop = threading.Event()
         self._persistence_spool_overflow = 0
         self._persistence_spool_error: str | None = None
+        self._last_spool_log_monotonic = 0.0
         try:
             self._evidence_spool: EvidenceSpool | None = EvidenceSpool(
                 path=settings.persistence_spool_path,
@@ -205,8 +206,47 @@ class ProspectiveCryptoIngestor:
             self._persistence_spool_overflow += dropped
             MARKET_CACHE.record_persistence_drop(dropped)
             return False
+
+        spooled_at = datetime.now(timezone.utc).isoformat()
+        spooled_rows: list[dict[str, Any]] = []
+        for row in rows:
+            copied = dict(row)
+            metadata = dict(copied.get("metadata") or {})
+            metadata.setdefault(
+                "spool_original_capture_session_id",
+                self.session_id,
+            )
+            metadata["durability_origin"] = "SESSION_LOCAL_SPOOL"
+            metadata["spooled_at"] = spooled_at
+            copied["metadata"] = metadata
+            spooled_rows.append(copied)
+
         try:
-            self._evidence_spool.append(rows)
+            batch_id = self._evidence_spool.append(spooled_rows)
+            self._persistence_error = self._persistence_error or (
+                "durability_spooled_pending"
+            )
+            now = time.monotonic()
+            if now - self._last_spool_log_monotonic >= 10.0:
+                stats = self._evidence_spool.stats()
+                print(
+                    "GORILA_EVIDENCE_SPOOL "
+                    + json.dumps(
+                        {
+                            "batch_id": batch_id,
+                            "rows": len(spooled_rows),
+                            "batches": stats["batches"],
+                            "bytes": stats["bytes"],
+                            "max_bytes": stats["max_bytes"],
+                            "max_batches": stats["max_batches"],
+                            "oldest_created_at": stats["oldest_created_at"],
+                        },
+                        sort_keys=True,
+                        default=str,
+                    ),
+                    flush=True,
+                )
+                self._last_spool_log_monotonic = now
             return True
         except OverflowError as exc:
             self._persistence_spool_error = str(exc)
@@ -559,7 +599,11 @@ class ProspectiveCryptoIngestor:
             durability = "DEGRADED"
             durability_reason = self._persistence_error
         elif spool_stats["batches"] > 0:
-            durability = "DEGRADED"
+            durability = (
+                "RECOVERING"
+                if isinstance(self.store, QuantCryptoStore) and self.session_id is not None
+                else "DEGRADED"
+            )
             durability_reason = "EVIDENCE_SPOOL_PENDING"
         elif self._persistence_spool_overflow > 0:
             durability = "DEGRADED"
