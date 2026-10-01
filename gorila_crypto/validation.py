@@ -270,8 +270,6 @@ def label_snapshot(
         )
     )
     tolerance = int(target_spec.alignment_tolerance_ms)
-    if actual_event_horizon_ms > target_spec.horizon_ms + tolerance:
-        return None
     if actual_receive_horizon_ms > target_spec.horizon_ms + tolerance:
         return None
 
