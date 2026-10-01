@@ -502,34 +502,50 @@ class ProspectiveCryptoIngestor:
                 self._feed_watchdog_grace_until = (
                     time.monotonic() + self._feed_stale_timeout_seconds
                 )
-                feed_restart_requested = False
-                for event in self.adapter.iter_forever(
-                    stop_event=self._feed_stop_event,
-                    on_connection=self._on_connection,
-                ):
-                    self._ingest(event)
-                    now_monotonic = time.monotonic()
-                    self._feed_watchdog_grace_until = 0.0
-                    pending_age = (
-                        now_monotonic - self._pending_event_started_monotonic
-                        if self._pending_event_started_monotonic is not None
-                        else 0.0
-                    )
-                    if (
-                        len(self._pending_event_rows) >= self.config.event_batch_size
-                        or pending_age >= self.config.event_batch_flush_interval_seconds
+                feed_exception: Exception | None = None
+                try:
+                    for event in self.adapter.iter_forever(
+                        stop_event=self._feed_stop_event,
+                        on_connection=self._on_connection,
                     ):
-                        self._flush_pending_events()
-                    if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
-                        if not self.store.heartbeat_runtime_run(self.run_id):
-                            self.last_error = "runtime_lease_lost"
-                            status = "LEASE_LOST"
-                            self.stop_event.set()
+                        self._ingest(event)
+                        now_monotonic = time.monotonic()
+                        self._feed_watchdog_grace_until = 0.0
+                        pending_age = (
+                            now_monotonic - self._pending_event_started_monotonic
+                            if self._pending_event_started_monotonic is not None
+                            else 0.0
+                        )
+                        if (
+                            len(self._pending_event_rows) >= self.config.event_batch_size
+                            or pending_age >= self.config.event_batch_flush_interval_seconds
+                        ):
+                            self._flush_pending_events()
+                        if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
+                            if not self.store.heartbeat_runtime_run(self.run_id):
+                                self.last_error = "runtime_lease_lost"
+                                status = "LEASE_LOST"
+                                self.stop_event.set()
+                                break
+                            self._last_runtime_heartbeat = now_monotonic
+                        if self.stop_event.is_set():
+                            status = "STOPPED"
                             break
-                        self._last_runtime_heartbeat = now_monotonic
-                    if self.stop_event.is_set():
-                        status = "STOPPED"
-                        break
+                except Exception as exc:
+                    if not production_scoped or self.stop_event.is_set():
+                        raise
+                    # Transport/adapter failures are feed-scoped. Preserve the
+                    # durable prospective cohort and rebuild only the feed.
+                    feed_exception = exc
+                    self.last_error = f"feed_adapter_error:{type(exc).__name__}: {exc}"
+                    self._record_connection(
+                        "FEED_ERROR",
+                        {
+                            "error": self.last_error,
+                            "capture_session_id": self.session_id,
+                            "recoverable": True,
+                        },
+                    )
 
                 if self.stop_event.is_set():
                     status = "STOPPED"
@@ -545,7 +561,11 @@ class ProspectiveCryptoIngestor:
                             "reason": (
                                 "STALE_FEED"
                                 if feed_restart_requested
-                                else "STREAM_ENDED"
+                                else (
+                                    f"ADAPTER_EXCEPTION:{type(feed_exception).__name__}"
+                                    if feed_exception is not None
+                                    else "STREAM_ENDED"
+                                )
                             ),
                             "capture_session_id": self.session_id,
                         },
