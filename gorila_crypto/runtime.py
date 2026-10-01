@@ -19,6 +19,7 @@ from gorila_core.market_freshness import assess_observation
 
 from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
+from .market_cache import MARKET_CACHE
 from .config import settings
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quant_store import QuantCryptoStore
@@ -207,6 +208,10 @@ class ProspectiveCryptoIngestor:
             )
         else:
             results = self.store.append_events(rows)
+        # Update the hot read model only after the durable append succeeds.
+        # This keeps Postgres as the source of truth while removing DB latency
+        # from the frontend polling path.
+        MARKET_CACHE.append_persisted(rows, results)
         self.events_inserted += sum(1 for result in results if result["inserted"])
         self.events_duplicate += sum(1 for result in results if not result["inserted"])
 
