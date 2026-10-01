@@ -58,7 +58,9 @@ class BinanceStreamConfig:
     rest_base_url: str = SPOT_REST_BASE
     depth_limit: int = DEFAULT_DEPTH_LIMIT
     connect_timeout_s: float = 10.0
-    ping_interval_s: float | None = None
+    # Explicit transport heartbeat is required for long-lived public WebSocket capture.
+    ping_interval_s: float | None = 15.0
+    ping_timeout_s: float = 5.0
     recv_timeout_s: float = 20.0
     connection_max_seconds: float = 23.5 * 3600.0
 
@@ -77,6 +79,12 @@ class BinanceStreamConfig:
             raise ValueError("depth_limit must be between 1 and 5000")
         if self.connect_timeout_s <= 0 or self.recv_timeout_s <= 0:
             raise ValueError("timeouts must be positive")
+        if self.ping_interval_s is not None and self.ping_interval_s <= 0:
+            raise ValueError("ping_interval_s must be positive when configured")
+        if self.ping_timeout_s <= 0:
+            raise ValueError("ping_timeout_s must be positive")
+        if self.ping_interval_s is not None and self.ping_timeout_s >= self.ping_interval_s:
+            raise ValueError("ping_timeout_s must be smaller than ping_interval_s")
         object.__setattr__(self, "symbols", symbols)
         object.__setattr__(self, "streams", streams)
 
@@ -474,8 +482,12 @@ class BinanceSpotMarketAdapter:
             self.config.ws_base_url,
             timeout=self.config.recv_timeout_s,
             ping_interval=self.config.ping_interval_s,
+            ping_timeout=self.config.ping_timeout_s,
             enable_multithread=True,
         )
+        # Re-assert the receive timeout after the handshake so a stalled socket
+        # cannot block recovery indefinitely if the websocket client changes it.
+        ws.settimeout(self.config.recv_timeout_s)
         ws.send(json.dumps(self.subscription_request(), separators=(",", ":")))
         return ws
 
