@@ -38,7 +38,7 @@ jobs:
 
             if curl --fail --silent --show-error --max-time 20               -D "$tmp_headers"               -H "Origin: $FRONTEND_ORIGIN"               "$MARKET_URL" >"$tmp_body"; then
               market_ok=1
-              if grep -qi "^access-control-allow-origin: $FRONTEND_ORIGIN$" "$tmp_headers"; then
+              if tr -d "\r" < "$tmp_headers" | grep -qi "^access-control-allow-origin: $FRONTEND_ORIGIN$"; then
                 cors_ok=1
               fi
             fi
