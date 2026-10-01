@@ -1,8 +1,7 @@
-"""Isolated Crypto application boundary with optional prospective capture.
+"""Cryptonita Crypto application boundary with optional prospective capture.
 
-The default state remains inert. A dedicated cleanroom deployment can enable the
-Binance ingestion worker via environment configuration; production/legacy domains
-are not modified by this module.
+The default state remains inert. A dedicated deployment can enable the Binance
+ingestion worker through environment configuration.
 """
 
 from __future__ import annotations
@@ -40,74 +39,6 @@ _supervisor_thread: threading.Thread | None = None
 _runtime_lock = threading.Lock()
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
-
-
-def _retire_legacy_objects_if_enabled(store: CryptoStore) -> None:
-    flag = __import__("os").getenv("GORILA_CRYPTO_RETIRE_LEGACY", "").strip().lower()
-    if flag not in {"1", "true", "yes", "on"}:
-        return
-    if not store.durable:
-        raise RuntimeError("legacy_retirement_requires_durable_postgres")
-    conn = store.connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS crypto_legacy_retirement (
-                    retirement_id TEXT PRIMARY KEY,
-                    executed_at TEXT NOT NULL,
-                    code_version TEXT,
-                    dropped_schema TEXT NOT NULL,
-                    dropped_public_tables_json TEXT NOT NULL
-                )
-                """
-            )
-            cur.execute(
-                "DROP SCHEMA IF EXISTS gorila_argentum CASCADE"
-            )
-            cur.execute(
-                """
-                DROP TABLE IF EXISTS
-                    public.backtest_runs,
-                    public.forecast_outcomes,
-                    public.forecasts,
-                    public.model_registry,
-                    public.online_cohort_samples,
-                    public.research_runs
-                CASCADE
-                """
-            )
-            cur.execute(
-                """
-                INSERT INTO crypto_legacy_retirement(
-                    retirement_id, executed_at, code_version,
-                    dropped_schema, dropped_public_tables_json
-                )
-                VALUES(%s,%s,%s,%s,%s)
-                """,
-                (
-                    __import__("uuid").uuid4().hex,
-                    datetime.now(timezone.utc).isoformat(),
-                    __import__("os").getenv("RENDER_GIT_COMMIT")
-                    or __import__("os").getenv("GORILA_CRYPTO_CODE_VERSION"),
-                    "gorila_argentum",
-                    json.dumps(
-                        [
-                            "public.backtest_runs",
-                            "public.forecast_outcomes",
-                            "public.forecasts",
-                            "public.model_registry",
-                            "public.online_cohort_samples",
-                            "public.research_runs",
-                        ],
-                        sort_keys=True,
-                    ),
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
 
 
 def _new_store() -> CryptoStore:
@@ -354,29 +285,6 @@ async def lifespan(app: FastAPI):
     _stop_event.clear()
     _capture_block_reason = None
 
-    retirement_flag = os.getenv("GORILA_CRYPTO_RETIRE_LEGACY", "").strip().lower()
-    print(
-        "GORILA_LEGACY_RETIREMENT_CHECK "
-        + json.dumps(
-            {
-                "enabled": retirement_flag in {"1", "true", "yes", "on"},
-                "ingest_enabled": settings.ingest_enabled,
-                "database_configured": bool(CryptoStore().database_url),
-            },
-            sort_keys=True,
-        ),
-        flush=True,
-    )
-    if retirement_flag in {"1", "true", "yes", "on"}:
-        try:
-            _retire_legacy_objects_if_enabled(_new_store())
-        except Exception as exc:
-            _capture_block_reason = f"LEGACY_RETIREMENT_FAILED:{type(exc).__name__}:{exc}"
-            print(
-                "GORILA_LEGACY_RETIREMENT_FAILED "
-                + _capture_block_reason,
-                flush=True,
-            )
 
     if settings.ingest_enabled and _capture_block_reason is None:
         _start_runtime_thread()
@@ -509,6 +417,7 @@ def health() -> dict[str, Any]:
     }
     if not worker_alive and capture_enabled:
         payload["status"] = "CAPTURE_WORKER_DEAD"
+        raise HTTPException(status_code=503, detail=payload)
     return payload
 
 

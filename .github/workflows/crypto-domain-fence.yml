@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          forbidden='(bcra|byma|iol|rava|tiingo|twelve[_ -]?data|yahoo|cedear|mep|aapl|msft|nvda|tsla|nasdaq|nyse|pamp|ypfd|cepu|tgsu2|bma)'
+          forbidden='(^|[^A-Za-z0-9])(bcra|byma|iol|rava|tiingo|twelve[_ -]?data|yahoo|cedear|mep|aapl|msft|nvda|tsla|nasdaq|nyse|pamp|ypfd|cepu|tgsu2|bma)([^A-Za-z0-9]|$)'
           matches="$(git grep -nEi "$forbidden" --             ':!*.md'             ':!docs/**'             ':!.github/workflows/crypto-domain-fence.yml'             || true)"
           if [ -n "$matches" ]; then
             echo "::error::Crypto-only domain fence found prohibited non-Crypto integration references:"
