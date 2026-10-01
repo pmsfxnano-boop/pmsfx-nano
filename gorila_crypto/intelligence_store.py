@@ -115,6 +115,83 @@ class IntelligenceStore:
         finally:
             conn.close()
 
+
+    def commit_state_and_training_events(
+        self,
+        *,
+        state_id: str,
+        model_version: str,
+        capture_session_id: str,
+        last_ledger_seq: int,
+        state: Mapping[str, Any],
+        training_rows: list[Mapping[str, Any]],
+    ) -> bool:
+        """Atomically persist learner state and its training examples.
+
+        The ledger sequence and model state advance in the same transaction as
+        the examples that caused the update. A crash cannot leave the audit
+        ledger ahead of the model state.
+        """
+        self.init()
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(state, sort_keys=True, separators=(",", ":"))
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                for row in training_rows:
+                    training_event_id = hashlib.sha256(
+                        f"{row['opportunity_id']}|{row['model_version']}|{capture_session_id}".encode("utf-8")
+                    ).hexdigest()
+                    cur.execute(
+                        """
+                        INSERT INTO crypto_opportunity_intelligence_events
+                        (training_event_id,opportunity_id,model_version,capture_session_id,pair,duration_ms,
+                         event_observed,leader_return_bps,signed_reaction_bps,reaction_event_id,
+                         replay_fingerprint,created_at,features_json)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(training_event_id) DO NOTHING
+                        """,
+                        (
+                            training_event_id,
+                            row["opportunity_id"],
+                            row["model_version"],
+                            capture_session_id,
+                            row["pair"],
+                            float(row["duration_ms"]),
+                            int(bool(row["event_observed"])),
+                            float(row["leader_return_bps"]),
+                            float(row["signed_reaction_bps"]),
+                            row.get("reaction_event_id"),
+                            row["replay_fingerprint"],
+                            now,
+                            json.dumps(row["features"], sort_keys=True, separators=(",", ":")),
+                        ),
+                    )
+                cur.execute(
+                    """
+                    INSERT INTO crypto_opportunity_intelligence_state
+                    (state_id,model_version,capture_session_id,last_ledger_seq,updated_at,state_json)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT(state_id) DO UPDATE SET
+                      model_version=EXCLUDED.model_version,
+                      capture_session_id=EXCLUDED.capture_session_id,
+                      last_ledger_seq=EXCLUDED.last_ledger_seq,
+                      updated_at=EXCLUDED.updated_at,
+                      state_json=EXCLUDED.state_json
+                    WHERE crypto_opportunity_intelligence_state.last_ledger_seq
+                          <= EXCLUDED.last_ledger_seq
+                    """,
+                    (state_id, model_version, capture_session_id, int(last_ledger_seq), now, payload),
+                )
+                committed = cur.rowcount > 0
+            conn.commit()
+            return committed
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def save_training_event(self, *, capture_session_id: str, row: Mapping[str, Any]) -> bool:
         self.init()
         conn = self.connect()
