@@ -1,6 +1,6 @@
 # Crypto Backend Continuity State
 
-Last verified: 2026-10-01 02:03 UTC.
+Last verified: 2026-10-01 03:20 UTC.
 
 Canonical scope: Crypto only. Active branches: main, gorila-crypto-binance-parallel, gorila-crypto-cleanroom.
 
@@ -38,3 +38,17 @@ Current blockers:
 8. Frankfurt remains not considered clean-live until separately verified.
 Automatic promotion remains disabled.
 
+
+
+## Incident — 2026-10-01 Free-tier spin-down
+
+The canonical Crypto capture service srv-dau169flk1mc73d9phhg was verified on Render Free. Its instance logged shutdown at 2026-10-01T02:16:45Z after the last persisted market events around 02:15:13Z. The corresponding capture session b1b79084-fd1d-48bd-89a8-c8b8598fa889 must not be treated as an uninterrupted prospective cohort.
+
+Render documents that Free web services spin down after 15 minutes without inbound HTTP/WebSocket traffic. The queried HTTP metric series for the service was empty during the affected interval. This is an infrastructure-plan limitation, not a watchdog logic failure.
+
+Recovery rule:
+- do not stitch across the outage;
+- do not run QG/OOS on the interrupted cohort;
+- move canonical capture to continuously running paid compute before starting a replacement prospective cohort;
+- keep the interrupted ledger immutable;
+- A12 adaptive Opportunity Clock remains isolated and NOT production-deployed.
