@@ -43,6 +43,15 @@ _maintenance_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
 
+_HISTORY_CACHE_TTL_SECONDS = 20.0
+_HISTORY_CACHE_MAX_ENTRIES = 32
+_HISTORY_CACHE_LOCK = threading.RLock()
+_HISTORY_CACHE: dict[
+    tuple[str, str, int],
+    tuple[float, dict[str, Any]],
+] = {}
+
+
 
 def _new_store() -> CryptoStore:
     return QuantCryptoStore(require_durable=settings.ingest_enabled)
@@ -579,7 +588,7 @@ def market_history(
     resolution: str = "5m",
     limit: int = 240,
 ) -> dict[str, Any]:
-    """Bounded historical OHLCV contract for charting outside the hot path."""
+    """Bounded historical OHLCV contract with a shared short-lived read cache."""
     if not settings.ingest_enabled:
         raise HTTPException(status_code=503, detail="capture_not_enabled")
 
@@ -591,7 +600,8 @@ def market_history(
         "4h": 14400,
         "1d": 86400,
     }
-    bucket_seconds = resolutions.get(str(resolution).lower())
+    normalized_resolution = str(resolution).lower()
+    bucket_seconds = resolutions.get(normalized_resolution)
     if bucket_seconds is None:
         raise HTTPException(status_code=400, detail="unsupported_resolution")
 
@@ -600,6 +610,16 @@ def market_history(
         raise HTTPException(status_code=400, detail="unsupported_symbol")
 
     safe_limit = max(30, min(int(limit), 600))
+    cache_key = (normalized, normalized_resolution, safe_limit)
+    now_monotonic = time.monotonic()
+    with _HISTORY_CACHE_LOCK:
+        cached = _HISTORY_CACHE.get(cache_key)
+        if (
+            cached is not None
+            and now_monotonic - cached[0] < _HISTORY_CACHE_TTL_SECONDS
+        ):
+            return cached[1]
+
     lookback_seconds = int(bucket_seconds * safe_limit * 1.15)
     start_time = (
         datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
@@ -675,11 +695,20 @@ def market_history(
         for row in rows
     ]
 
-    return {
+    payload = {
         "symbol": normalized,
-        "resolution": resolution.lower(),
+        "resolution": normalized_resolution,
         "candles": candles,
     }
+    with _HISTORY_CACHE_LOCK:
+        if len(_HISTORY_CACHE) >= _HISTORY_CACHE_MAX_ENTRIES:
+            oldest_key = min(
+                _HISTORY_CACHE,
+                key=lambda key: _HISTORY_CACHE[key][0],
+            )
+            _HISTORY_CACHE.pop(oldest_key, None)
+        _HISTORY_CACHE[cache_key] = (time.monotonic(), payload)
+    return payload
 
 
 @app.get("/api/crypto/evidence")
