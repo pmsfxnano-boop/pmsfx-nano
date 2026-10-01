@@ -671,6 +671,214 @@ function ResearchCard({ label, value, meta }: { label: string; value: string; me
   return <div className="research-card"><small>{label}</small><strong>{value}</strong><span>{meta}</span></div>;
 }
 
+
+function OpportunityMini({ evidence }: { evidence: EvidenceResponse | null }) {
+  const clock = evidence?.opportunity_clock;
+  const active = clock?.state === "ACTIVE";
+  const validated = Boolean(clock?.validated);
+  const progress = Math.max(0, Math.min(100, num(evidence?.cohort?.progress_pct) ?? 0));
+  return (
+    <section className="v-card v-opportunity">
+      <div className="v-card-head">
+        <span className="v-label">OPPORTUNITY CLOCK</span>
+        <span className={`v-live-chip ${active ? "active" : "locked"}`}><i />{active ? "ACTIVE" : "LOCKED"}</span>
+      </div>
+      <div className="v-clock-orbit">
+        <svg viewBox="0 0 180 180" aria-hidden="true">
+          <circle className="orbit-track" cx="90" cy="90" r="70" />
+          <circle
+            className={`orbit-progress ${active ? "active" : ""}`}
+            cx="90"
+            cy="90"
+            r="70"
+            pathLength="100"
+            strokeDasharray={`${active ? 100 : Math.max(2, progress)} 100`}
+          />
+          <circle className="orbit-core" cx="90" cy="90" r="50" />
+        </svg>
+        <div className="v-clock-center">
+          <span>GATE</span>
+          <strong>{clock?.state || "LOCKED"}</strong>
+          <small>{validated ? "VALIDATED" : "PIT / OOS"}</small>
+        </div>
+      </div>
+      <div className="v-opportunity-meta">
+        <div><span>COHORT</span><b>{progress.toFixed(1)}%</b></div>
+        <div><span>HORIZON</span><b>{clock?.horizon_ms ? `${clock.horizon_ms}ms` : "—"}</b></div>
+        <div><span>BLOCKERS</span><b>{clock?.blockers?.length ?? 0}</b></div>
+      </div>
+      <div className="v-rule">
+        {clock?.rule || "The activation gate remains fail-closed until the evidence contract passes."}
+      </div>
+    </section>
+  );
+}
+
+function TerminalTelemetry({ item, trades }: { item: SymbolMarket | undefined; trades: MarketEvent[] }) {
+  const buys = trades.filter(t => t.side === "BUY").length;
+  const buyShare = trades.length ? (buys / trades.length) * 100 : 50;
+  const signed = trades.reduce((a, t) => a + (t.quantity || 0) * (t.side === "BUY" ? 1 : -1), 0);
+  const gross = trades.reduce((a, t) => a + (t.quantity || 0), 0);
+  const imbalance = gross ? (signed / gross) * 100 : 0;
+  const freshness = (item?.freshness_ms || 0) / 1000;
+  return (
+    <section className="v-card v-telemetry">
+      <div className="v-card-head"><span className="v-label">MARKET TELEMETRY</span><span className="v-muted">hot plane</span></div>
+      <div className="v-telemetry-grid">
+        <div><span>MID</span><b>{item?.bid != null && item.ask != null ? fmt((item.bid + item.ask) / 2, item.bid < 10 ? 5 : 2) : "—"}</b></div>
+        <div><span>SPREAD</span><b>{item?.spread_bps == null ? "—" : `${item.spread_bps.toFixed(2)} bp`}</b></div>
+        <div><span>IMBALANCE</span><b className={imbalance >= 0 ? "v-up" : "v-down"}>{imbalance >= 0 ? "+" : ""}{imbalance.toFixed(1)}%</b></div>
+        <div><span>FRESHNESS</span><b>{ageSeconds(freshness)}</b></div>
+        <div><span>PRINTS</span><b>{fmtCompact(trades.length)}</b></div>
+        <div><span>FLOW SHARE</span><b>{buyShare.toFixed(1)}%</b></div>
+      </div>
+      <div className="v-flow-bar"><span style={{ width: `${Math.max(6, Math.min(94, buyShare))}%` }} /></div>
+      <div className="v-flow-axis"><span>SELL</span><span>FLOW</span><span>BUY</span></div>
+    </section>
+  );
+}
+
+function ExecutionState({ health, evidence, durabilityStatus }: {
+  health: HealthResponse | null;
+  evidence: EvidenceResponse | null;
+  durabilityStatus: string;
+}) {
+  const quality = String(evidence?.quality_gate?.state || "WAITING");
+  const pit = String(evidence?.pit_oos?.state || "BLOCKED");
+  const clock = evidence?.opportunity_clock?.validated ? "ACTIVE" : "BLOCKED";
+  const market = health?.symbols_live ? "LIVE" : "DEGRADED";
+  const rows = [
+    ["MARKET", market],
+    ["LEDGER", durabilityStatus || "UNKNOWN"],
+    ["QUALITY", quality],
+    ["PIT / OOS", pit],
+    ["CLOCK", clock],
+  ] as const;
+  return (
+    <section className="v-card v-execution">
+      <div className="v-card-head"><span className="v-label">EXECUTION STATE</span><span className="v-muted">fail-closed</span></div>
+      <div className="v-state-list">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <b className={toneForStatus(value)}>{value}</b>
+            <i />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function VanguardTerminal({
+  selectedMarket,
+  selectedTrades,
+  displaySymbols,
+  selected,
+  onSelect,
+  history,
+  resolution,
+  onResolution,
+  evidence,
+  health,
+  durabilityStatus,
+  marketStatus,
+}: {
+  selectedMarket: SymbolMarket | undefined;
+  selectedTrades: MarketEvent[];
+  displaySymbols: SymbolMarket[];
+  selected: string;
+  onSelect: (symbol: string) => void;
+  history: HistoryResponse | null;
+  resolution: string;
+  onResolution: (v: string) => void;
+  evidence: EvidenceResponse | null;
+  health: HealthResponse | null;
+  durabilityStatus: string;
+  marketStatus: string;
+}) {
+  return (
+    <div className="v-terminal">
+      <div className="v-commandbar">
+        <div className="v-command-symbol">
+          <span className="v-command-dot" />
+          <strong>{symbolBase(selectedMarket?.symbol || selected)}</strong>
+          <span>/{selectedMarket?.symbol?.endsWith("USDT") ? "USDT" : "USD"}</span>
+          <StatusPill status={marketStatus} />
+        </div>
+        <div className="v-command-price">
+          <strong>{fmt(selectedMarket?.price, selectedMarket?.price != null && selectedMarket.price < 10 ? 5 : 2)}</strong>
+          <span>mid {selectedMarket?.bid != null && selectedMarket.ask != null ? fmt((selectedMarket.bid + selectedMarket.ask) / 2, selectedMarket.bid < 10 ? 5 : 2) : "—"}</span>
+        </div>
+        <div className="v-command-metrics">
+          <span>SPREAD <b>{selectedMarket?.spread_bps == null ? "—" : `${selectedMarket.spread_bps.toFixed(2)} bp`}</b></span>
+          <span>FRESH <b>{ageSeconds((selectedMarket?.freshness_ms || 0) / 1000)}</b></span>
+          <span>LEDGER <b>{durabilityStatus || "—"}</b></span>
+        </div>
+      </div>
+
+      <div className="v-ticker-rail">
+        {displaySymbols.map(item => (
+          <button
+            key={item.symbol}
+            className={`v-ticker ${selected === item.symbol ? "selected" : ""}`}
+            onClick={() => onSelect(item.symbol)}
+            type="button"
+          >
+            <span>{symbolBase(item.symbol)}</span>
+            <strong>{fmt(item.price, item.price != null && item.price < 10 ? 4 : 2)}</strong>
+            <i />
+            <small>{ageSeconds((item.freshness_ms || 0) / 1000)}</small>
+          </button>
+        ))}
+      </div>
+
+      <div className="v-workspace">
+        <section className="v-main">
+          <PrimaryChart
+            history={history}
+            liveEvents={selectedTrades}
+            symbol={selectedMarket?.symbol || selected}
+            resolution={resolution}
+            onResolution={onResolution}
+          />
+          <div className="v-bottom-grid">
+            <section className="v-card v-tape-card">
+              <div className="v-card-head">
+                <span className="v-label">LIVE TAPE</span>
+                <span className="v-muted">{selectedTrades.length} prints</span>
+              </div>
+              <div className="v-mini-tape">
+                {selectedTrades.slice().reverse().slice(0, 10).map(event => (
+                  <div key={`${event.event_key}-${event.stream_seq}`}>
+                    <span>{timeOnly(event.received_time)}</span>
+                    <b className={event.side === "BUY" ? "v-up" : "v-down"}>{event.side || "—"}</b>
+                    <span>{fmt(event.price, event.price != null && event.price < 10 ? 5 : 2)}</span>
+                    <span>{fmt(event.quantity, 4)}</span>
+                  </div>
+                ))}
+                {!selectedTrades.length && <div className="empty">Waiting for live market observations.</div>}
+              </div>
+            </section>
+            <TerminalTelemetry item={selectedMarket} trades={selectedTrades} />
+          </div>
+        </section>
+
+        <aside className="v-side">
+          <OpportunityMini evidence={evidence} />
+          <ExecutionState health={health} evidence={evidence} durabilityStatus={durabilityStatus} />
+          <section className="v-card v-orderbook">
+            <div className="v-card-head"><span className="v-label">TOP OF BOOK</span><span className="v-muted">Binance Spot</span></div>
+            <div className="v-book-row sell"><span>ASK</span><b>{fmt(selectedMarket?.ask, selectedMarket?.ask != null && selectedMarket.ask < 10 ? 5 : 2)}</b><em>{fmt(selectedMarket?.ask_qty, 4)}</em></div>
+            <div className="v-book-mid"><span>MID</span><b>{selectedMarket?.bid != null && selectedMarket.ask != null ? fmt((selectedMarket.bid + selectedMarket.ask) / 2, selectedMarket.bid < 10 ? 5 : 2) : "—"}</b></div>
+            <div className="v-book-row buy"><span>BID</span><b>{fmt(selectedMarket?.bid, selectedMarket?.bid != null && selectedMarket.bid < 10 ? 5 : 2)}</b><em>{fmt(selectedMarket?.bid_qty, 4)}</em></div>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("terminal");
   const [symbols, setSymbols] = useState<SymbolMarket[]>([]);
@@ -852,20 +1060,20 @@ function App() {
         <div className="brandline"><span>CRYPTONITA</span><b>QUANT TERMINAL</b></div>
 
         {tab === "terminal" && (
-          <>
-            <SymbolStrip symbols={displaySymbols} selected={selectedMarket?.symbol || selected} onSelect={updateSelected} />
-            <TerminalHero item={selectedMarket} />
-            <PrimaryChart
-              history={history}
-              liveEvents={selectedTrades}
-              symbol={selectedMarket?.symbol || selected}
-              resolution={resolution}
-              onResolution={setResolution}
-            />
-            <Microstructure item={selectedMarket} trades={selectedTrades} />
-            <LiveTape trades={selectedTrades} />
-            <QuantTimeline health={health} evidence={evidence} market={displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
-          </>
+          <VanguardTerminal
+            selectedMarket={selectedMarket}
+            selectedTrades={selectedTrades}
+            displaySymbols={displaySymbols}
+            selected={selectedMarket?.symbol || selected}
+            onSelect={updateSelected}
+            history={history}
+            resolution={resolution}
+            onResolution={setResolution}
+            evidence={evidence}
+            health={health}
+            durabilityStatus={durabilityStatus}
+            marketStatus={displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"}
+          />
         )}
 
         {tab === "opportunity" && (
