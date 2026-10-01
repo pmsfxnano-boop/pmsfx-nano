@@ -292,25 +292,27 @@ function PriceChart({
   );
 }
 
-function Spark({ value }: { value: number }) {
+function Spark({ events }: { events: StreamEvent[] }) {
   const points = useMemo(() => {
-    const seed = Math.abs(Math.sin(value * 0.017));
-    const out = Array.from({ length: 18 }, (_, index) => {
-      const x = index / 17;
-      return 16 + Math.sin(index * 0.9 + seed) * 6 + Math.cos(index * 0.43) * 3 - x * value * 2;
-    });
-    const min = Math.min(...out);
-    const max = Math.max(...out);
-    return out.map((y, index) => {
-      const x = (index / 17) * 100;
-      const yy = 30 - ((y - min) / Math.max(0.001, max - min)) * 24;
+    const values = events
+      .filter((event) => event.event_type === "trade" && event.price != null)
+      .slice(-24)
+      .map((event) => event.price!);
+    if (values.length < 2) return "";
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    return values.map((y, index) => {
+      const x = (index / (values.length - 1)) * 100;
+      const yy = 29 - ((y - min) / Math.max(0.0000001, max - min)) * 24;
       return `${x.toFixed(1)},${yy.toFixed(1)}`;
     }).join(" ");
-  }, [value]);
+  }, [events]);
 
   return (
     <svg className="spark" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.7" vectorEffect="non-scaling-stroke" />
+      {points && (
+        <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.7" vectorEffect="non-scaling-stroke" />
+      )}
     </svg>
   );
 }
@@ -323,6 +325,7 @@ function SymbolRail({
   selected: SymbolId;
   symbols: SymbolSnapshot[];
   onSelect: (symbol: SymbolId) => void;
+  eventsBySymbol: Record<string, StreamEvent[]>;
 }) {
   return (
     <aside className="symbol-rail">
@@ -444,6 +447,7 @@ export default function App() {
   const [lastTick, setLastTick] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const pollingRef = useRef(false);
+  const cursorRef = useRef(0);
 
   const selectedSnapshot = snapshots.find((item) => item.symbol === selected);
   const selectedEvents = events[selected] ?? [];
@@ -457,8 +461,9 @@ export default function App() {
 
     try {
       setChannel(reset || cursor === 0 ? "SYNC" : "LIVE");
-      const payload = await fetchMarketStream(reset ? 0 : cursor, controller.signal);
+      const payload = await fetchMarketStream(reset ? 0 : cursorRef.current, controller.signal);
       setSnapshots(payload.symbols);
+      cursorRef.current = payload.next_cursor;
       setCursor(payload.next_cursor);
       setEvents((previous) => {
         const next = { ...previous };
@@ -487,7 +492,7 @@ export default function App() {
     } finally {
       pollingRef.current = false;
     }
-  }, [cursor]);
+  }, []);
 
   useEffect(() => {
     poll(true);
@@ -554,7 +559,12 @@ export default function App() {
       </div>
 
       <div className="workspace">
-        <SymbolRail selected={selected} symbols={snapshots} onSelect={setSelected} />
+        <SymbolRail
+          selected={selected}
+          symbols={snapshots}
+          eventsBySymbol={events}
+          onSelect={setSelected}
+        />
 
         <main className="terminal-main">
           <section className="hero">
