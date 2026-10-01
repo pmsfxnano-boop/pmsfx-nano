@@ -18,6 +18,7 @@ from gorila_crypto.binance import (
     bootstrap_order_book,
     build_stream_names,
     build_ws_url,
+    SPOT_WS_BASE,
     normalize_market_message,
     normalize_trade,
 )
@@ -49,7 +50,7 @@ def test_stream_names_are_deterministic_and_lowercase() -> None:
         "ethusdt@depth@100ms",
     )
     url = build_ws_url(config)
-    assert url.startswith("wss://stream.binance.com:9443/stream?")
+    assert url.startswith(f"{SPOT_WS_BASE}?")
     assert "btcusdt%40trade" in url
 
 
