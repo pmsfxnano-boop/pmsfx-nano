@@ -159,7 +159,9 @@ class ProspectiveCryptoIngestor:
                 f"spool_init:{type(exc).__name__}: {exc}"
             )
         self._last_bookticker_persist_monotonic: dict[str, float] = {}
-        self._bookticker_persist_interval = settings.persist_bookticker_interval_seconds
+        self._bookticker_persist_interval = float(
+            self.protocol.bookticker_persistence_interval_seconds
+        )
 
         self.config.validate()
 
