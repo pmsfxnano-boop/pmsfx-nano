@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -21,7 +22,8 @@ CREATE INDEX IF NOT EXISTS idx_crypto_intelligence_state_session
     ON crypto_opportunity_intelligence_state(capture_session_id, last_ledger_seq);
 
 CREATE TABLE IF NOT EXISTS crypto_opportunity_intelligence_events (
-    opportunity_id TEXT PRIMARY KEY,
+    training_event_id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL,
     model_version TEXT NOT NULL,
     capture_session_id TEXT NOT NULL,
     pair TEXT NOT NULL,
@@ -32,7 +34,8 @@ CREATE TABLE IF NOT EXISTS crypto_opportunity_intelligence_events (
     reaction_event_id TEXT,
     replay_fingerprint TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    features_json TEXT NOT NULL
+    features_json TEXT NOT NULL,
+    UNIQUE(opportunity_id, model_version, capture_session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_crypto_intelligence_events_pair
     ON crypto_opportunity_intelligence_events(capture_session_id, pair, created_at);
@@ -117,16 +120,20 @@ class IntelligenceStore:
         conn = self.connect()
         try:
             with conn.cursor() as cur:
+                training_event_id = hashlib.sha256(
+                    f"{row['opportunity_id']}|{row['model_version']}|{capture_session_id}".encode("utf-8")
+                ).hexdigest()
                 cur.execute(
                     """
                     INSERT INTO crypto_opportunity_intelligence_events
-                    (opportunity_id,model_version,capture_session_id,pair,duration_ms,
+                    (training_event_id,opportunity_id,model_version,capture_session_id,pair,duration_ms,
                      event_observed,leader_return_bps,signed_reaction_bps,reaction_event_id,
                      replay_fingerprint,created_at,features_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT(opportunity_id) DO NOTHING
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT(training_event_id) DO NOTHING
                     """,
                     (
+                        training_event_id,
                         row["opportunity_id"],
                         row["model_version"],
                         capture_session_id,
