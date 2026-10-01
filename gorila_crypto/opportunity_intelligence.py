@@ -566,7 +566,7 @@ class ResponseLearner:
     def __init__(self, feature_dimension: int, horizons_ms: tuple[int, ...] = HORIZONS_MS) -> None:
         self.feature_dimension = feature_dimension
         self.horizons_ms = tuple(horizons_ms)
-        self.models = {int(h): OnlineLinear(feature_dimension + 1) for h in self.horizons_ms}
+        self.models = {int(h): OnlineLinear(feature_dimension + 2) for h in self.horizons_ms}
 
     def _vector(self, features: list[float], horizon_ms: int) -> list[float]:
         scale = math.log1p(horizon_ms) / math.log1p(self.horizons_ms[-1])
@@ -635,7 +635,7 @@ class DiscreteHazardLearner:
         self.feature_dimension = feature_dimension
         self.horizons_ms = tuple(horizons_ms)
         self.models = {
-            int(h): OnlineLogistic(feature_dimension + 1)
+            int(h): OnlineLogistic(feature_dimension + 2)
             for h in self.horizons_ms
         }
         self.brier_ewma = {int(h): 0.25 for h in self.horizons_ms}
