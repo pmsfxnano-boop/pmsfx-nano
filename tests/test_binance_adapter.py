@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 
 from gorila_crypto.binance import (
+    SPOT_WS_BASE,
     BinanceAdapterError,
     BinanceStreamConfig,
     DepthGapDetected,
