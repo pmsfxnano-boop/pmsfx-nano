@@ -32,6 +32,7 @@ SHOCK_THRESHOLD_BPS = 5.0
 REACTION_THRESHOLD_BPS = 2.0
 CONVERGENCE_FRACTION = 0.70
 MAX_OPPORTUNITY_MS = 5_000
+MAX_TARGET_AGE_MS = 500.0
 REFRACTORY_MS = 1_000
 EWMA_ALPHA = 0.08
 EPS = 1e-9
@@ -340,6 +341,9 @@ class DiscreteHazardLearner:
             int(h): OnlineLogistic(feature_dimension + 1)
             for h in self.horizons_ms
         }
+        self.brier_ewma = {int(h): 0.25 for h in self.horizons_ms}
+        self.logloss_ewma = {int(h): math.log(2.0) for h in self.horizons_ms}
+        self.examples_seen = {int(h): 0 for h in self.horizons_ms}
 
     def _vector(self, features: list[float], horizon_ms: int) -> list[float]:
         scale = math.log1p(horizon_ms) / math.log1p(self.horizons_ms[-1])
@@ -386,9 +390,21 @@ class DiscreteHazardLearner:
                 break
             event_in_bin = event_observed and previous < duration <= horizon
             label = 1 if event_in_bin else 0
-            outputs[horizon] = self.models[horizon].update(
+            probability = self.models[horizon].update(
                 self._vector(features, horizon), label
             )
+            p = max(1e-6, min(1.0 - 1e-6, probability))
+            alpha = 0.02
+            self.brier_ewma[horizon] = (
+                (1.0 - alpha) * self.brier_ewma[horizon]
+                + alpha * (p - label) ** 2
+            )
+            self.logloss_ewma[horizon] = (
+                (1.0 - alpha) * self.logloss_ewma[horizon]
+                - alpha * (label * math.log(p) + (1 - label) * math.log(1.0 - p))
+            )
+            self.examples_seen[horizon] += 1
+            outputs[horizon] = probability
             if event_in_bin:
                 break
             previous = horizon
@@ -399,6 +415,9 @@ class DiscreteHazardLearner:
             "feature_dimension": self.feature_dimension,
             "horizons_ms": list(self.horizons_ms),
             "models": {str(h): self.models[h].state() for h in self.horizons_ms},
+            "brier_ewma": self.brier_ewma,
+            "logloss_ewma": self.logloss_ewma,
+            "examples_seen": self.examples_seen,
         }
 
     @classmethod
@@ -408,6 +427,15 @@ class DiscreteHazardLearner:
             int(h): OnlineLogistic.from_state(payload["models"][str(h)])
             for h in model.horizons_ms
         }
+        model.brier_ewma = {
+            int(h): float(v) for h, v in (payload.get("brier_ewma") or {}).items()
+        } or model.brier_ewma
+        model.logloss_ewma = {
+            int(h): float(v) for h, v in (payload.get("logloss_ewma") or {}).items()
+        } or model.logloss_ewma
+        model.examples_seen = {
+            int(h): int(v) for h, v in (payload.get("examples_seen") or {}).items()
+        } or model.examples_seen
         return model
 
 
@@ -454,26 +482,26 @@ class AdaptiveOpportunityClock:
         l = self.book.snapshot(leader, now)
         t = self.book.snapshot(target, now)
         values = [
-            leader_return_bps,
-            abs(leader_return_bps),
+            max(-100.0, min(100.0, leader_return_bps)),
+            max(0.0, min(100.0, abs(leader_return_bps))),
             l["imbalance"],
-            l["spread_bps"],
-            l["microprice_gap_bps"],
-            l["trade_flow_z"],
-            math.log1p(l["trade_intensity"]),
-            math.log1p(l["realized_vol_bps"]),
-            min(10_000.0, l["transport_age_ms"]),
+            max(0.0, min(100.0, l["spread_bps"])),
+            max(-50.0, min(50.0, l["microprice_gap_bps"])),
+            max(-6.0, min(6.0, l["trade_flow_z"])),
+            min(20.0, math.log1p(l["trade_intensity"])),
+            min(20.0, math.log1p(l["realized_vol_bps"])),
+            min(1_000.0, l["transport_age_ms"]),
             t["imbalance"],
-            t["spread_bps"],
-            t["microprice_gap_bps"],
-            t["trade_flow_z"],
-            math.log1p(t["trade_intensity"]),
-            math.log1p(t["realized_vol_bps"]),
-            min(10_000.0, t["transport_age_ms"]),
-            l["imbalance"] - t["imbalance"],
-            l["trade_flow_z"] - t["trade_flow_z"],
-            math.log1p(l["realized_vol_bps"]) - math.log1p(t["realized_vol_bps"]),
-            min(10_000.0, l["transport_age_ms"] - t["transport_age_ms"]),
+            max(0.0, min(100.0, t["spread_bps"])),
+            max(-50.0, min(50.0, t["microprice_gap_bps"])),
+            max(-6.0, min(6.0, t["trade_flow_z"])),
+            min(20.0, math.log1p(t["trade_intensity"])),
+            min(20.0, math.log1p(t["realized_vol_bps"])),
+            min(1_000.0, t["transport_age_ms"]),
+            max(-2.0, min(2.0, l["imbalance"] - t["imbalance"])),
+            max(-12.0, min(12.0, l["trade_flow_z"] - t["trade_flow_z"])),
+            max(-10.0, min(10.0, math.log1p(l["realized_vol_bps"]) - math.log1p(t["realized_vol_bps"]))),
+            max(-1_000.0, min(1_000.0, l["transport_age_ms"] - t["transport_age_ms"])),
         ]
         return [float(x) for x in values]
 
@@ -538,7 +566,12 @@ class AdaptiveOpportunityClock:
                 if target == symbol.upper():
                     continue
                 target_price = self.book.price(target)
-                if target_price is None or target_price <= 0:
+                target_snapshot = self.book.snapshot(target, received_time)
+                if (
+                    target_price is None
+                    or target_price <= 0
+                    or target_snapshot["transport_age_ms"] > MAX_TARGET_AGE_MS
+                ):
                     continue
                 pair = self._pair(symbol, target)
                 features = self._features(symbol, target, received_time, recent_bps)
@@ -669,6 +702,16 @@ class AdaptiveOpportunityClock:
             "resolved": self.resolved,
             "censored": self.censored,
             "pending": len(self.pending),
+            "global_calibration": {
+                "brier_ewma": self.global_model.brier_ewma,
+                "logloss_ewma": self.global_model.logloss_ewma,
+                "examples_seen": self.global_model.examples_seen,
+            },
+            "pair_calibration": {
+                "brier_ewma": self._model_for(forecast.pair).brier_ewma,
+                "logloss_ewma": self._model_for(forecast.pair).logloss_ewma,
+                "examples_seen": self._model_for(forecast.pair).examples_seen,
+            },
             "feature_schema_hash": hashlib.sha256(
                 json.dumps(FEATURE_NAMES, separators=(",", ":")).encode("utf-8")
             ).hexdigest(),
