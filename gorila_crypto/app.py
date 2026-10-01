@@ -517,17 +517,23 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
                 freshness_ms = None
 
         status = health_by_symbol.get(symbol, {}).get("status", "UNKNOWN")
+        spread_bps = None
+        if book and book.get("bid") is not None and book.get("ask") is not None:
+            bid_value = float(book["bid"])
+            ask_value = float(book["ask"])
+            if bid_value > 0:
+                spread_bps = (ask_value / bid_value - 1.0) * 10000.0
         summary.append(
             {
                 "symbol": symbol,
                 "status": status,
                 "price": price,
                 "window_change_pct": window_change,
-                "bid": None,
-                "ask": None,
-                "bid_qty": None,
-                "ask_qty": None,
-                "spread_bps": None,
+                "bid": book["bid"] if book else None,
+                "ask": book["ask"] if book else None,
+                "bid_qty": book["bid_qty"] if book else None,
+                "ask_qty": book["ask_qty"] if book else None,
+                "spread_bps": spread_bps,
                 "freshness_ms": freshness_ms,
                 "last_trade_time": trade_times[-1] if trade_times else None,
                 "last_book_time": book["received_time"] if book else None,
