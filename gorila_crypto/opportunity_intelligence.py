@@ -1136,6 +1136,11 @@ class AdaptiveOpportunityClock:
             "survival_by_horizon": forecast.survival_by_horizon,
             "hazard_by_horizon": forecast.hazards,
             "expected_reaction_ms": forecast.expected_reaction_ms,
+            "conditional_response_bps": forecast.conditional_response_bps,
+            "response_std_bps": forecast.response_std_bps,
+            "expected_net_bps": forecast.expected_net_bps,
+            "risk_adjusted_net_bps": forecast.risk_adjusted_net_bps,
+            "execution_drag_bps": forecast.execution_drag_bps,
             "events_seen": self.events_seen,
             "opportunities_started": self.opportunities_started,
             "training_updates": self.training_updates,
@@ -1149,6 +1154,8 @@ class AdaptiveOpportunityClock:
             },
             "pair_calibration": self._model_for(forecast.pair).health(),
             "global_model_health": self.global_model.health(),
+            "global_response_health": self.global_response_model.health(),
+            "pair_response_health": self._response_model_for(forecast.pair).health(),
             "blend": {
                 "pair_weight": self._pair_blend_weight(forecast.pair),
                 "global_weight": 1.0 - self._pair_blend_weight(forecast.pair),
@@ -1165,6 +1172,8 @@ class AdaptiveOpportunityClock:
             "horizons_ms": list(self.horizons_ms),
             "global_model": self.global_model.state(),
             "pair_models": {pair: model.state() for pair, model in self.pair_models.items()},
+            "global_response_model": self.global_response_model.state(),
+            "pair_response_models": {pair: model.state() for pair, model in self.pair_response_models.items()},
             "microstructure": self.book.state(),
             "events_seen": self.events_seen,
             "opportunities_started": self.opportunities_started,
@@ -1190,6 +1199,12 @@ class AdaptiveOpportunityClock:
             horizons_ms=tuple(int(x) for x in payload.get("horizons_ms", HORIZONS_MS)),
         )
         engine.global_model = DiscreteHazardLearner.from_state(payload["global_model"])
+        if payload.get("global_response_model"):
+            engine.global_response_model = ResponseLearner.from_state(payload["global_response_model"])
+        engine.pair_response_models = {
+            pair: ResponseLearner.from_state(model_state)
+            for pair, model_state in (payload.get("pair_response_models") or {}).items()
+        }
         engine.book = MicrostructureBook.from_state(payload.get("microstructure") or {})
         engine.pair_models = {
             pair: DiscreteHazardLearner.from_state(model_state)
