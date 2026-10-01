@@ -130,6 +130,8 @@ class ProspectiveCryptoIngestor:
         self._pending_event_rows: list[dict[str, Any]] = []
         self._pending_event_started_monotonic: float | None = None
         self._watchdog_thread: threading.Thread | None = None
+        self._feed_stop_event: threading.Event | None = None
+        self._feed_watchdog_grace_until: float = 0.0
         self._feed_watchdog_interval_seconds = 5.0
         self._feed_stale_timeout_seconds = max(
             30.0,
@@ -144,34 +146,40 @@ class ProspectiveCryptoIngestor:
 
     def _feed_watchdog(self) -> None:
         while not self.stop_event.wait(self._feed_watchdog_interval_seconds):
+            now = self.now()
+            now_monotonic = time.monotonic()
+            # A feed reconnect gets a bounded grace window so the old event
+            # timestamp does not immediately trigger a second reset.
+            if now_monotonic < self._feed_watchdog_grace_until:
+                continue
             if self.last_event is None:
                 age_seconds = max(
                     0.0,
-                    (self.now() - self._capture_started_at).total_seconds(),
+                    (now - self._capture_started_at).total_seconds(),
                 )
             else:
                 age_seconds = max(
                     0.0,
-                    (self.now() - self.last_event.received_time).total_seconds(),
+                    (now - self.last_event.received_time).total_seconds(),
                 )
             if age_seconds <= self._feed_stale_timeout_seconds:
                 continue
-            self.last_error = (
-                f"market_feed_stale_after_{age_seconds:.1f}s"
+            self.last_error = f"market_feed_stale_after_{age_seconds:.1f}s"
+            self._record_connection(
+                "STALE_FEED",
+                {
+                    "age_seconds": age_seconds,
+                    "timeout_seconds": self._feed_stale_timeout_seconds,
+                    "symbol_health": self.symbol_health(reference=now),
+                    "action": "RESTART_FEED_KEEP_SESSION",
+                },
             )
-            try:
-                self._record_connection(
-                    "STALE_FEED",
-                    {
-                        "age_seconds": age_seconds,
-                        "timeout_seconds": self._feed_stale_timeout_seconds,
-                        "symbol_health": self.symbol_health(reference=self.now()),
-                    },
+            feed_stop_event = self._feed_stop_event
+            if feed_stop_event is not None:
+                feed_stop_event.set()
+                self._feed_watchdog_grace_until = (
+                    now_monotonic + self._feed_stale_timeout_seconds
                 )
-            finally:
-                # Stop this runtime instance; the application supervisor will
-                # construct a fresh runtime/adapter and reclaim the writer lease.
-                self.stop_event.set()
             return
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
@@ -394,7 +402,7 @@ class ProspectiveCryptoIngestor:
         self.stop_event.set()
 
     def run(self) -> dict[str, Any]:
-        """Run the capture runtime, with the preregistered cohort enforced in production."""
+        """Run one durable capture session with recoverable feed restarts."""
         production_scoped = isinstance(self.store, QuantCryptoStore)
         if production_scoped:
             if not self.protocol.matches_runtime(
@@ -425,10 +433,7 @@ class ProspectiveCryptoIngestor:
                     reason = str(exc)
                     if not reason.startswith("active_capture_session_exists:"):
                         raise
-                    self._record_connection(
-                        "WAITING_FOR_ACTIVE_SESSION",
-                        {"reason": reason},
-                    )
+                    self._record_connection("WAITING_FOR_ACTIVE_SESSION", {"reason": reason})
                     self.stop_event.wait(2.0)
             if self.stop_event.is_set():
                 return {
@@ -447,17 +452,22 @@ class ProspectiveCryptoIngestor:
                 kind=self.config.kind,
                 session_id=self.session_id,
             )
-            self._record_connection("RUN_STARTED", {
-                "symbols": list(self.adapter.config.symbols),
-                "study_id": self.protocol.study_id,
-                "protocol_hash": effective_protocol_hash,
-                "capture_session_id": self.session_id,
-            })
+            self._record_connection(
+                "RUN_STARTED",
+                {
+                    "symbols": list(self.adapter.config.symbols),
+                    "study_id": self.protocol.study_id,
+                    "protocol_hash": effective_protocol_hash,
+                    "capture_session_id": self.session_id,
+                },
+            )
         else:
-            # Legacy/unit-test harness: persistence semantics are still exercised,
-            # but production-only study binding is deliberately not activated.
             self.run_id = self.store.start_runtime_run(kind=self.config.kind)
-            self._record_connection("RUN_STARTED", {"symbols": list(self.adapter.config.symbols)})
+            self._record_connection(
+                "RUN_STARTED",
+                {"symbols": list(self.adapter.config.symbols)},
+            )
+
         self.events_inserted = 0
         self.events_duplicate = 0
         self.gaps_detected = 0
@@ -474,41 +484,77 @@ class ProspectiveCryptoIngestor:
 
         status = "STOPPED"
         result: dict[str, Any] = {}
+        self._feed_watchdog_grace_until = (
+            time.monotonic() + self._feed_stale_timeout_seconds
+        )
         self._watchdog_thread = threading.Thread(
             target=self._feed_watchdog,
             name="gorila-crypto-feed-watchdog",
             daemon=True,
         )
         self._watchdog_thread.start()
+
         try:
-            for event in self.adapter.iter_forever(
-                stop_event=self.stop_event,
-                on_connection=self._on_connection,
-            ):
-                self._ingest(event)
-                now_monotonic = time.monotonic()
-                pending_age = (
-                    now_monotonic - self._pending_event_started_monotonic
-                    if self._pending_event_started_monotonic is not None
-                    else 0.0
+            while not self.stop_event.is_set():
+                self._feed_stop_event = threading.Event()
+                self._feed_watchdog_grace_until = (
+                    time.monotonic() + self._feed_stale_timeout_seconds
                 )
-                if (
-                    len(self._pending_event_rows) >= self.config.event_batch_size
-                    or pending_age >= self.config.event_batch_flush_interval_seconds
+                feed_restart_requested = False
+                for event in self.adapter.iter_forever(
+                    stop_event=self._feed_stop_event,
+                    on_connection=self._on_connection,
                 ):
-                    self._flush_pending_events()
-                if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
-                    if not self.store.heartbeat_runtime_run(self.run_id):
-                        self.last_error = "runtime_lease_lost"
-                        status = "LEASE_LOST"
-                        self.stop_event.set()
+                    self._ingest(event)
+                    now_monotonic = time.monotonic()
+                    self._feed_watchdog_grace_until = 0.0
+                    pending_age = (
+                        now_monotonic - self._pending_event_started_monotonic
+                        if self._pending_event_started_monotonic is not None
+                        else 0.0
+                    )
+                    if (
+                        len(self._pending_event_rows) >= self.config.event_batch_size
+                        or pending_age >= self.config.event_batch_flush_interval_seconds
+                    ):
+                        self._flush_pending_events()
+                    if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
+                        if not self.store.heartbeat_runtime_run(self.run_id):
+                            self.last_error = "runtime_lease_lost"
+                            status = "LEASE_LOST"
+                            self.stop_event.set()
+                            break
+                        self._last_runtime_heartbeat = now_monotonic
+                    if self.stop_event.is_set():
+                        status = "STOPPED"
                         break
-                    self._last_runtime_heartbeat = now_monotonic
+
                 if self.stop_event.is_set():
                     status = "STOPPED"
                     break
-            else:
+
+                feed_restart_requested = self._feed_stop_event.is_set()
+                self._flush_pending_events()
+
+                if production_scoped:
+                    self._record_connection(
+                        "FEED_RESTARTED",
+                        {
+                            "reason": (
+                                "STALE_FEED"
+                                if feed_restart_requested
+                                else "STREAM_ENDED"
+                            ),
+                            "capture_session_id": self.session_id,
+                        },
+                    )
+                    self.adapter = build_market_adapter()
+                    self.last_error = None
+                    continue
+
                 status = "STREAM_ENDED"
+                break
+
         except KeyboardInterrupt:
             status = "STOPPED"
         except Exception as exc:
@@ -517,6 +563,8 @@ class ProspectiveCryptoIngestor:
             self._record_connection("ERROR", {"error": self.last_error})
             raise
         finally:
+            self._feed_stop_event = None
+            self._feed_watchdog_grace_until = 0.0
             self._flush_pending_events()
             if self._watchdog_thread is not None and self._watchdog_thread is not threading.current_thread():
                 self.stop_event.set()
