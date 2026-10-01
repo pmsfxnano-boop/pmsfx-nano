@@ -147,6 +147,16 @@ def _heartbeat_loop() -> None:
                 stats = store.prospective_stats(
                     source_prefix=f"{settings.provider}.websocket.",
                 )
+            runtime_run_id = _runtime.run_id if _runtime is not None else None
+            if runtime_run_id:
+                try:
+                    store.heartbeat_runtime_run(runtime_run_id)
+                except Exception as exc:
+                    print(
+                        "GORILA_CAPTURE_HEARTBEAT_RUNTIME_ERROR "
+                        + f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
             print(
                 "GORILA_CAPTURE_HEARTBEAT "
                 + json.dumps(
