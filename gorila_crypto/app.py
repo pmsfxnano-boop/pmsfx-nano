@@ -146,12 +146,40 @@ def _heartbeat_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
         try:
+            now = datetime.now(timezone.utc)
             if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
                 session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
-                stats = store.scoped_stats(
-                    study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-                    capture_session_id=session_id,
-                )
+                conn = store.connect()
+                try:
+                    cutoff = (now - timedelta(seconds=60)).isoformat()
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT symbol, COUNT(*) AS rows, MAX(received_time) AS last_received
+                            FROM crypto_events
+                            WHERE received_time >= %s
+                              AND source LIKE %s
+                            GROUP BY symbol
+                            ORDER BY symbol
+                            """,
+                            (cutoff, "binance.websocket.%"),
+                        )
+                        rows = cur.fetchall()
+                    stats = {
+                        "backend": store.backend,
+                        "capture_session_id": session_id,
+                        "window_seconds": 60,
+                        "symbols": [
+                            {
+                                "symbol": str(row[0]),
+                                "rows": int(row[1]),
+                                "last_received": str(row[2]),
+                            }
+                            for row in rows
+                        ],
+                    }
+                finally:
+                    conn.close()
             else:
                 stats = store.prospective_stats(
                     source_prefix=f"{settings.provider}.websocket.",
@@ -160,7 +188,7 @@ def _heartbeat_loop() -> None:
                 "GORILA_CAPTURE_HEARTBEAT "
                 + json.dumps(
                     {
-                        "at": datetime.now(timezone.utc).isoformat(),
+                        "at": now.isoformat(),
                         "stats": stats,
                     },
                     sort_keys=True,
