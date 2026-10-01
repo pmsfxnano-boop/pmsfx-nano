@@ -421,7 +421,7 @@ def test_postgres_batch_append_uses_returning_for_new_rows(
             self.sql: list[str] = []
             self.key = "event-key-1"
             self.event_id = "event-id-1"
-            self.payload_hash = "payload-hash"
+            self.payload_hash = __import__("hashlib").sha256(b'{"p":"60000.0","q":"0.01"}').hexdigest()
             self.commits = 0
 
         def cursor(self):
