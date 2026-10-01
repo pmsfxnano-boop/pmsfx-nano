@@ -894,7 +894,7 @@ export default function App() {
 
       <main className="shell">
         <div className="shell-meta">
-          <div><span>GORILA / CRYPTO</span><b>QUANT TERMINAL</b></div>
+          <div><span>GORILA / ARGENTUM</span><b>QUANT TERMINAL</b></div>
           <span className="service-host">{serviceHost}</span>
         </div>
 
