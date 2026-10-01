@@ -90,3 +90,33 @@ def test_evidence_endpoint_fails_closed_without_capture(monkeypatch) -> None:
 
     assert exc.value.status_code == 503
     assert exc.value.detail == "capture_not_enabled"
+
+
+def test_evidence_shadow_read_models_fail_closed_without_current_research_scope() -> None:
+    from gorila_crypto.evidence import (
+        _forecast_shadow,
+        _lead_lag,
+        _opportunity_shadow,
+        _validation_gate,
+    )
+
+    assert _validation_gate(object(), None)["oos_rows"] == 0
+    assert _forecast_shadow(object(), None)["count"] == 0
+    assert _lead_lag(object(), None)["observation_count"] == 0
+    assert _opportunity_shadow(object(), None)["count"] == 0
+
+
+def test_current_research_fingerprint_is_scoped_to_active_session(monkeypatch) -> None:
+    import gorila_crypto.evidence as evidence_module
+
+    captured = {}
+
+    def fake_query(conn, sql, params=()):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [{"replay_fingerprint": "fp-current"}]
+
+    monkeypatch.setattr(evidence_module, "_query", fake_query)
+    assert evidence_module._current_research_fingerprint(object(), "session-current") == "fp-current"
+    assert captured["params"] == ("session-current",)
+    assert "capture_session_id=%s" in captured["sql"]
