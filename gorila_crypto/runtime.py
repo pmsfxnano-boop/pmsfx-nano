@@ -47,6 +47,8 @@ class IngestRuntimeConfig:
     health_status: str = "HEALTHY"
     error_status: str = "DEGRADED"
     health_flush_interval_seconds: float = 1.0
+    event_batch_size: int = 250
+    event_batch_flush_interval_seconds: float = 0.050
 
     def validate(self) -> None:
         if not self.kind.strip():
@@ -55,6 +57,10 @@ class IngestRuntimeConfig:
             raise ValueError("runtime statuses cannot be empty")
         if self.health_flush_interval_seconds <= 0:
             raise ValueError("health flush interval must be positive")
+        if self.event_batch_size < 1:
+            raise ValueError("event batch size must be positive")
+        if self.event_batch_flush_interval_seconds <= 0:
+            raise ValueError("event batch flush interval must be positive")
 
 
 class SequenceContinuityMonitor:
@@ -121,6 +127,8 @@ class ProspectiveCryptoIngestor:
         self._symbol_first_received: dict[str, datetime] = {}
         self._symbol_last_received: dict[str, datetime] = {}
         self._capture_started_at = self.now()
+        self._pending_event_rows: list[dict[str, Any]] = []
+        self._pending_event_started_monotonic: float | None = None
 
         self.config.validate()
 
@@ -182,6 +190,26 @@ class ProspectiveCryptoIngestor:
                 error=self.last_error,
             )
 
+    def _flush_pending_events(self) -> None:
+        if not self._pending_event_rows:
+            self._pending_event_started_monotonic = None
+            return
+        rows = self._pending_event_rows
+        self._pending_event_rows = []
+        self._pending_event_started_monotonic = None
+        if isinstance(self.store, QuantCryptoStore):
+            if self.session_id is None:
+                raise RuntimeError("capture_session_not_started")
+            results = self.store.append_scoped_events(
+                study_id=self.protocol.study_id,
+                capture_session_id=self.session_id,
+                events=rows,
+            )
+        else:
+            results = self.store.append_events(rows)
+        self.events_inserted += sum(1 for result in results if result["inserted"])
+        self.events_duplicate += sum(1 for result in results if not result["inserted"])
+
     def _ingest(self, event: NormalizedMarketEvent) -> None:
         event_time = event.event_time.astimezone(timezone.utc)
         received_time = event.received_time.astimezone(timezone.utc)
@@ -215,25 +243,6 @@ class ProspectiveCryptoIngestor:
                 "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
-        if isinstance(self.store, QuantCryptoStore):
-            if self.session_id is None:
-                raise RuntimeError("capture_session_not_started")
-            event_kwargs["metadata"].update({
-                "crypto_study_id": self.protocol.study_id,
-                "capture_session_id": self.session_id,
-            })
-            result = self.store.append_scoped_event(
-                study_id=self.protocol.study_id,
-                capture_session_id=self.session_id,
-                **event_kwargs,
-            )
-        else:
-            result = self.store.append_event(**event_kwargs)
-
-        if result["inserted"]:
-            self.events_inserted += 1
-        else:
-            self.events_duplicate += 1
 
         gap = self.sequence.observe(event)
         if gap is not None:
@@ -284,6 +293,9 @@ class ProspectiveCryptoIngestor:
             self._symbol_first_received.setdefault(symbol, received_time)
             self._symbol_last_received[symbol] = received_time
         self.last_event = event
+        if self._pending_event_started_monotonic is None:
+            self._pending_event_started_monotonic = now_monotonic
+        self._pending_event_rows.append(event_kwargs)
 
     def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
         """Report readiness of every required symbol from observed receive times.
@@ -387,6 +399,8 @@ class ProspectiveCryptoIngestor:
         self._health_last_persist_monotonic.clear()
         self._health_last_status.clear()
         self._health_pending_rows.clear()
+        self._pending_event_rows.clear()
+        self._pending_event_started_monotonic = None
         with self._symbol_lock:
             self._symbol_first_received.clear()
             self._symbol_last_received.clear()
@@ -401,6 +415,16 @@ class ProspectiveCryptoIngestor:
             ):
                 self._ingest(event)
                 now_monotonic = time.monotonic()
+                pending_age = (
+                    now_monotonic - self._pending_event_started_monotonic
+                    if self._pending_event_started_monotonic is not None
+                    else 0.0
+                )
+                if (
+                    len(self._pending_event_rows) >= self.config.event_batch_size
+                    or pending_age >= self.config.event_batch_flush_interval_seconds
+                ):
+                    self._flush_pending_events()
                 if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
                     self.store.heartbeat_runtime_run(self.run_id)
                     self._last_runtime_heartbeat = now_monotonic
@@ -417,6 +441,7 @@ class ProspectiveCryptoIngestor:
             self._record_connection("ERROR", {"error": self.last_error})
             raise
         finally:
+            self._flush_pending_events()
             result = {
                 "events_inserted": self.events_inserted,
                 "events_duplicate": self.events_duplicate,
