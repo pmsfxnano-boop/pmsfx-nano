@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-MODEL_VERSION = "opportunity-clock-intelligence-v1"
+MODEL_VERSION = "opportunity-clock-intelligence-v2"
 HORIZONS_MS = (100, 250, 500, 1_000, 2_000, 5_000)
 SHOCK_LOOKBACK_MS = 1_000
 SHOCK_THRESHOLD_BPS = 5.0
@@ -36,6 +36,10 @@ MAX_TARGET_AGE_MS = 500.0
 REFRACTORY_MS = 1_000
 EWMA_ALPHA = 0.08
 EPS = 1e-9
+BASE_COST_BPS = 1.0
+BASE_SLIPPAGE_BPS = 1.0
+MAX_RESPONSE_BPS = 100.0
+MIN_RESPONSE_STD_BPS = 0.25
 
 FEATURE_NAMES = (
     "leader_return_bps",
@@ -492,6 +496,121 @@ class OnlineLogistic:
         model.grad_sq = [max(EPS, float(x)) for x in payload["grad_sq"]]
         model.updates = int(payload.get("updates", 0))
         return model
+
+
+class OnlineLinear:
+    """Fast online linear regression head with diagonal Adagrad and residual EWMA."""
+
+    def __init__(self, dimension: int, learning_rate: float = 0.03, l2: float = 1e-4) -> None:
+        self.dimension = dimension
+        self.learning_rate = learning_rate
+        self.l2 = l2
+        self.weights = [0.0] * dimension
+        self.grad_sq = [1e-6] * dimension
+        self.residual_ewma = 4.0
+        self.updates = 0
+
+    def predict(self, x: list[float]) -> float:
+        return sum(w * v for w, v in zip(self.weights, x))
+
+    def update(self, x: list[float], target: float) -> float:
+        y = max(-MAX_RESPONSE_BPS, min(MAX_RESPONSE_BPS, float(target)))
+        prediction = self.predict(x)
+        residual = y - prediction
+        for i, value in enumerate(x):
+            grad = -residual * value + self.l2 * self.weights[i]
+            self.grad_sq[i] += grad * grad
+            self.weights[i] -= self.learning_rate * grad / math.sqrt(self.grad_sq[i] + EPS)
+        alpha = 0.02
+        self.residual_ewma = (
+            (1.0 - alpha) * self.residual_ewma
+            + alpha * residual * residual
+        )
+        self.updates += 1
+        return prediction
+
+    def health(self) -> dict[str, float | int]:
+        return {
+            "updates": self.updates,
+            "residual_std_bps": max(MIN_RESPONSE_STD_BPS, math.sqrt(max(0.0, self.residual_ewma))),
+        }
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "dimension": self.dimension,
+            "learning_rate": self.learning_rate,
+            "l2": self.l2,
+            "weights": self.weights,
+            "grad_sq": self.grad_sq,
+            "residual_ewma": self.residual_ewma,
+            "updates": self.updates,
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "OnlineLinear":
+        obj = cls(
+            int(payload["dimension"]),
+            float(payload.get("learning_rate", 0.03)),
+            float(payload.get("l2", 1e-4)),
+        )
+        obj.weights = [float(x) for x in payload["weights"]]
+        obj.grad_sq = [max(EPS, float(x)) for x in payload["grad_sq"]]
+        obj.residual_ewma = max(0.0, float(payload.get("residual_ewma", 4.0)))
+        obj.updates = int(payload.get("updates", 0))
+        return obj
+
+
+class ResponseLearner:
+    """Conditional signed response head for the same reaction-time grid."""
+
+    def __init__(self, feature_dimension: int, horizons_ms: tuple[int, ...] = HORIZONS_MS) -> None:
+        self.feature_dimension = feature_dimension
+        self.horizons_ms = tuple(horizons_ms)
+        self.models = {int(h): OnlineLinear(feature_dimension + 1) for h in self.horizons_ms}
+
+    def _vector(self, features: list[float], horizon_ms: int) -> list[float]:
+        scale = math.log1p(horizon_ms) / math.log1p(self.horizons_ms[-1])
+        return [1.0, *features, scale]
+
+    def update(self, features: list[float], response_bps: float, duration_ms: float) -> dict[int, float]:
+        duration = max(0.0, float(duration_ms))
+        outputs: dict[int, float] = {}
+        for horizon in self.horizons_ms:
+            if duration > horizon:
+                continue
+            outputs[horizon] = self.models[horizon].update(
+                self._vector(features, horizon),
+                response_bps,
+            )
+        return outputs
+
+    def predict(self, features: list[float]) -> tuple[dict[int, float], dict[int, float]]:
+        means: dict[int, float] = {}
+        stds: dict[int, float] = {}
+        for horizon in self.horizons_ms:
+            model = self.models[horizon]
+            means[horizon] = max(-MAX_RESPONSE_BPS, min(MAX_RESPONSE_BPS, model.predict(self._vector(features, horizon))))
+            stds[horizon] = model.health()["residual_std_bps"]
+        return means, stds
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "updates": {str(h): self.models[h].updates for h in self.horizons_ms},
+            "residual_std_bps": {str(h): self.models[h].health()["residual_std_bps"] for h in self.horizons_ms},
+        }
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "feature_dimension": self.feature_dimension,
+            "horizons_ms": list(self.horizons_ms),
+            "models": {str(h): self.models[h].state() for h in self.horizons_ms},
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "ResponseLearner":
+        obj = cls(int(payload["feature_dimension"]), tuple(int(x) for x in payload["horizons_ms"]))
+        obj.models = {int(h): OnlineLinear.from_state(payload["models"][str(h)]) for h in obj.horizons_ms}
+        return obj
 
 
 @dataclass
