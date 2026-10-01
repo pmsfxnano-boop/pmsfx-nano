@@ -33,108 +33,107 @@ class QuantCryptoStore(CryptoStore):
 
     def init(self) -> None:
         super().init()
-        if self._pg and self.database_url in self._quant_schema_ready_urls:
-            return
-
         if self._pg:
+            if self.database_url in self._quant_schema_ready_urls:
+                return
             with self._quant_schema_lock:
                 if self.database_url in self._quant_schema_ready_urls:
                     return
-                self._init_quant_postgres_schema()
+                conn = self.connect()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS crypto_studies (
+                                study_id TEXT PRIMARY KEY,
+                                protocol_hash TEXT NOT NULL UNIQUE,
+                                created_at TEXT NOT NULL,
+                                status TEXT NOT NULL,
+                                protocol_json TEXT NOT NULL
+                            );
+                            CREATE TABLE IF NOT EXISTS crypto_capture_sessions (
+                                session_id TEXT PRIMARY KEY,
+                                study_id TEXT NOT NULL,
+                                provider TEXT NOT NULL,
+                                venue TEXT NOT NULL,
+                                region TEXT,
+                                instance_id TEXT,
+                                code_version TEXT,
+                                symbols_json TEXT NOT NULL,
+                                streams_json TEXT NOT NULL,
+                                protocol_hash TEXT NOT NULL,
+                                started_at TEXT NOT NULL,
+                                ended_at TEXT,
+                                status TEXT NOT NULL,
+                                metadata TEXT NOT NULL DEFAULT '{}'
+                            );
+                            CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_active_study
+                                ON crypto_capture_sessions(study_id)
+                                WHERE status IN ('STARTING','RUNNING');
+                            CREATE TABLE IF NOT EXISTS crypto_runtime_leases (
+                                run_id TEXT PRIMARY KEY,
+                                session_id TEXT,
+                                started_at TEXT NOT NULL,
+                                heartbeat_at TEXT NOT NULL,
+                                status TEXT NOT NULL
+                            );
+                            CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
+                                ON crypto_runtime_leases(heartbeat_at,status);
+                            """
+                        )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
                 self._quant_schema_ready_urls.add(self.database_url)
-                return
+            return
 
         conn = self.connect()
-            else:
-                conn.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS crypto_studies (
-                        study_id TEXT PRIMARY KEY,
-                        protocol_hash TEXT NOT NULL UNIQUE,
-                        created_at TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        protocol_json TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS crypto_capture_sessions (
-                        session_id TEXT PRIMARY KEY,
-                        study_id TEXT NOT NULL,
-                        provider TEXT NOT NULL,
-                        venue TEXT NOT NULL,
-                        region TEXT,
-                        instance_id TEXT,
-                        code_version TEXT,
-                        symbols_json TEXT NOT NULL,
-                        streams_json TEXT NOT NULL,
-                        protocol_hash TEXT NOT NULL,
-                        started_at TEXT NOT NULL,
-                        ended_at TEXT,
-                        status TEXT NOT NULL,
-                        metadata TEXT NOT NULL DEFAULT '{}'
-                    );
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_active_study
-                        ON crypto_capture_sessions(study_id)
-                        WHERE status IN ('STARTING','RUNNING');
-                    CREATE TABLE IF NOT EXISTS crypto_runtime_leases (
-                        run_id TEXT PRIMARY KEY,
-                        session_id TEXT,
-                        started_at TEXT NOT NULL,
-                        heartbeat_at TEXT NOT NULL,
-                        status TEXT NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
-                        ON crypto_runtime_leases(heartbeat_at,status);
-                    """
-                )
-                conn.commit()
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS crypto_studies (
+                    study_id TEXT PRIMARY KEY,
+                    protocol_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    protocol_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS crypto_capture_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    study_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    venue TEXT NOT NULL,
+                    region TEXT,
+                    instance_id TEXT,
+                    code_version TEXT,
+                    symbols_json TEXT NOT NULL,
+                    streams_json TEXT NOT NULL,
+                    protocol_hash TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    status TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_active_study
+                    ON crypto_capture_sessions(study_id)
+                    WHERE status IN ('STARTING','RUNNING');
+                CREATE TABLE IF NOT EXISTS crypto_runtime_leases (
+                    run_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
+                    ON crypto_runtime_leases(heartbeat_at,status);
+                """
+            )
+            conn.commit()
         finally:
             conn.close()
-
-    def _init_quant_postgres_schema(self) -> None:
-        conn = self.connect()
-        try:
-            with conn.cursor() as cur:
-        try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS crypto_studies (
-                            study_id TEXT PRIMARY KEY,
-                            protocol_hash TEXT NOT NULL UNIQUE,
-                            created_at TEXT NOT NULL,
-                            status TEXT NOT NULL,
-                            protocol_json TEXT NOT NULL
-                        );
-                        CREATE TABLE IF NOT EXISTS crypto_capture_sessions (
-                            session_id TEXT PRIMARY KEY,
-                            study_id TEXT NOT NULL,
-                            provider TEXT NOT NULL,
-                            venue TEXT NOT NULL,
-                            region TEXT,
-                            instance_id TEXT,
-                            code_version TEXT,
-                            symbols_json TEXT NOT NULL,
-                            streams_json TEXT NOT NULL,
-                            protocol_hash TEXT NOT NULL,
-                            started_at TEXT NOT NULL,
-                            ended_at TEXT,
-                            status TEXT NOT NULL,
-                            metadata TEXT NOT NULL DEFAULT '{}'
-                        );
-                        CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_active_study
-                            ON crypto_capture_sessions(study_id)
-                            WHERE status IN ('STARTING','RUNNING');
-                        CREATE TABLE IF NOT EXISTS crypto_runtime_leases (
-                            run_id TEXT PRIMARY KEY,
-                            session_id TEXT,
-                            started_at TEXT NOT NULL,
-                            heartbeat_at TEXT NOT NULL,
-                            status TEXT NOT NULL
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
-                            ON crypto_runtime_leases(heartbeat_at,status);
-                        """
-                    )
-            conn.commit()
 
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
         protocol.validate()
