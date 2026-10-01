@@ -134,6 +134,27 @@ def _safe_store_stats() -> dict[str, Any] | None:
         return None
 
 
+def _runtime_operational_snapshot() -> dict[str, Any]:
+    runtime = _runtime
+    if runtime is None:
+        return {
+            "market_plane": "STARTING",
+            "durability": "UNKNOWN",
+            "persistence_queue_batches": 0,
+        }
+    method = getattr(runtime, "operational_snapshot", None)
+    if callable(method):
+        try:
+            return dict(method())
+        except Exception:
+            pass
+    return {
+        "market_plane": "LIVE" if runtime is not None else "STARTING",
+        "durability": "UNKNOWN",
+        "persistence_queue_batches": 0,
+    }
+
+
 def _storage_backend_status() -> str:
     if not settings.ingest_enabled:
         return "NOT_REQUIRED"
@@ -493,11 +514,7 @@ app.add_middleware(
 
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
-    stats = (
-        _runtime.operational_snapshot()
-        if _runtime is not None
-        else None
-    )
+    stats = _runtime_operational_snapshot() if _runtime is not None else None
     return {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -772,15 +789,7 @@ def health() -> dict[str, Any]:
     symbols_live = bool(symbol_health) and all(
         row.get("status") == "LIVE" for row in symbol_health
     )
-    runtime_snapshot = (
-        _runtime.operational_snapshot()
-        if _runtime is not None
-        else {
-            "market_plane": "STARTING",
-            "durability": "UNKNOWN",
-            "persistence_queue_batches": 0,
-        }
-    )
+    runtime_snapshot = _runtime_operational_snapshot()
     payload = {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -841,15 +850,7 @@ def prospective_status() -> dict[str, Any]:
             "execution": False,
         }
     symbol_health = _runtime.symbol_health() if _runtime is not None else []
-    runtime_snapshot = (
-        _runtime.operational_snapshot()
-        if _runtime is not None
-        else {
-            "market_plane": "STARTING",
-            "durability": "UNKNOWN",
-            "persistence_queue_batches": 0,
-        }
-    )
+    runtime_snapshot = _runtime_operational_snapshot()
     store = _new_store()
     health_rows = [
         row for row in store.health(source_prefix="binance.websocket.")
