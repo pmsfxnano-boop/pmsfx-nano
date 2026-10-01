@@ -492,6 +492,7 @@ class AdaptiveOpportunityClock:
         received_time: datetime,
         event_id: str,
         replay_fingerprint: str,
+        learn: bool = true,
     ) -> list[dict[str, Any]]:
         """Consume exactly one ledger event in ingest order."""
         self.events_seen += 1
@@ -515,7 +516,7 @@ class AdaptiveOpportunityClock:
                 signed = pending.direction * 10_000.0 * math.log(price / pending.baseline_target_price)
                 if signed >= REACTION_THRESHOLD_BPS:
                     duration = _ms(received_time, pending.detected_received_time)
-                    outcomes.append(self._resolve(pending, duration, event_id, observed=True, signed_return_bps=signed))
+                    outcomes.append(self._resolve(pending, duration, event_id, observed=True, signed_return_bps=signed, learn=learn))
                     self.pending.pop(opportunity_id, None)
 
             # Leader impulse detection uses only the current symbol's own received order.
@@ -570,7 +571,7 @@ class AdaptiveOpportunityClock:
         for opportunity_id, pending in list(self.pending.items()):
             age = _ms(received_time, pending.detected_received_time)
             if age > MAX_OPPORTUNITY_MS:
-                outcomes.append(self._resolve(pending, MAX_OPPORTUNITY_MS, None, observed=False, signed_return_bps=0.0))
+                outcomes.append(self._resolve(pending, MAX_OPPORTUNITY_MS, None, observed=False, signed_return_bps=0.0, learn=learn))
                 self.pending.pop(opportunity_id, None)
 
         return outcomes
@@ -583,19 +584,23 @@ class AdaptiveOpportunityClock:
         *,
         observed: bool,
         signed_return_bps: float,
+        learn: bool = true,
     ) -> dict[str, Any]:
         pair = self._pair(pending.leader_symbol, pending.target_symbol)
-        global_out = self.global_model.update(
-            pending.features,
-            event_observed=observed,
-            duration_ms=duration_ms,
-        )
-        pair_out = self._model_for(pair).update(
-            pending.features,
-            event_observed=observed,
-            duration_ms=duration_ms,
-        )
-        self.training_updates += 1
+        global_out = {}
+        pair_out = {}
+        if learn:
+            global_out = self.global_model.update(
+                pending.features,
+                event_observed=observed,
+                duration_ms=duration_ms,
+            )
+            pair_out = self._model_for(pair).update(
+                pending.features,
+                event_observed=observed,
+                duration_ms=duration_ms,
+            )
+            self.training_updates += 1
         if observed:
             self.resolved += 1
         else:
@@ -681,6 +686,15 @@ class AdaptiveOpportunityClock:
             "training_updates": self.training_updates,
             "resolved": self.resolved,
             "censored": self.censored,
+            "last_impulse_received": {symbol: dt.isoformat() for symbol, dt in self.last_impulse_received.items()},
+            "pending": [
+                {
+                    **asdict(pending),
+                    "detected_received_time": pending.detected_received_time.isoformat(),
+                    "created_at": pending.created_at.isoformat(),
+                }
+                for pending in self.pending.values()
+            ],
         }
 
     @classmethod
@@ -699,6 +713,24 @@ class AdaptiveOpportunityClock:
         engine.training_updates = int(payload.get("training_updates", 0))
         engine.resolved = int(payload.get("resolved", 0))
         engine.censored = int(payload.get("censored", 0))
+        engine.last_impulse_received = {
+            str(symbol): _dt(value)
+            for symbol, value in (payload.get("last_impulse_received") or {}).items()
+        }
+        for row in payload.get("pending") or []:
+            pending = PendingOpportunity(
+                opportunity_id=str(row["opportunity_id"]),
+                leader_symbol=str(row["leader_symbol"]),
+                target_symbol=str(row["target_symbol"]),
+                direction=int(row["direction"]),
+                leader_return_bps=float(row["leader_return_bps"]),
+                detected_received_time=_dt(row["detected_received_time"]),
+                baseline_target_price=float(row["baseline_target_price"]),
+                features=[float(x) for x in row["features"]],
+                replay_fingerprint=str(row["replay_fingerprint"]),
+                created_at=_dt(row["created_at"]),
+            )
+            engine.pending[pending.opportunity_id] = pending
         return engine
 
 
