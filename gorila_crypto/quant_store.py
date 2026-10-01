@@ -79,6 +79,11 @@ class QuantCryptoStore(CryptoStore):
                             );
                             CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
                                 ON crypto_runtime_leases(heartbeat_at,status);
+                            CREATE TABLE IF NOT EXISTS crypto_storage_actions (
+                                action_key TEXT PRIMARY KEY,
+                                completed_at TEXT NOT NULL,
+                                details TEXT NOT NULL DEFAULT '{}'
+                            );
                             """
                         )
                     conn.commit()
@@ -135,26 +140,94 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
 
-    def emergency_disk_relief(self, *, keep_session_id: str | None) -> dict[str, int]:
-        """Reclaim invalid/aborted cohort storage so the free Postgres tier can keep ingesting.
-
-        Only rows belonging to non-running capture sessions are eligible. The active
-        prospective cohort is never deleted. The cleanup runs in small committed
-        batches so WAL/locks remain bounded even when the database is under pressure.
-        """
+    def emergency_disk_relief(self, *, keep_session_id: str | None) -> dict[str, int | bool | str]:
+        """Reclaim invalid cohort storage and optionally reset an unvalidated ledger."""
         self.init()
         if not self._pg:
-            return {"deleted_rows": 0, "dropped_indexes": 0}
-        deleted_rows = 0
-        dropped_indexes = 0
+            return {"deleted_rows": 0, "dropped_indexes": 0, "reset": False}
+
+        reset_requested = os.getenv(
+            "GORILA_CRYPTO_RESET_EVENT_LEDGER", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
         conn = self.connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    DROP INDEX IF EXISTS "idx_crypto_events_symbol_time"
+                    CREATE TABLE IF NOT EXISTS crypto_storage_actions (
+                        action_key TEXT PRIMARY KEY,
+                        completed_at TEXT NOT NULL,
+                        details TEXT NOT NULL DEFAULT '{}'
+                    )
                     """
                 )
+                cur.execute(
+                    "SELECT 1 FROM crypto_storage_actions WHERE action_key=%s",
+                    ("RESET_EVENT_LEDGER_V1",),
+                )
+                already_reset = cur.fetchone() is not None
+        finally:
+            conn.commit()
+            conn.close()
+
+        if reset_requested and not already_reset:
+            # Never destroy a study that already has validated evidence.
+            conn = self.connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM crypto_validation_runs")
+                    validation_runs = int(cur.fetchone()[0] or 0)
+                    cur.execute(
+                        "SELECT COUNT(*) FROM crypto_research_runs WHERE status='COMPLETE'"
+                    )
+                    completed_research = int(cur.fetchone()[0] or 0)
+                conn.commit()
+            finally:
+                conn.close()
+            if validation_runs or completed_research:
+                raise RuntimeError(
+                    "refusing_event_ledger_reset_after_validated_research"
+                )
+
+            self.fence_active_study_session(
+                study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                reason="EMERGENCY_LEDGER_RESET_NO_VALIDATED_RESEARCH",
+            )
+            conn = self.connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("TRUNCATE TABLE crypto_events RESTART IDENTITY")
+                    cur.execute("TRUNCATE TABLE crypto_data_gaps")
+                    cur.execute(
+                        """
+                        INSERT INTO crypto_storage_actions(action_key,completed_at,details)
+                        VALUES(%s,%s,%s)
+                        ON CONFLICT(action_key) DO NOTHING
+                        """,
+                        (
+                            "RESET_EVENT_LEDGER_V1",
+                            _utc_now(),
+                            json.dumps(
+                                {
+                                    "reason": "free_tier_disk_pressure",
+                                    "validated_research_present": False,
+                                },
+                                sort_keys=True,
+                            ),
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return {"deleted_rows": 0, "dropped_indexes": 0, "reset": True}
+
+        deleted_rows = 0
+        dropped_indexes = 0
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute('DROP INDEX IF EXISTS "idx_crypto_events_symbol_time"')
                 if cur.rowcount:
                     dropped_indexes += 1
             conn.commit()
@@ -211,16 +284,15 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
 
-        # Reclaim dead tuples for immediate page reuse. This does not require the
-        # free disk space needed by VACUUM FULL and is safe on a live table.
         vacuum_conn = self.connect()
         try:
+            vacuum_conn.commit()
             vacuum_conn.autocommit = True
             with vacuum_conn.cursor() as cur:
                 cur.execute('VACUUM (ANALYZE) "gorila_crypto"."crypto_events"')
         finally:
             vacuum_conn.close()
-        return {"deleted_rows": deleted_rows, "dropped_indexes": dropped_indexes}
+        return {"deleted_rows": deleted_rows, "dropped_indexes": dropped_indexes, "reset": False}
 
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
         protocol.validate()
