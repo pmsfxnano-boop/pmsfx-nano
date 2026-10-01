@@ -20,7 +20,6 @@ jobs:
           set -euo pipefail
 
           BASE="https://gorila-crypto-cleanroom-binance-capture.onrender.com"
-          FRONTEND_ORIGIN="https://gorila-argentum-terminal.onrender.com"
           HEALTH_URL="$BASE/api/crypto/health"
           MARKET_URL="$BASE/api/crypto/market/stream?cursor=0&limit=36"
           EVIDENCE_URL="$BASE/api/crypto/evidence"
@@ -39,9 +38,9 @@ jobs:
               health_ok=1
             fi
 
-            if curl --fail --silent --show-error --max-time 20               -D "$tmp_headers"               -H "Origin: $FRONTEND_ORIGIN"               "$MARKET_URL" >"$tmp_body"; then
+            if curl --fail --silent --show-error --max-time 20               -D "$tmp_headers"               "$MARKET_URL" >"$tmp_body"; then
               market_ok=1
-              if tr -d "\r" < "$tmp_headers" | grep -qi "^access-control-allow-origin: $FRONTEND_ORIGIN$"; then
+              if tr -d "\r" < "$tmp_headers" | grep -qi "^access-control-allow-origin: \*"; then
                 cors_ok=1
               fi
             fi
