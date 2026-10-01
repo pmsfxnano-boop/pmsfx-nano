@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -130,12 +131,98 @@ class ProspectiveCryptoIngestor:
         self._capture_started_at = self.now()
         self._pending_event_rows: list[dict[str, Any]] = []
         self._pending_event_started_monotonic: float | None = None
+        self._persistence_queue: queue.Queue[list[dict[str, Any]]] = queue.Queue(
+            maxsize=max(8, settings.persistence_queue_batches)
+        )
+        self._persistence_thread: threading.Thread | None = None
+        self._persistence_stop = threading.Event()
+        self._persistence_error: str | None = None
+        self._persistence_last_success_monotonic = 0.0
+        self._persistence_dropped_events = 0
+        self._last_bookticker_persist_monotonic: dict[str, float] = {}
+        self._bookticker_persist_interval = settings.persist_bookticker_interval_seconds
 
         self.config.validate()
 
     @property
     def source_family(self) -> str:
         return str(getattr(self.adapter, "source_family", "crypto.websocket.market"))
+
+    def _persistence_worker(self) -> None:
+        """Durable writer isolated from the market event loop."""
+        backoff = 0.25
+        while not self._persistence_stop.is_set() or not self._persistence_queue.empty():
+            try:
+                rows = self._persistence_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                if isinstance(self.store, QuantCryptoStore):
+                    if self.session_id is None:
+                        raise RuntimeError("capture_session_not_started")
+                    results = self.store.append_scoped_events(
+                        study_id=self.protocol.study_id,
+                        capture_session_id=self.session_id,
+                        events=rows,
+                    )
+                else:
+                    results = self.store.append_events(rows)
+                MARKET_CACHE.mark_persisted(rows, results)
+                self.events_inserted += sum(
+                    1 for result in results if result["inserted"]
+                )
+                self.events_duplicate += sum(
+                    1 for result in results if not result["inserted"]
+                )
+                self._persistence_error = None
+                self._persistence_last_success_monotonic = time.monotonic()
+                backoff = 0.25
+            except Exception as exc:
+                self._persistence_error = f"{type(exc).__name__}: {exc}"
+                MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+                # Keep the exact batch intact and retry in order. The market
+                # plane remains live while durability is degraded.
+                if self.stop_event.is_set():
+                    self._persistence_dropped_events += len(rows)
+                    MARKET_CACHE.record_persistence_drop(len(rows))
+                    continue
+                time.sleep(backoff)
+                backoff = min(10.0, backoff * 2.0)
+                try:
+                    self._persistence_queue.put(rows, timeout=0.25)
+                except queue.Full:
+                    self._persistence_dropped_events += len(rows)
+                    MARKET_CACHE.record_persistence_drop(len(rows))
+
+    def _should_persist(self, event: NormalizedMarketEvent) -> bool:
+        if event.event_type == "trade":
+            return True
+        if event.event_type == "bookTicker":
+            symbol = event.symbol.upper()
+            now_monotonic = time.monotonic()
+            last = self._last_bookticker_persist_monotonic.get(symbol, 0.0)
+            if now_monotonic - last >= self._bookticker_persist_interval:
+                self._last_bookticker_persist_monotonic[symbol] = now_monotonic
+                return True
+            return False
+        # Raw depth updates stay on the hot book-sync path and are not persisted
+        # tick-for-tick into the constrained ledger.
+        return False
+
+    def _start_persistence_worker(self) -> None:
+        self._persistence_stop.clear()
+        self._persistence_thread = threading.Thread(
+            target=self._persistence_worker,
+            name="gorila-crypto-durable-writer",
+            daemon=True,
+        )
+        self._persistence_thread.start()
+
+    def _stop_persistence_worker(self) -> None:
+        self._persistence_stop.set()
+        if self._persistence_thread is not None:
+            self._persistence_thread.join(timeout=5.0)
+            self._persistence_thread = None
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
@@ -147,14 +234,18 @@ class ProspectiveCryptoIngestor:
             "GORILA_CAPTURE_CONNECTION " + json.dumps(payload, sort_keys=True, default=str),
             flush=True,
         )
-        self.store.record_connection(
-            source=self.source_family,
-            status=status,
-            metadata={
-                "run_id": self.run_id,
-                **(metadata or {}),
-            },
-        )
+        try:
+            self.store.record_connection(
+                source=self.source_family,
+                status=status,
+                metadata={
+                    "run_id": self.run_id,
+                    **(metadata or {}),
+                },
+            )
+        except Exception as exc:
+            self._persistence_error = f"connection_event:{type(exc).__name__}: {exc}"
+            MARKET_CACHE.record_persistence_degradation(self._persistence_error)
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
         if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
@@ -198,22 +289,25 @@ class ProspectiveCryptoIngestor:
         rows = self._pending_event_rows
         self._pending_event_rows = []
         self._pending_event_started_monotonic = None
-        if isinstance(self.store, QuantCryptoStore):
-            if self.session_id is None:
-                raise RuntimeError("capture_session_not_started")
-            results = self.store.append_scoped_events(
-                study_id=self.protocol.study_id,
-                capture_session_id=self.session_id,
-                events=rows,
-            )
-        else:
-            results = self.store.append_events(rows)
-        # Update the hot read model only after the durable append succeeds.
-        # This keeps Postgres as the source of truth while removing DB latency
-        # from the frontend polling path.
-        MARKET_CACHE.append_persisted(rows, results)
-        self.events_inserted += sum(1 for result in results if result["inserted"])
-        self.events_duplicate += sum(1 for result in results if not result["inserted"])
+
+        try:
+            self._persistence_queue.put(rows, timeout=0.05)
+        except queue.Full:
+            # Preserve trades preferentially; sampled quotes may be dropped from
+            # durability under sustained storage pressure, but hot market state
+            # continues advancing and the drop is explicitly observable.
+            trades = [row for row in rows if row.get("event_type") == "trade"]
+            if trades:
+                try:
+                    self._persistence_queue.put(trades, timeout=0.05)
+                except queue.Full:
+                    dropped = len(trades)
+                    self._persistence_dropped_events += dropped
+                    MARKET_CACHE.record_persistence_drop(dropped)
+            non_trades = len(rows) - len(trades)
+            if non_trades:
+                self._persistence_dropped_events += non_trades
+                MARKET_CACHE.record_persistence_drop(non_trades)
 
     def _ingest(self, event: NormalizedMarketEvent) -> None:
         event_time = event.event_time.astimezone(timezone.utc)
@@ -253,22 +347,26 @@ class ProspectiveCryptoIngestor:
         if gap is not None:
             expected, observed = gap
             self.gaps_detected += 1
-            self.store.record_gap(
-                symbol=event.symbol,
-                source=event.source,
-                expected_sequence=expected,
-                observed_sequence=observed,
-                status=self.config.gap_status,
-                metadata={
-                    "run_id": self.run_id,
-                    "capture_session_id": self.session_id,
-                    "crypto_study_id": self.protocol.study_id,
-                    "event_type": event.event_type,
-                    "ingest_epoch": self.sequence.epoch,
-                    "message": "Continuity gap detected within one connection epoch; "
-                    "missing events were not synthesized.",
-                },
-            )
+            try:
+                self.store.record_gap(
+                    symbol=event.symbol,
+                    source=event.source,
+                    expected_sequence=expected,
+                    observed_sequence=observed,
+                    status=self.config.gap_status,
+                    metadata={
+                        "run_id": self.run_id,
+                        "capture_session_id": self.session_id,
+                        "crypto_study_id": self.protocol.study_id,
+                        "event_type": event.event_type,
+                        "ingest_epoch": self.sequence.epoch,
+                        "message": "Continuity gap detected within one connection epoch; "
+                        "missing events were not synthesized.",
+                    },
+                )
+            except Exception as exc:
+                self._persistence_error = f"gap_record:{type(exc).__name__}: {exc}"
+                MARKET_CACHE.record_persistence_degradation(self._persistence_error)
 
         source = event.source
         self._health_pending_rows[source] = self._health_pending_rows.get(source, 0) + 1
@@ -280,16 +378,20 @@ class ProspectiveCryptoIngestor:
             or now_monotonic - last_persisted >= self.config.health_flush_interval_seconds
         )
         if should_persist_health:
-            self.store.upsert_source_health(
-                source=source,
-                status=assessment["status"],
-                last_event_time=assessment["event_time"],
-                last_received_time=assessment["received_time"],
-                event_age_seconds=assessment["event_age_seconds"],
-                transport_age_seconds=assessment["transport_age_seconds"],
-                rows_last_batch=self._health_pending_rows[source],
-                error=None,
-            )
+            try:
+                self.store.upsert_source_health(
+                    source=source,
+                    status=assessment["status"],
+                    last_event_time=assessment["event_time"],
+                    last_received_time=assessment["received_time"],
+                    event_age_seconds=assessment["event_age_seconds"],
+                    transport_age_seconds=assessment["transport_age_seconds"],
+                    rows_last_batch=self._health_pending_rows[source],
+                    error=None,
+                )
+            except Exception as exc:
+                self._persistence_error = f"source_health:{type(exc).__name__}: {exc}"
+                MARKET_CACHE.record_persistence_degradation(self._persistence_error)
             self._health_last_persist_monotonic[source] = now_monotonic
             self._health_last_status[source] = assessment["status"]
             self._health_pending_rows[source] = 0
@@ -298,9 +400,25 @@ class ProspectiveCryptoIngestor:
             self._symbol_first_received.setdefault(symbol, received_time)
             self._symbol_last_received[symbol] = received_time
         self.last_event = event
-        if self._pending_event_started_monotonic is None:
-            self._pending_event_started_monotonic = now_monotonic
-        self._pending_event_rows.append(event_kwargs)
+
+        # Hot market state is committed before durability. This is the central
+        # market/evidence plane separation: Postgres outage must not freeze price,
+        # tape or microstructure.
+        if event.event_type in {"trade", "bookTicker"}:
+            MARKET_CACHE.append_observed([event_kwargs])
+
+        if self._should_persist(event):
+            event_kwargs["metadata"] = {
+                **dict(event_kwargs["metadata"]),
+                "persistence_policy": (
+                    "FULL_TRADE"
+                    if event.event_type == "trade"
+                    else "SAMPLED_BOOKTICKER"
+                ),
+            }
+            if self._pending_event_started_monotonic is None:
+                self._pending_event_started_monotonic = now_monotonic
+            self._pending_event_rows.append(event_kwargs)
 
     def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
         """Report readiness of every required symbol from observed receive times.
@@ -438,6 +556,10 @@ class ProspectiveCryptoIngestor:
         self._health_pending_rows.clear()
         self._pending_event_rows.clear()
         self._pending_event_started_monotonic = None
+        self._last_bookticker_persist_monotonic.clear()
+        self._persistence_error = None
+        self._persistence_dropped_events = 0
+        self._start_persistence_worker()
         with self._symbol_lock:
             self._symbol_first_received.clear()
             self._symbol_last_received.clear()
@@ -463,8 +585,12 @@ class ProspectiveCryptoIngestor:
                 ):
                     self._flush_pending_events()
                 if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
-                    self.store.heartbeat_runtime_run(self.run_id)
-                    self._last_runtime_heartbeat = now_monotonic
+                    try:
+                        self.store.heartbeat_runtime_run(self.run_id)
+                        self._last_runtime_heartbeat = now_monotonic
+                    except Exception as exc:
+                        self._persistence_error = f"runtime_heartbeat:{type(exc).__name__}: {exc}"
+                        MARKET_CACHE.record_persistence_degradation(self._persistence_error)
                 if self.stop_event.is_set():
                     status = "STOPPED"
                     break
@@ -479,11 +605,15 @@ class ProspectiveCryptoIngestor:
             raise
         finally:
             self._flush_pending_events()
+            self._stop_persistence_worker()
             result = {
                 "events_inserted": self.events_inserted,
                 "events_duplicate": self.events_duplicate,
                 "gaps_detected": self.gaps_detected,
                 "last_error": self.last_error,
+                "persistence_error": self._persistence_error,
+                "persistence_dropped_events": self._persistence_dropped_events,
+                "persistence_queue_batches": self._persistence_queue.qsize(),
                 "last_event_time": (
                     self.last_event.event_time.isoformat()
                     if self.last_event is not None
@@ -494,14 +624,17 @@ class ProspectiveCryptoIngestor:
                 "execution": False,
             }
             if production_scoped:
-                self.store.finish_runtime_run_scoped(
-                    run_id=self.run_id,
-                    session_id=self.session_id,
-                    status=status,
-                    result=result,
-                )
-                if self.session_id is not None:
-                    self.store.set_capture_session_status(self.session_id, status)
+                try:
+                    self.store.finish_runtime_run_scoped(
+                        run_id=self.run_id,
+                        session_id=self.session_id,
+                        status=status,
+                        result=result,
+                    )
+                    if self.session_id is not None:
+                        self.store.set_capture_session_status(self.session_id, status)
+                except Exception as exc:
+                    self._persistence_error = f"runtime_finish:{type(exc).__name__}: {exc}"
             else:
                 self.store.finish_runtime_run(
                     run_id=self.run_id,
