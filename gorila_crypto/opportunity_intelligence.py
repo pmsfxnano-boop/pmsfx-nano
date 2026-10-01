@@ -110,6 +110,20 @@ class EWMA:
             self.value = self.alpha * float(value) + (1.0 - self.alpha) * self.value
         return self.value
 
+    def state(self) -> dict[str, Any]:
+        return {
+            "alpha": self.alpha,
+            "value": self.value,
+            "initialized": self.initialized,
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "EWMA":
+        obj = cls(float(payload.get("alpha", EWMA_ALPHA)))
+        obj.value = float(payload.get("value", 0.0))
+        obj.initialized = bool(payload.get("initialized", False))
+        return obj
+
 
 class OnlineMoments:
     """Exponentially weighted mean/variance for non-stationary streams."""
@@ -131,6 +145,22 @@ class OnlineMoments:
         self.mean += self.alpha * delta
         self.var = (1.0 - self.alpha) * (self.var + self.alpha * delta * delta)
         return self.mean, max(self.var, 1e-8)
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "alpha": self.alpha,
+            "mean": self.mean,
+            "var": self.var,
+            "initialized": self.initialized,
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "OnlineMoments":
+        obj = cls(float(payload.get("alpha", 0.02)))
+        obj.mean = float(payload.get("mean", 0.0))
+        obj.var = max(1e-8, float(payload.get("var", 1.0)))
+        obj.initialized = bool(payload.get("initialized", False))
+        return obj
 
 
 @dataclass
@@ -225,6 +255,53 @@ class SymbolMicrostructure:
         elif self.ask and self.ask > 0:
             self.last_mid = self.ask
 
+    def state(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "bid": self.bid,
+            "ask": self.ask,
+            "bid_size": self.bid_size,
+            "ask_size": self.ask_size,
+            "last_mid": self.last_mid,
+            "last_trade_price": self.last_trade_price,
+            "last_trade_received": self.last_trade_received.isoformat() if self.last_trade_received else None,
+            "last_book_received": self.last_book_received.isoformat() if self.last_book_received else None,
+            "last_depth_received": self.last_depth_received.isoformat() if self.last_depth_received else None,
+            "last_market_received": self.last_market_received.isoformat() if self.last_market_received else None,
+            "signed_flow": self.signed_flow.state(),
+            "trade_intensity": self.trade_intensity.state(),
+            "realized_vol": self.realized_vol.state(),
+            "depth_activity": self.depth_activity.state(),
+            "flow_moments": self.flow_moments.state(),
+            "recent_trades": [
+                [received.isoformat(), price] for received, price in self.recent_trades
+            ],
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "SymbolMicrostructure":
+        obj = cls(str(payload["symbol"]))
+        obj.bid = payload.get("bid")
+        obj.ask = payload.get("ask")
+        obj.bid_size = float(payload.get("bid_size", 0.0))
+        obj.ask_size = float(payload.get("ask_size", 0.0))
+        obj.last_mid = payload.get("last_mid")
+        obj.last_trade_price = payload.get("last_trade_price")
+        obj.last_trade_received = _dt(payload["last_trade_received"]) if payload.get("last_trade_received") else None
+        obj.last_book_received = _dt(payload["last_book_received"]) if payload.get("last_book_received") else None
+        obj.last_depth_received = _dt(payload["last_depth_received"]) if payload.get("last_depth_received") else None
+        obj.last_market_received = _dt(payload["last_market_received"]) if payload.get("last_market_received") else None
+        obj.signed_flow = EWMA.from_state(payload.get("signed_flow") or {})
+        obj.trade_intensity = EWMA.from_state(payload.get("trade_intensity") or {})
+        obj.realized_vol = EWMA.from_state(payload.get("realized_vol") or {})
+        obj.depth_activity = EWMA.from_state(payload.get("depth_activity") or {})
+        obj.flow_moments = OnlineMoments.from_state(payload.get("flow_moments") or {})
+        obj.recent_trades = deque(
+            [(_dt(row[0]), float(row[1])) for row in payload.get("recent_trades") or []],
+            maxlen=256,
+        )
+        return obj
+
     def snapshot(self, now: datetime) -> dict[str, float]:
         bid = self.bid or 0.0
         ask = self.ask or bid
@@ -271,6 +348,22 @@ class MicrostructureBook:
         if state is None:
             return None
         return state.last_trade_price or state.last_mid
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "symbols": {
+                symbol: state.state() for symbol, state in self.symbols.items()
+            }
+        }
+
+    @classmethod
+    def from_state(cls, payload: Mapping[str, Any]) -> "MicrostructureBook":
+        book = cls()
+        book.symbols = {
+            str(symbol): SymbolMicrostructure.from_state(state)
+            for symbol, state in (payload.get("symbols") or {}).items()
+        }
+        return book
 
 
 class OnlineLogistic:
@@ -796,6 +889,7 @@ class AdaptiveOpportunityClock:
             "horizons_ms": list(self.horizons_ms),
             "global_model": self.global_model.state(),
             "pair_models": {pair: model.state() for pair, model in self.pair_models.items()},
+            "microstructure": self.book.state(),
             "events_seen": self.events_seen,
             "opportunities_started": self.opportunities_started,
             "training_updates": self.training_updates,
@@ -820,6 +914,7 @@ class AdaptiveOpportunityClock:
             horizons_ms=tuple(int(x) for x in payload.get("horizons_ms", HORIZONS_MS)),
         )
         engine.global_model = DiscreteHazardLearner.from_state(payload["global_model"])
+        engine.book = MicrostructureBook.from_state(payload.get("microstructure") or {})
         engine.pair_models = {
             pair: DiscreteHazardLearner.from_state(model_state)
             for pair, model_state in (payload.get("pair_models") or {}).items()
