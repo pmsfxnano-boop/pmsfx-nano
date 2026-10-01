@@ -114,4 +114,3 @@ result can be reconstructed without relying on terminal output.
 
 `automatic_promotion = false`.
 `execution = false`.
-No Argentina, US-equity, or legacy forecast is used by the Crypto validator.
