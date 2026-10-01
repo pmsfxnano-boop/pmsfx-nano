@@ -12,11 +12,22 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Reject legacy non-Crypto modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad_paths="$(git ls-files | grep -Ei '(^|/)(gorila_argentum|ggal_shadow)(/|\.|$)' || true)"
+          if [ -n "$bad_paths" ]; then
+            echo "::error::Legacy non-Crypto modules detected:"
+            printf '%s\n' "$bad_paths"
+            exit 1
+          fi
+
       - name: Reject non-Crypto integrations
         shell: bash
         run: |
           set -euo pipefail
-          forbidden='(gorila_argentum|ggal_shadow|bcra|byma|iol|rava|tiingo|twelve[_ -]?data|yahoo|cedear|mep|aapl|msft|nvda|tsla|nasdaq|nyse|pamp|ypfd|cepu|tgsu2|bma)'
+          forbidden='(bcra|byma|iol|rava|tiingo|twelve[_ -]?data|yahoo|cedear|mep|aapl|msft|nvda|tsla|nasdaq|nyse|pamp|ypfd|cepu|tgsu2|bma)'
           matches="$(git grep -nEi "$forbidden" --             ':!*.md'             ':!docs/**'             ':!frontend/index.html'             ':!frontend/public/manifest.webmanifest'             ':!frontend/src/App.tsx'             ':!gorila_crypto/config.py'             ':!.github/workflows/crypto-domain-fence.yml'             || true)"
           if [ -n "$matches" ]; then
             echo "::error::Crypto-only domain fence found prohibited non-Crypto integration references:"
