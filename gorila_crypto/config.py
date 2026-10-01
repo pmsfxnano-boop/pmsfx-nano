@@ -51,6 +51,9 @@ class CryptoSettings:
     retention_trade_hours: float
     retention_bookticker_hours: float
     retention_depth_hours: float
+    persistence_spool_path: str
+    persistence_spool_max_bytes: int
+    persistence_spool_max_batches: int
 
 
     def validate(self) -> None:
@@ -86,6 +89,12 @@ class CryptoSettings:
             raise ValueError("bookTicker retention must be positive")
         if self.retention_depth_hours <= 0:
             raise ValueError("depth retention must be positive")
+        if not self.persistence_spool_path.strip():
+            raise ValueError("persistence spool path cannot be empty")
+        if self.persistence_spool_max_bytes < 1024 * 1024:
+            raise ValueError("persistence spool max bytes must be >= 1 MiB")
+        if self.persistence_spool_max_batches < 1:
+            raise ValueError("persistence spool max batches must be positive")
 
 settings = CryptoSettings(
     provider=os.getenv("GORILA_CRYPTO_PROVIDER", "binance").strip().lower(),
@@ -148,6 +157,18 @@ settings = CryptoSettings(
     retention_depth_hours=max(
         0.25,
         float(os.getenv("GORILA_RETENTION_DEPTH_HOURS", "1")),
+    ),
+    persistence_spool_path=os.getenv(
+        "GORILA_PERSISTENCE_SPOOL_PATH",
+        "/tmp/gorila_crypto_evidence_spool.sqlite3",
+    ).strip(),
+    persistence_spool_max_bytes=max(
+        1024 * 1024,
+        int(os.getenv("GORILA_PERSISTENCE_SPOOL_MAX_MB", "256")) * 1024 * 1024,
+    ),
+    persistence_spool_max_batches=max(
+        1,
+        int(os.getenv("GORILA_PERSISTENCE_SPOOL_MAX_BATCHES", "100000")),
     ),
 )
 
