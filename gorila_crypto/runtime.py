@@ -509,139 +509,15 @@ class ProspectiveCryptoIngestor:
         self.stop_event.set()
 
     def run(self) -> dict[str, Any]:
-        """Run the capture runtime, with the preregistered cohort enforced in production."""
+        """Run one market stream while durable capture bootstraps independently."""
         production_scoped = isinstance(self.store, QuantCryptoStore)
-        if production_scoped:
-            if not self.protocol.matches_runtime(
-                provider=settings.provider,
-                symbols=tuple(self.adapter.config.symbols),
-                streams=tuple(settings.streams),
-            ):
-                raise RuntimeError("runtime_does_not_match_preregistered_protocol")
+        if production_scoped and not self.protocol.matches_runtime(
+            provider=settings.provider,
+            symbols=tuple(self.adapter.config.symbols),
+            streams=tuple(settings.streams),
+        ):
+            raise RuntimeError("runtime_does_not_match_preregistered_protocol")
 
-            # Durable storage bootstrap is independently retryable. A transient
-            # DNS/TLS/database outage must never terminate the market ingest worker.
-            bootstrap_backoff = 1.0
-            stale = 0
-            while not self.stop_event.is_set():
-                try:
-                    stale = self.store.reconcile_stale_runtime_runs(
-                        stale_after_seconds=120.0
-                    )
-                    self.store.register_study(self.protocol)
-                    effective_protocol_hash = self.store.get_study_protocol_hash(
-                        self.protocol.study_id
-                    )
-                    break
-                except Exception as exc:
-                    self.last_error = f"{type(exc).__name__}: {exc}"
-                    self._record_connection(
-                        "STORAGE_BOOTSTRAP_DEGRADED",
-                        {"error": self.last_error},
-                    )
-                    self.stop_event.wait(bootstrap_backoff)
-                    bootstrap_backoff = min(30.0, bootstrap_backoff * 2.0)
-
-            if self.stop_event.is_set():
-                return {
-                    "status": "STOPPED",
-                    "run_id": None,
-                    "events_inserted": 0,
-                    "events_duplicate": 0,
-                    "gaps_detected": 0,
-                    "last_error": self.last_error,
-                    "last_event_time": None,
-                    "automatic_promotion": False,
-                    "forecast": False,
-                    "execution": False,
-                }
-
-            # Once the study is registered, session ownership is itself an
-            # atomic fence. We may wait on another active writer without
-            # repeating schema/bootstrap work.
-            session_backoff = 2.0
-            while not self.stop_event.is_set():
-                try:
-                    if self.session_id is None:
-                        self.session_id = self.store.start_capture_session(
-                            study_id=self.protocol.study_id,
-                            protocol_hash=effective_protocol_hash,
-                            provider=settings.provider,
-                            venue=self.protocol.venue,
-                            symbols=tuple(self.adapter.config.symbols),
-                            streams=tuple(settings.streams),
-                            region=os.getenv("RENDER_REGION"),
-                            instance_id=os.getenv("RENDER_INSTANCE_ID"),
-                            code_version=os.getenv("RENDER_GIT_COMMIT")
-                            or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-                            metadata={"stale_runs_reconciled": stale},
-                        )
-                    try:
-                        self.run_id = self.store.start_runtime_run_scoped(
-                            kind=self.config.kind,
-                            session_id=self.session_id,
-                        )
-                    except Exception:
-                        # Keep the acquired session id and retry only the runtime
-                        # lease creation on the next pass.
-                        raise
-                    break
-                except RuntimeError as exc:
-                    reason = str(exc)
-                    if reason.startswith("active_capture_session_exists:"):
-                        self._record_connection(
-                            "WAITING_FOR_ACTIVE_SESSION",
-                            {"reason": reason},
-                        )
-                        self.stop_event.wait(session_backoff)
-                        continue
-                    self.last_error = reason
-                    self._record_connection(
-                        "STORAGE_BOOTSTRAP_DEGRADED",
-                        {"error": reason},
-                    )
-                    self.stop_event.wait(session_backoff)
-                    session_backoff = min(30.0, session_backoff * 2.0)
-                except Exception as exc:
-                    self.last_error = f"{type(exc).__name__}: {exc}"
-                    self._record_connection(
-                        "STORAGE_BOOTSTRAP_DEGRADED",
-                        {"error": self.last_error},
-                    )
-                    self.stop_event.wait(session_backoff)
-                    session_backoff = min(30.0, session_backoff * 2.0)
-
-            if self.stop_event.is_set():
-                return {
-                    "status": "STOPPED",
-                    "run_id": None,
-                    "events_inserted": 0,
-                    "events_duplicate": 0,
-                    "gaps_detected": 0,
-                    "last_error": self.last_error,
-                    "last_event_time": None,
-                    "automatic_promotion": False,
-                    "forecast": False,
-                    "execution": False,
-                }
-
-            self._record_connection(
-                "RUN_STARTED",
-                {
-                    "symbols": list(self.adapter.config.symbols),
-                    "study_id": self.protocol.study_id,
-                    "protocol_hash": effective_protocol_hash,
-                    "capture_session_id": self.session_id,
-                },
-            )
-        else:
-            # Legacy/unit-test harness: persistence semantics are still exercised,
-            # but production-only study binding is deliberately not activated.
-            self.run_id = self.store.start_runtime_run(kind=self.config.kind)
-            self._record_connection(
-                "RUN_STARTED",
-                {"symbols": list(self.adapter.config.symbols)}
-            )
         self.events_inserted = 0
         self.events_duplicate = 0
         self.gaps_detected = 0
@@ -654,11 +530,31 @@ class ProspectiveCryptoIngestor:
         self._last_bookticker_persist_monotonic.clear()
         self._persistence_error = None
         self._persistence_dropped_events = 0
-        self._start_persistence_worker()
+        self._bootstrap_stop.clear()
+        self.run_id = None
+        self.session_id = None
+
         with self._symbol_lock:
             self._symbol_first_received.clear()
             self._symbol_last_received.clear()
             self._capture_started_at = self.now()
+
+        if not production_scoped:
+            self.run_id = self.store.start_runtime_run(kind=self.config.kind)
+            self._record_connection(
+                "RUN_STARTED",
+                {"symbols": list(self.adapter.config.symbols)},
+            )
+
+        self._start_persistence_worker()
+
+        if production_scoped:
+            self._bootstrap_thread = threading.Thread(
+                target=self._bootstrap_storage,
+                name="gorila-crypto-storage-bootstrap",
+                daemon=True,
+            )
+            self._bootstrap_thread.start()
 
         status = "STOPPED"
         result: dict[str, Any] = {}
@@ -679,13 +575,22 @@ class ProspectiveCryptoIngestor:
                     or pending_age >= self.config.event_batch_flush_interval_seconds
                 ):
                     self._flush_pending_events()
-                if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
+
+                if (
+                    production_scoped
+                    and self.run_id is not None
+                    and now_monotonic - self._last_runtime_heartbeat >= 5.0
+                ):
                     try:
                         self.store.heartbeat_runtime_run(self.run_id)
                         self._last_runtime_heartbeat = now_monotonic
                     except Exception as exc:
-                        self._persistence_error = f"runtime_heartbeat:{type(exc).__name__}: {exc}"
-                        MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+                        self._persistence_error = (
+                            f"runtime_heartbeat:{type(exc).__name__}: {exc}"
+                        )
+                        MARKET_CACHE.record_persistence_degradation(
+                            self._persistence_error
+                        )
                 if self.stop_event.is_set():
                     status = "STOPPED"
                     break
@@ -697,10 +602,15 @@ class ProspectiveCryptoIngestor:
             status = "FAILED"
             self.last_error = f"{type(exc).__name__}: {exc}"
             self._record_connection("ERROR", {"error": self.last_error})
-            raise
         finally:
             self._flush_pending_events()
+            self._bootstrap_stop.set()
+            if self._bootstrap_thread is not None:
+                self._bootstrap_thread.join(timeout=3.0)
+                self._bootstrap_thread = None
+
             self._stop_persistence_worker()
+
             result = {
                 "events_inserted": self.events_inserted,
                 "events_duplicate": self.events_duplicate,
@@ -718,26 +628,49 @@ class ProspectiveCryptoIngestor:
                 "forecast": False,
                 "execution": False,
             }
+
             if production_scoped:
-                try:
-                    self.store.finish_runtime_run_scoped(
-                        run_id=self.run_id,
-                        session_id=self.session_id,
-                        status=status,
-                        result=result,
-                    )
-                    if self.session_id is not None:
-                        self.store.set_capture_session_status(self.session_id, status)
-                except Exception as exc:
-                    self._persistence_error = f"runtime_finish:{type(exc).__name__}: {exc}"
+                if self.run_id is not None:
+                    try:
+                        self.store.finish_runtime_run_scoped(
+                            run_id=self.run_id,
+                            session_id=self.session_id,
+                            status=status,
+                            result=result,
+                        )
+                        if self.session_id is not None:
+                            self.store.set_capture_session_status(
+                                self.session_id,
+                                status,
+                            )
+                    except Exception as exc:
+                        self._persistence_error = (
+                            f"runtime_finish:{type(exc).__name__}: {exc}"
+                        )
+                elif self.session_id is not None:
+                    try:
+                        self.store.set_capture_session_status(
+                            self.session_id,
+                            "ABORTED_STARTUP_DEGRADED",
+                        )
+                    except Exception:
+                        pass
             else:
-                self.store.finish_runtime_run(
-                    run_id=self.run_id,
-                    status=status,
-                    result=result,
-                )
+                if self.run_id is not None:
+                    try:
+                        self.store.finish_runtime_run(
+                            run_id=self.run_id,
+                            status=status,
+                            result=result,
+                        )
+                    except Exception:
+                        pass
+
             self._record_connection("RUN_FINISHED", result)
-            self.store.close()
+            try:
+                self.store.close()
+            except Exception:
+                pass
 
         return {
             "status": status,
