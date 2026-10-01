@@ -502,6 +502,7 @@ def _dataset_rows(
     """
     tol_ms = int(target_spec.alignment_tolerance_ms)
     horizon_ms = int(target_spec.horizon_ms)
+    trade_sample_weight = 1.0 / float(PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate)
     conn = store.connect()
     try:
         common_scope = (
@@ -628,12 +629,12 @@ def _dataset_rows(
                tb.ask_qty AS target_ask_qty,
                lf.signed_qty_1s / NULLIF(lf.gross_qty_1s, 0.0) AS leader_flow_imbalance_1s,
                lf.signed_qty_5s / NULLIF(lf.gross_qty_5s, 0.0) AS leader_flow_imbalance_5s,
-               LN(1.0 + lf.count_1s * 20.0) AS leader_trade_intensity_1s,
-               LN(1.0 + lf.count_5s * 20.0) AS leader_trade_intensity_5s,
+               LN(1.0 + lf.count_1s * trade_sample_weight) AS leader_trade_intensity_1s,
+               LN(1.0 + lf.count_5s * trade_sample_weight) AS leader_trade_intensity_5s,
                tf.signed_qty_1s / NULLIF(tf.gross_qty_1s, 0.0) AS target_flow_imbalance_1s,
                tf.signed_qty_5s / NULLIF(tf.gross_qty_5s, 0.0) AS target_flow_imbalance_5s,
-               LN(1.0 + tf.count_1s * 20.0) AS target_trade_intensity_1s,
-               LN(1.0 + tf.count_5s * 20.0) AS target_trade_intensity_5s
+               LN(1.0 + tf.count_1s * trade_sample_weight) AS target_trade_intensity_1s,
+               LN(1.0 + tf.count_5s * trade_sample_weight) AS target_trade_intensity_5s
         FROM impulses i
         CROSS JOIN LATERAL (
             SELECT e.event_id,e.et,e.rt,e.price
