@@ -1,20 +1,27 @@
-# PMSF-X Nano
+# Gorila Crypto
 
-Minimal market-intelligence dashboard built with FastAPI.
+Repositorio dedicado exclusivamente al subsistema cuantitativo Crypto de Gorila.
 
-## Deploy on Render
+## Alcance
 
-The repository already contains a Render Blueprint (`render.yaml`).
+El árbol activo contiene únicamente infraestructura de mercado cripto, investigación y validación Crypto, incluyendo:
 
-1. Open Render and choose **New → Blueprint**.
-2. Connect the GitHub repository `pmsfxnano-boop/pmsfx-nano`.
-3. Select the repository and deploy the Blueprint.
-4. In the Render service, add the environment variable `TIINGO_API_KEY` with your Tiingo API key.
-5. Open the generated Render URL.
+- Binance y Kraken market data.
+- Ledger prospectivo durable.
+- Replay, calidad, PIT/OOS y gates de validación.
+- Runtime de captura aislado y observabilidad.
+- gorila_core compartido sólo cuando es dependencia directa de Crypto.
 
-The service starts with:
+No contiene integraciones ajenas al dominio Crypto.
 
-```text
-uvicorn main:app --host 0.0.0.0 --port $PORT
-```
-\n
+## Ejecución
+
+La captura Binance utiliza:
+
+    uvicorn gorila_crypto.app:app --host 0.0.0.0 --port $PORT
+
+La dependencia de runtime está en requirements-gorila.txt.
+
+## Regla de aislamiento
+
+Cualquier nueva funcionalidad que no sea Crypto debe mantenerse fuera de este árbol.
