@@ -49,8 +49,8 @@ def test_stream_names_are_deterministic_and_lowercase() -> None:
         "ethusdt@depth@100ms",
     )
     url = build_ws_url(config)
-    assert url.startswith("wss://stream.binance.com:9443/stream?")
-    assert "btcusdt%40trade" in url
+    assert url.startswith("wss://data-stream.binance.vision:443/stream?")
+    assert "btcusdt@trade" in url
 
 
 def test_trade_normalization_preserves_event_and_trade_time() -> None:

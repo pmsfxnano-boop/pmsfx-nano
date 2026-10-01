@@ -532,7 +532,7 @@ function App() {
       }
     };
     void run();
-    const id = window.setInterval(() => void run(), 5000);
+    const id = window.setInterval(() => void run(), 10000);
     return () => {
       disposed = true;
       controller.abort();
@@ -552,7 +552,7 @@ function App() {
       }
     };
     void loadEvidence();
-    const id = window.setInterval(() => void loadEvidence(), 8000);
+    const id = window.setInterval(() => void loadEvidence(), 15000);
     return () => {
       disposed = true;
       controller.abort();

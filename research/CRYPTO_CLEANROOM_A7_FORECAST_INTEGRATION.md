@@ -106,7 +106,6 @@ cost/slippage evaluation remain research gates for the next validation phase.
 
 ## Safety
 
-No Argentina model or US-equity model is imported.
 No existing G2/PIT/Block R evidence is modified.
 No forecast worker is started automatically.
 No execution endpoint is added.
