@@ -354,6 +354,20 @@ def _research_loop() -> None:
     store = _new_store()
     while not _stop_event.is_set():
         try:
+            gate = (
+                _runtime.recovery_gate()
+                if _runtime is not None
+                else {"status": "BLOCKED", "reasons": ["RUNTIME_NOT_READY"]}
+            )
+            if gate.get("status") != "PASS":
+                print(
+                    "GORILA_CRYPTO_RESEARCH_BLOCKED "
+                    + json.dumps(gate, sort_keys=True, default=str),
+                    flush=True,
+                )
+                _stop_event.wait(settings.research_interval_seconds)
+                continue
+
             result = run_crypto_research_once(store)
             print(
                 "GORILA_CRYPTO_RESEARCH "

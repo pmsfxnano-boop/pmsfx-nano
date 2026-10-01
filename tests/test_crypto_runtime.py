@@ -246,3 +246,92 @@ def test_build_prospective_runtime_fails_closed_without_durable_database(monkeyp
         assert "durable prospective ingestion" in str(exc)
     else:
         raise AssertionError("runtime accepted ephemeral storage")
+
+def test_spool_drain_replays_fifo_and_deletes_after_success(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / "drain.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor.session_id = "session-recovery"
+    row = {
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": BASE.isoformat(),
+        "received_time": BASE.isoformat(),
+        "source": "binance.websocket.trade",
+        "payload": {"p": "100.0", "q": "0.01"},
+        "quality": "OK",
+        "metadata": {},
+        "event_key": "recovery-test-key",
+    }
+    ingestor._evidence_spool.append([row])
+
+    calls = []
+
+    def writer(rows):
+        calls.append(rows)
+        return [{
+            "inserted": True,
+            "ledger_seq": 1,
+            "event_id": "durable-event-1",
+            "event_key": "recovery-test-key",
+        }]
+
+    ingestor._write_durable_rows = writer
+
+    assert ingestor._drain_one_spool_batch() is True
+    assert len(calls) == 1
+    assert calls[0][0]["event_key"] == "recovery-test-key"
+    assert ingestor._evidence_spool.stats()["batches"] == 0
+    assert ingestor.events_inserted == 1
+
+
+def test_spool_drain_keeps_batch_on_durable_write_failure(tmp_path) -> None:
+    store = CryptoStore(sqlite_path=str(tmp_path / "drain-failure.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor.session_id = "session-recovery"
+    row = {
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": BASE.isoformat(),
+        "received_time": BASE.isoformat(),
+        "source": "binance.websocket.trade",
+        "payload": {"p": "100.0", "q": "0.01"},
+        "quality": "OK",
+        "metadata": {},
+        "event_key": "recovery-failure-key",
+    }
+    ingestor._evidence_spool.append([row])
+
+    def failing_writer(rows):
+        raise RuntimeError("database_unavailable")
+
+    ingestor._write_durable_rows = failing_writer
+
+    assert ingestor._drain_one_spool_batch() is False
+    assert ingestor._evidence_spool.stats()["batches"] == 1
+    assert ingestor._evidence_spool.peek().rows[0]["event_key"] == "recovery-failure-key"
+
+
+def test_recovery_gate_blocks_pending_production_evidence(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "gate.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor.session_id = "session-recovery"
+    ingestor._evidence_spool.append([{
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": BASE.isoformat(),
+        "received_time": BASE.isoformat(),
+        "source": "binance.websocket.trade",
+        "payload": {"p": "100.0", "q": "0.01"},
+        "quality": "OK",
+        "metadata": {},
+        "event_key": "gate-pending-key",
+    }])
+
+    gate = ingestor.recovery_gate()
+    assert gate["status"] == "BLOCKED"
+    assert "EVIDENCE_SPOOL_PENDING" in gate["reasons"]

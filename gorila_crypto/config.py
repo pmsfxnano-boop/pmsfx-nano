@@ -54,6 +54,7 @@ class CryptoSettings:
     persistence_spool_path: str
     persistence_spool_max_bytes: int
     persistence_spool_max_batches: int
+    durability_live_max_age_seconds: float
 
 
     def validate(self) -> None:
@@ -95,6 +96,8 @@ class CryptoSettings:
             raise ValueError("persistence spool max bytes must be >= 1 MiB")
         if self.persistence_spool_max_batches < 1:
             raise ValueError("persistence spool max batches must be positive")
+        if self.durability_live_max_age_seconds < 30.0:
+            raise ValueError("durability live max age must be >= 30s")
 
 settings = CryptoSettings(
     provider=os.getenv("GORILA_CRYPTO_PROVIDER", "binance").strip().lower(),
@@ -169,6 +172,10 @@ settings = CryptoSettings(
     persistence_spool_max_batches=max(
         1,
         int(os.getenv("GORILA_PERSISTENCE_SPOOL_MAX_BATCHES", "100000")),
+    ),
+    durability_live_max_age_seconds=max(
+        30.0,
+        float(os.getenv("GORILA_DURABILITY_LIVE_MAX_AGE_SECONDS", "60")),
     ),
 )
 
