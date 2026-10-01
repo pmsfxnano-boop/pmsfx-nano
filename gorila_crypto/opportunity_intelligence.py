@@ -552,12 +552,17 @@ class AdaptiveOpportunityClock:
                     continue
                 signed = pending.direction * 10_000.0 * math.log(price / pending.baseline_target_price)
                 if signed >= REACTION_THRESHOLD_BPS:
-                    outcomes.append(self._resolve(pending, duration, event_id, observed=True, signed_return_bps=signed, learn=learn))
+                    outcomes.append(
+                        self._resolve(
+                            pending,
+                            duration,
+                            event_id,
+                            observed=True,
+                            signed_return_bps=signed,
+                            learn=learn,
+                        )
+                    )
                     self.pending.pop(opportunity_id, None)
-                self.pending_by_pair.pop(
-                    self._pair(pending.leader_symbol, pending.target_symbol),
-                    None,
-                )
                     self.pending_by_pair.pop(
                         self._pair(pending.leader_symbol, pending.target_symbol),
                         None,
@@ -623,8 +628,21 @@ class AdaptiveOpportunityClock:
         for opportunity_id, pending in list(self.pending.items()):
             age = _ms(received_time, pending.detected_received_time)
             if age > MAX_OPPORTUNITY_MS:
-                outcomes.append(self._resolve(pending, MAX_OPPORTUNITY_MS, None, observed=False, signed_return_bps=0.0, learn=learn))
+                outcomes.append(
+                    self._resolve(
+                        pending,
+                        MAX_OPPORTUNITY_MS,
+                        None,
+                        observed=False,
+                        signed_return_bps=0.0,
+                        learn=learn,
+                    )
+                )
                 self.pending.pop(opportunity_id, None)
+                self.pending_by_pair.pop(
+                    self._pair(pending.leader_symbol, pending.target_symbol),
+                    None,
+                )
 
         return outcomes
 
