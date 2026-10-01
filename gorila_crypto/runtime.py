@@ -960,6 +960,13 @@ class ProspectiveCryptoIngestor:
                 stale = self.store.reconcile_stale_runtime_runs(
                     stale_after_seconds=120.0
                 )
+                if (
+                    isinstance(self.store, QuantCryptoStore)
+                    and self.protocol.version == "3"
+                ):
+                    self.store.purge_legacy_unvalidated_events(
+                        keep_study_id=self.protocol.study_id
+                    )
                 self.store.register_study(self.protocol)
                 effective_protocol_hash = self.store.get_study_protocol_hash(
                     self.protocol.study_id
