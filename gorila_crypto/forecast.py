@@ -52,6 +52,13 @@ MICROSTRUCTURE_FEATURES = (
     "target_flow_x_queue",
     "target_adverse_selection_pressure",
     "cross_asset_dislocation_bps",
+    "leader_book_age_ms",
+    "target_book_age_ms",
+    "book_age_gap_ms",
+    "leader_book_confidence",
+    "target_book_confidence",
+    "leader_flow_x_book_confidence",
+    "target_flow_x_book_confidence",
 )
 FORECAST_SEMANTICS = "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)"
 
