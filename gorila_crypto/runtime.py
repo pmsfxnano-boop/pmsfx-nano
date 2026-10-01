@@ -291,18 +291,37 @@ class ProspectiveCryptoIngestor:
         spool = self._evidence_spool
         if spool is None or self.session_id is None:
             return False
-        batch = spool.peek()
-        if batch is None:
+        batches = spool.peek_many(max_batches=16, max_rows=4000)
+        if not batches:
             return False
+        rows: list[dict[str, Any]] = []
+        batch_ids: list[int] = []
+        for batch in batches:
+            rows.extend(batch.rows)
+            batch_ids.append(batch.batch_id)
         try:
-            results = self._write_durable_rows(batch.rows)
-            self._record_persist_success(batch.rows, results)
-            spool.delete(batch.batch_id)
+            results = self._write_durable_rows(rows)
+            self._record_persist_success(rows, results)
+            spool.delete_many(batch_ids)
             return True
         except Exception as exc:
             self._persistence_error = f"{type(exc).__name__}: {exc}"
             MARKET_CACHE.record_persistence_degradation(
                 self._persistence_error
+            )
+            print(
+                "GORILA_DURABLE_REPLAY_ERROR "
+                + json.dumps(
+                    {
+                        "error": self._persistence_error,
+                        "rows": len(rows),
+                        "batches": len(batch_ids),
+                        "capture_session_id": self.session_id,
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
+                flush=True,
             )
             return False
 
@@ -329,6 +348,19 @@ class ProspectiveCryptoIngestor:
                 self._persistence_error = f"{type(exc).__name__}: {exc}"
                 MARKET_CACHE.record_persistence_degradation(
                     self._persistence_error
+                )
+                print(
+                    "GORILA_DURABLE_WRITE_ERROR "
+                    + json.dumps(
+                        {
+                            "error": self._persistence_error,
+                            "rows": len(rows),
+                            "capture_session_id": self.session_id,
+                        },
+                        sort_keys=True,
+                        default=str,
+                    ),
+                    flush=True,
                 )
                 self._spool_failed_rows(rows)
                 backoff = min(10.0, backoff * 2.0)

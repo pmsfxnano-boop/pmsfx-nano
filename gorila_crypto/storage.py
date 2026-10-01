@@ -368,6 +368,14 @@ def _rewrite_database_url_for_external_host(
 
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["sslmode"] = "require"
+    # Long-lived Render workers can see transient TCP/TLS disconnects. These
+    # libpq settings keep idle writer connections alive and fail fast enough
+    # for the durable worker to reconnect rather than accumulating stale sockets.
+    query.setdefault("connect_timeout", "5")
+    query.setdefault("keepalives", "1")
+    query.setdefault("keepalives_idle", "30")
+    query.setdefault("keepalives_interval", "10")
+    query.setdefault("keepalives_count", "3")
     return urlunsplit(
         (parsed.scheme, netloc, parsed.path, urlencode(query), parsed.fragment)
     )
