@@ -73,26 +73,16 @@ def assess_observation(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current = now or datetime.now(timezone.utc)
-    event_dt = parse_timestamp(event_time)
-    received_dt = parse_timestamp(received_time)
-    event_age = age_seconds(event_dt, current) if event_dt is not None else None
-    received_age = age_seconds(received_dt, current) if received_dt is not None else None
-    transport_latency = (
-        (received_dt - event_dt).total_seconds()
-        if event_dt is not None and received_dt is not None
-        else None
-    )
+    event_age = age_seconds(event_time, current)
+    received_age = age_seconds(received_time, current) if received_time is not None else None
     status = classify_age(event_age)
     return {
         "status": status,
         "is_live": status == "LIVE",
         "event_age_seconds": round(event_age, 3) if event_age is not None else None,
-        "received_age_seconds": round(received_age, 3) if received_age is not None else None,
-        "transport_latency_seconds": round(transport_latency, 6) if transport_latency is not None else None,
-        # Backward-compatible alias: age since receipt, not transport latency.
         "transport_age_seconds": round(received_age, 3) if received_age is not None else None,
-        "event_time": event_dt.isoformat() if event_dt else None,
-        "received_time": received_dt.isoformat() if received_dt else None,
+        "event_time": parse_timestamp(event_time).isoformat() if parse_timestamp(event_time) else None,
+        "received_time": parse_timestamp(received_time).isoformat() if parse_timestamp(received_time) else None,
     }
 
 

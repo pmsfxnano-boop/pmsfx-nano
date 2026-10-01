@@ -36,6 +36,8 @@ _runtime_thread: threading.Thread | None = None
 _quality_thread: threading.Thread | None = None
 _research_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
+_supervisor_thread: threading.Thread | None = None
+_runtime_lock = threading.Lock()
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
 
@@ -187,6 +189,56 @@ def _required_quality_event_types() -> tuple[str, ...]:
     return tuple(dict.fromkeys(event_types))
 
 
+def _start_runtime_thread() -> None:
+    global _runtime, _runtime_thread
+    if not settings.ingest_enabled or _capture_block_reason is not None:
+        return
+    with _runtime_lock:
+        if _runtime_thread is not None and _runtime_thread.is_alive():
+            return
+        try:
+            store = _new_store()
+            adapter = build_market_adapter()
+            runtime = ProspectiveCryptoIngestor(store, adapter)
+        except Exception as exc:
+            print(
+                "GORILA_RUNTIME_START_ERROR "
+                + f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return
+        _runtime = runtime
+        _runtime_thread = threading.Thread(
+            target=runtime.run,
+            name="gorila-crypto-ingest",
+            daemon=True,
+        )
+        _runtime_thread.start()
+        print(
+            "GORILA_RUNTIME_STARTED "
+            + json.dumps(
+                {
+                    "provider": settings.provider,
+                    "symbols": list(runtime.adapter.config.symbols),
+                    "streams": list(settings.streams),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+
+def _runtime_supervisor_loop() -> None:
+    while not _stop_event.wait(5.0):
+        if not settings.ingest_enabled or _capture_block_reason is not None:
+            continue
+        with _runtime_lock:
+            alive = bool(_runtime_thread is not None and _runtime_thread.is_alive())
+        if alive:
+            continue
+        _start_runtime_thread()
+
+
 def _quality_loop() -> None:
     store = _new_store()
     required_event_types = _required_quality_event_types()
@@ -298,7 +350,7 @@ def _research_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _capture_block_reason
+    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _supervisor_thread, _capture_block_reason
     _stop_event.clear()
     _capture_block_reason = None
 
@@ -327,55 +379,37 @@ async def lifespan(app: FastAPI):
             )
 
     if settings.ingest_enabled and _capture_block_reason is None:
-        try:
-            store = _new_store()
-        except RuntimeError as exc:
-            _capture_block_reason = str(exc)
-            print(
-                "GORILA_CAPTURE_BLOCKED "
-                + json.dumps(
-                    {
-                        "reason": _capture_block_reason,
-                        "provider": settings.provider,
-                        "symbols": list(settings.symbols),
-                        "capture_block_reason": _capture_block_reason,
-                    },
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
-        else:
-            adapter = build_market_adapter()
-            _runtime = ProspectiveCryptoIngestor(store, adapter)
-            _runtime_thread = threading.Thread(
-                target=_runtime.run,
-                name="gorila-crypto-ingest",
+        _start_runtime_thread()
+
+        _heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            name="gorila-crypto-heartbeat",
+            daemon=True,
+        )
+        _heartbeat_thread.start()
+
+        if settings.quality_monitor_enabled:
+            _quality_thread = threading.Thread(
+                target=_quality_loop,
+                name="gorila-crypto-quality",
                 daemon=True,
             )
-            _runtime_thread.start()
+            _quality_thread.start()
 
-            _heartbeat_thread = threading.Thread(
-                target=_heartbeat_loop,
-                name="gorila-crypto-heartbeat",
+        if settings.research_enabled:
+            _research_thread = threading.Thread(
+                target=_research_loop,
+                name="gorila-crypto-research",
                 daemon=True,
             )
-            _heartbeat_thread.start()
+            _research_thread.start()
 
-            if settings.quality_monitor_enabled:
-                _quality_thread = threading.Thread(
-                    target=_quality_loop,
-                    name="gorila-crypto-quality",
-                    daemon=True,
-                )
-                _quality_thread.start()
-
-            if settings.research_enabled:
-                _research_thread = threading.Thread(
-                    target=_research_loop,
-                    name="gorila-crypto-research",
-                    daemon=True,
-                )
-                _research_thread.start()
+        _supervisor_thread = threading.Thread(
+            target=_runtime_supervisor_loop,
+            name="gorila-crypto-runtime-supervisor",
+            daemon=True,
+        )
+        _supervisor_thread.start()
 
     yield
 
@@ -390,6 +424,8 @@ async def lifespan(app: FastAPI):
         _research_thread.join(timeout=5.0)
     if _heartbeat_thread is not None:
         _heartbeat_thread.join(timeout=5.0)
+    if _supervisor_thread is not None:
+        _supervisor_thread.join(timeout=5.0)
 
 
 app = FastAPI(
@@ -471,9 +507,8 @@ def health() -> dict[str, Any]:
             "execution": False,
         },
     }
-    if capture_enabled and not worker_alive:
+    if not worker_alive and capture_enabled:
         payload["status"] = "CAPTURE_WORKER_DEAD"
-        raise HTTPException(status_code=503, detail=payload)
     return payload
 
 

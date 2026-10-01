@@ -129,12 +129,50 @@ class ProspectiveCryptoIngestor:
         self._capture_started_at = self.now()
         self._pending_event_rows: list[dict[str, Any]] = []
         self._pending_event_started_monotonic: float | None = None
+        self._watchdog_thread: threading.Thread | None = None
+        self._feed_watchdog_interval_seconds = 5.0
+        self._feed_stale_timeout_seconds = max(
+            30.0,
+            float(settings.event_live_max_age_seconds),
+        )
 
         self.config.validate()
 
     @property
     def source_family(self) -> str:
         return str(getattr(self.adapter, "source_family", "crypto.websocket.market"))
+
+    def _feed_watchdog(self) -> None:
+        while not self.stop_event.wait(self._feed_watchdog_interval_seconds):
+            if self.last_event is None:
+                age_seconds = max(
+                    0.0,
+                    (self.now() - self._capture_started_at).total_seconds(),
+                )
+            else:
+                age_seconds = max(
+                    0.0,
+                    (self.now() - self.last_event.received_time).total_seconds(),
+                )
+            if age_seconds <= self._feed_stale_timeout_seconds:
+                continue
+            self.last_error = (
+                f"market_feed_stale_after_{age_seconds:.1f}s"
+            )
+            try:
+                self._record_connection(
+                    "STALE_FEED",
+                    {
+                        "age_seconds": age_seconds,
+                        "timeout_seconds": self._feed_stale_timeout_seconds,
+                        "symbol_health": self.symbol_health(reference=self.now()),
+                    },
+                )
+            finally:
+                # Stop this runtime instance; the application supervisor will
+                # construct a fresh runtime/adapter and reclaim the writer lease.
+                self.stop_event.set()
+            return
 
     def _record_connection(self, status: str, metadata: dict[str, Any] | None = None) -> None:
         payload = {
@@ -157,7 +195,10 @@ class ProspectiveCryptoIngestor:
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
         if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
-            self.store.heartbeat_runtime_run(self.run_id)
+            if not self.store.heartbeat_runtime_run(self.run_id):
+                self.last_error = "runtime_lease_lost"
+                self.stop_event.set()
+                return
             self._last_runtime_heartbeat = time.monotonic()
         if status == "CONNECTED":
             self.sequence.new_connection()
@@ -239,8 +280,8 @@ class ProspectiveCryptoIngestor:
                 "runtime_run_id": self.run_id,
                 "ingest_epoch": self.sequence.epoch,
                 "event_age_seconds": assessment["event_age_seconds"],
-                "received_age_seconds": assessment["received_age_seconds"],
-                "transport_latency_seconds": assessment["transport_latency_seconds"],
+                "received_age_seconds": assessment["transport_age_seconds"],
+                "transport_latency_seconds": assessment["transport_age_seconds"],
             },
         )
 
@@ -365,18 +406,43 @@ class ProspectiveCryptoIngestor:
             stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
             self.store.register_study(self.protocol)
             effective_protocol_hash = self.store.get_study_protocol_hash(self.protocol.study_id)
-            self.session_id = self.store.start_capture_session(
-                study_id=self.protocol.study_id,
-                protocol_hash=effective_protocol_hash,
-                provider=settings.provider,
-                venue=self.protocol.venue,
-                symbols=tuple(self.adapter.config.symbols),
-                streams=tuple(settings.streams),
-                region=os.getenv("RENDER_REGION"),
-                instance_id=os.getenv("RENDER_INSTANCE_ID"),
-                code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
-                metadata={"stale_runs_reconciled": stale},
-            )
+            while not self.stop_event.is_set():
+                try:
+                    self.session_id = self.store.start_capture_session(
+                        study_id=self.protocol.study_id,
+                        protocol_hash=effective_protocol_hash,
+                        provider=settings.provider,
+                        venue=self.protocol.venue,
+                        symbols=tuple(self.adapter.config.symbols),
+                        streams=tuple(settings.streams),
+                        region=os.getenv("RENDER_REGION"),
+                        instance_id=os.getenv("RENDER_INSTANCE_ID"),
+                        code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
+                        metadata={"stale_runs_reconciled": stale},
+                    )
+                    break
+                except RuntimeError as exc:
+                    reason = str(exc)
+                    if not reason.startswith("active_capture_session_exists:"):
+                        raise
+                    self._record_connection(
+                        "WAITING_FOR_ACTIVE_SESSION",
+                        {"reason": reason},
+                    )
+                    self.stop_event.wait(2.0)
+            if self.stop_event.is_set():
+                return {
+                    "status": "STOPPED",
+                    "run_id": None,
+                    "events_inserted": 0,
+                    "events_duplicate": 0,
+                    "gaps_detected": 0,
+                    "last_error": None,
+                    "last_event_time": None,
+                    "automatic_promotion": False,
+                    "forecast": False,
+                    "execution": False,
+                }
             self.run_id = self.store.start_runtime_run_scoped(
                 kind=self.config.kind,
                 session_id=self.session_id,
@@ -408,6 +474,12 @@ class ProspectiveCryptoIngestor:
 
         status = "STOPPED"
         result: dict[str, Any] = {}
+        self._watchdog_thread = threading.Thread(
+            target=self._feed_watchdog,
+            name="gorila-crypto-feed-watchdog",
+            daemon=True,
+        )
+        self._watchdog_thread.start()
         try:
             for event in self.adapter.iter_forever(
                 stop_event=self.stop_event,
@@ -426,7 +498,11 @@ class ProspectiveCryptoIngestor:
                 ):
                     self._flush_pending_events()
                 if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
-                    self.store.heartbeat_runtime_run(self.run_id)
+                    if not self.store.heartbeat_runtime_run(self.run_id):
+                        self.last_error = "runtime_lease_lost"
+                        status = "LEASE_LOST"
+                        self.stop_event.set()
+                        break
                     self._last_runtime_heartbeat = now_monotonic
                 if self.stop_event.is_set():
                     status = "STOPPED"
@@ -442,6 +518,9 @@ class ProspectiveCryptoIngestor:
             raise
         finally:
             self._flush_pending_events()
+            if self._watchdog_thread is not None and self._watchdog_thread is not threading.current_thread():
+                self.stop_event.set()
+                self._watchdog_thread.join(timeout=2.0)
             result = {
                 "events_inserted": self.events_inserted,
                 "events_duplicate": self.events_duplicate,
