@@ -444,7 +444,22 @@ class QuantCryptoStore(CryptoStore):
                     else:
                         conn.rollback()
             else:
-                conn.rollback()
+                # Keep the SQLite test/fixture path aligned with production
+                # lease fencing even though production persistence is Postgres.
+                conn.execute(
+                    """
+                    UPDATE crypto_runtime_leases
+                    SET status='ABORTED_STALE', heartbeat_at=?
+                    WHERE status='RUNNING'
+                      AND session_id IN (
+                          SELECT session_id
+                          FROM crypto_capture_sessions
+                          WHERE status NOT IN ('STARTING','RUNNING')
+                      )
+                    """,
+                    (_utc_now(),),
+                )
+                conn.commit()
         finally:
             conn.close()
 
