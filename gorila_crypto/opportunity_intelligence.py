@@ -772,6 +772,8 @@ class AdaptiveOpportunityClock:
         self.book = MicrostructureBook()
         self.global_model = DiscreteHazardLearner(len(FEATURE_NAMES), self.horizons_ms)
         self.pair_models: dict[str, DiscreteHazardLearner] = {}
+        self.global_response_model = ResponseLearner(len(FEATURE_NAMES), self.horizons_ms)
+        self.pair_response_models: dict[str, ResponseLearner] = {}
         self.pending: dict[str, PendingOpportunity] = {}
         self.pending_by_pair: dict[str, str] = {}
         self.last_impulse_received: dict[str, datetime] = {}
@@ -822,6 +824,16 @@ class AdaptiveOpportunityClock:
             max(-1_000.0, min(1_000.0, l["transport_age_ms"] - t["transport_age_ms"])),
         ]
         return [float(x) for x in values]
+
+    def _response_model_for(self, pair: str) -> ResponseLearner:
+        if pair not in self.pair_response_models:
+            self.pair_response_models[pair] = ResponseLearner(len(FEATURE_NAMES), self.horizons_ms)
+        return self.pair_response_models[pair]
+
+    def _execution_drag_bps(self, features: list[float]) -> float:
+        target_spread_index = FEATURE_NAMES.index("target_spread_bps")
+        target_spread_bps = max(0.0, float(features[target_spread_index]))
+        return target_spread_bps + 2.0 * (BASE_COST_BPS + BASE_SLIPPAGE_BPS)
 
     def _model_for(self, pair: str) -> DiscreteHazardLearner:
         if pair not in self.pair_models:
