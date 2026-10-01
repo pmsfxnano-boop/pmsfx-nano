@@ -1009,21 +1009,6 @@ class ProspectiveCryptoIngestor:
                 ):
                     self._flush_pending_events()
 
-                if (
-                    production_scoped
-                    and self.run_id is not None
-                    and now_monotonic - self._last_runtime_heartbeat >= 5.0
-                ):
-                    try:
-                        self.store.heartbeat_runtime_run(self.run_id)
-                        self._last_runtime_heartbeat = now_monotonic
-                    except Exception as exc:
-                        self._persistence_error = (
-                            f"runtime_heartbeat:{type(exc).__name__}: {exc}"
-                        )
-                        MARKET_CACHE.record_persistence_degradation(
-                            self._persistence_error
-                        )
                 if self.stop_event.is_set():
                     status = "STOPPED"
                     break
