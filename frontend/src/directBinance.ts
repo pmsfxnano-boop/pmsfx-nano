@@ -1,36 +1,8 @@
-export interface DirectSymbolMarket {
-  symbol: string;
-  status: string;
-  price: number | null;
-  bid: number | null;
-  ask: number | null;
-  bid_qty: number | null;
-  ask_qty: number | null;
-  spread_bps: number | null;
-  freshness_ms: number | null;
-}
-
-export interface DirectMarketEvent {
-  stream_seq: number;
-  ledger_seq: number | null;
-  durable: boolean;
-  event_key: string;
-  symbol: string;
-  event_type: "trade" | "bookTicker";
-  event_time: string;
-  received_time: string;
-  price: number | null;
-  quantity: number | null;
-  side: "BUY" | "SELL" | null;
-  bid?: number | null;
-  ask?: number | null;
-  bid_qty?: number | null;
-  ask_qty?: number | null;
-}
+import type { MarketEvent, SymbolMarket } from "./api";
 
 export interface DirectFeedSnapshot {
-  symbols: DirectSymbolMarket[];
-  events: DirectMarketEvent[];
+  symbols: SymbolMarket[];
+  events: MarketEvent[];
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
@@ -40,7 +12,7 @@ const STREAMS = SYMBOLS.flatMap((symbol) => [
 ]);
 const URL =
   "wss://data-stream.binance.vision/stream?streams=" +
-  encodeURIComponent(STREAMS.join("/"));
+  STREAMS.join("/");
 
 export function createDirectBinanceFeed(
   onSnapshot: (snapshot: DirectFeedSnapshot) => void,
@@ -51,7 +23,7 @@ export function createDirectBinanceFeed(
   let reconnectMs = 500;
   let seq = 0;
   const events: DirectMarketEvent[] = [];
-  const latest: Record<string, DirectSymbolMarket> = Object.fromEntries(
+  const latest: Record<string, SymbolMarket> = Object.fromEntries(
     SYMBOLS.map((symbol) => [
       symbol,
       {
@@ -133,38 +105,10 @@ export function createDirectBinanceFeed(
             price: Number.isFinite(price) ? price : null,
             quantity: Number.isFinite(quantity) ? quantity : null,
             side: Boolean(data.m) ? "SELL" : "BUY",
-          };
-          events.push(event);
-          latest[symbol] = {
-            ...latest[symbol],
-            price: event.price,
-            freshness_ms: Date.now(),
-          };
-        } else if (type === "bookTicker") {
-          const bid = Number(data.b);
-          const ask = Number(data.a);
-          const bidQty = Number(data.B);
-          const askQty = Number(data.A);
-          const mid = Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : null;
-          const spread = Number.isFinite(bid) && bid > 0 && Number.isFinite(ask)
-            ? (ask / bid - 1) * 10000
-            : null;
-          const event: DirectMarketEvent = {
-            stream_seq: seq,
-            ledger_seq: null,
-            durable: false,
-            event_key: eventKey,
-            symbol,
-            event_type: "bookTicker",
-            event_time: now,
-            received_time: now,
-            price: mid,
-            quantity: null,
-            side: null,
-            bid: Number.isFinite(bid) ? bid : null,
-            ask: Number.isFinite(ask) ? ask : null,
-            bid_qty: Number.isFinite(bidQty) ? bidQty : null,
-            ask_qty: Number.isFinite(askQty) ? askQty : null,
+            bid: null,
+            ask: null,
+            bid_qty: null,
+            ask_qty: null,
           };
           events.push(event);
           latest[symbol] = {
@@ -176,6 +120,7 @@ export function createDirectBinanceFeed(
             ask_qty: event.ask_qty ?? null,
             spread_bps: spread,
             freshness_ms: Date.now(),
+            last_book_time: event.received_time,
           };
         } else {
           return;
