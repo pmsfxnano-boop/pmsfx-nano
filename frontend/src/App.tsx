@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AreaSeries, createChart, type UTCTimestamp } from "lightweight-charts";
+import { AreaSeries, ColorType, createChart, type UTCTimestamp } from "lightweight-charts";
 import {
   fetchConfig,
   fetchEvidence,
@@ -216,7 +216,7 @@ function PrimaryChart({
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: {
-        background: { type: "solid", color: "transparent" },
+        background: { type: ColorType.Solid, color: "transparent" },
         textColor: "#718792",
         attributionLogo: false,
       },
