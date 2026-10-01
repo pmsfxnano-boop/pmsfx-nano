@@ -170,3 +170,15 @@ A12 remains shadow/research infrastructure. It may learn from the prospective le
 - bypass the 7-day Quality Gate or PIT/OOS validation.
 
 The next operational action is to bind the isolated learner service to the existing Postgres instance, then let it accumulate prospective training examples continuously without restarting the capture service.
+
+
+## V2 marked-response head
+
+A12 now uses two coupled online heads over the same PIT microstructure state:
+
+1. **Reaction hazard / survival:** learns the conditional time-to-reaction distribution.
+2. **Conditional response magnitude:** learns signed response in bps conditional on a reaction arriving within each horizon.
+
+The economic layer combines them as an expected shadow net-opportunity surface after a conservative target-spread + preregistered cost/slippage drag. A residual EWMA provides uncertainty for a risk-adjusted shadow surface.
+
+This is one coherent marked-opportunity process, not a collection of unrelated predictors. Neither surface authorizes execution or model promotion.
