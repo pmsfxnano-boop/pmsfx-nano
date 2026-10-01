@@ -18,6 +18,6 @@ services:
           name: pmsfx-nano-db
           property: connectionString
       - key: GORILA_INTELLIGENCE_MODEL_VERSION
-        value: opportunity-clock-intelligence-v1
+        value: opportunity-clock-intelligence-v2
       - key: GORILA_CRYPTO_SYMBOLS
         value: BTCUSDT,ETHUSDT,SOLUSDT
