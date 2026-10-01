@@ -88,6 +88,11 @@ def test_prospective_status_route_exists_without_starting_network_worker() -> No
 
 
 def test_market_history_uses_shared_short_lived_cache(monkeypatch) -> None:
+    class _OfflineBinanceClient:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("offline_test_provider")
+
+    monkeypatch.setattr(app_module.httpx, "Client", _OfflineBinanceClient)
     class FakeCursor:
         def __init__(self, owner) -> None:
             self.owner = owner

@@ -263,38 +263,51 @@ def _sql_quality_report(
             end.isoformat(),
         )
         summary_sql = f"""
-            SELECT e.symbol,
+            WITH scoped AS (
+                SELECT
+                    e.event_id,
+                    e.symbol,
+                    e.event_time::timestamptz AS event_time,
+                    e.received_time::timestamptz AS received_time,
+                    EXTRACT(EPOCH FROM (
+                        e.received_time::timestamptz - e.event_time::timestamptz
+                    )) * 1000.0 AS latency_ms
+                FROM crypto_events e
+                WHERE {_scope_where()}
+            ),
+            sampled_quantiles AS (
+                SELECT
+                    s.symbol,
+                    percentile_cont(0.50) WITHIN GROUP (ORDER BY GREATEST(0.0, s.latency_ms)) AS p50_latency_ms,
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY GREATEST(0.0, s.latency_ms)) AS p95_latency_ms,
+                    percentile_cont(0.99) WITHIN GROUP (ORDER BY GREATEST(0.0, s.latency_ms)) AS p99_latency_ms
+                FROM scoped s
+                WHERE MOD(ABS(hashtext(s.event_id)), 20) = 0
+                GROUP BY s.symbol
+            )
+            SELECT s.symbol,
                    COUNT(*) AS rows,
-                   MIN(e.event_time::timestamptz) AS first_event,
-                   MAX(e.event_time::timestamptz) AS last_event,
-                   percentile_cont(0.50) WITHIN GROUP (
-                       ORDER BY EXTRACT(EPOCH FROM
-                           (e.received_time::timestamptz - e.event_time::timestamptz)
-                       ) * 1000.0
-                   ) AS p50_latency_ms,
-                   percentile_cont(0.95) WITHIN GROUP (
-                       ORDER BY EXTRACT(EPOCH FROM
-                           (e.received_time::timestamptz - e.event_time::timestamptz)
-                       ) * 1000.0
-                   ) AS p95_latency_ms,
-                   percentile_cont(0.99) WITHIN GROUP (
-                       ORDER BY EXTRACT(EPOCH FROM
-                           (e.received_time::timestamptz - e.event_time::timestamptz)
-                       ) * 1000.0
-                   ) AS p99_latency_ms,
+                   MIN(s.event_time) AS first_event,
+                   MAX(s.event_time) AS last_event,
+                   q.p50_latency_ms,
+                   q.p95_latency_ms,
+                   q.p99_latency_ms,
                    COUNT(*) FILTER (
-                       WHERE e.event_time::timestamptz > %s::timestamptz
+                       WHERE s.event_time > %s::timestamptz
                    ) AS future_events,
                    COUNT(*) FILTER (
-                       WHERE e.received_time::timestamptz > %s::timestamptz
+                       WHERE s.received_time > %s::timestamptz
                    ) AS future_received,
                    COUNT(*) FILTER (
-                       WHERE e.received_time::timestamptz < e.event_time::timestamptz
-                   ) AS negative_latency
-            FROM crypto_events e
-            WHERE {_scope_where()}
-            GROUP BY e.symbol
-            ORDER BY e.symbol
+                       WHERE s.received_time < s.event_time
+                   ) AS negative_latency,
+                   COUNT(*) FILTER (
+                       WHERE s.latency_ms > 5000.0
+                   ) AS latency_over_5s
+            FROM scoped s
+            LEFT JOIN sampled_quantiles q ON q.symbol=s.symbol
+            GROUP BY s.symbol,q.p50_latency_ms,q.p95_latency_ms,q.p99_latency_ms
+            ORDER BY s.symbol
         """
         with conn.cursor() as cur:
             cur.execute(
@@ -417,7 +430,12 @@ def _sql_quality_report(
             reasons.append(f"{symbol}:INSUFFICIENT_ROWS")
         if duration < config.min_duration_seconds:
             reasons.append(f"{symbol}:INSUFFICIENT_DURATION")
-        if p99 is not None and p99 > config.max_p99_transport_latency_ms:
+        latency_over_5s = int(item.get("latency_over_5s") or 0)
+        # Exact tail-count gate: avoid a 1M-row PostgreSQL sort while preserving
+        # the protocol meaning of p99 <= 5000ms.
+        if int(item["rows"]) > 0 and latency_over_5s > int(item["rows"]) * 0.01:
+            reasons.append(f"{symbol}:P99_TRANSPORT_LATENCY")
+        elif p99 is not None and p99 > config.max_p99_transport_latency_ms:
             reasons.append(f"{symbol}:P99_TRANSPORT_LATENCY")
 
     for symbol in protocol.symbols:
@@ -484,6 +502,7 @@ def _dataset_rows(
     """
     tol_ms = int(target_spec.alignment_tolerance_ms)
     horizon_ms = int(target_spec.horizon_ms)
+    trade_sample_weight = 1.0 / float(PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate)
     conn = store.connect()
     try:
         common_scope = (
@@ -610,12 +629,12 @@ def _dataset_rows(
                tb.ask_qty AS target_ask_qty,
                lf.signed_qty_1s / NULLIF(lf.gross_qty_1s, 0.0) AS leader_flow_imbalance_1s,
                lf.signed_qty_5s / NULLIF(lf.gross_qty_5s, 0.0) AS leader_flow_imbalance_5s,
-               LN(1.0 + lf.count_1s) AS leader_trade_intensity_1s,
-               LN(1.0 + lf.count_5s) AS leader_trade_intensity_5s,
+               LN(1.0 + lf.count_1s * trade_sample_weight) AS leader_trade_intensity_1s,
+               LN(1.0 + lf.count_5s * trade_sample_weight) AS leader_trade_intensity_5s,
                tf.signed_qty_1s / NULLIF(tf.gross_qty_1s, 0.0) AS target_flow_imbalance_1s,
                tf.signed_qty_5s / NULLIF(tf.gross_qty_5s, 0.0) AS target_flow_imbalance_5s,
-               LN(1.0 + tf.count_1s) AS target_trade_intensity_1s,
-               LN(1.0 + tf.count_5s) AS target_trade_intensity_5s
+               LN(1.0 + tf.count_1s * trade_sample_weight) AS target_trade_intensity_1s,
+               LN(1.0 + tf.count_5s * trade_sample_weight) AS target_trade_intensity_5s
         FROM impulses i
         CROSS JOIN LATERAL (
             SELECT e.event_id,e.et,e.rt,e.price
@@ -1023,7 +1042,7 @@ def run_crypto_research_once(store) -> dict[str, Any]:
         end=end,
     )
     manifest = {
-        "replay_version": "2",
+        "replay_version": "3-deterministic-sample",
         "ledger_schema_version": "crypto",
         "code_version": os.getenv("RENDER_GIT_COMMIT") or "unknown",
         "manifest_created_at": now.isoformat(),

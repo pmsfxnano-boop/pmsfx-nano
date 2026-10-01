@@ -137,6 +137,11 @@ class _HistoryStore:
 
 
 def test_market_history_returns_real_candle_contract(monkeypatch) -> None:
+    class _OfflineBinanceClient:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("offline_test_provider")
+
+    monkeypatch.setattr(app_module.httpx, "Client", _OfflineBinanceClient)
     monkeypatch.setattr(
         app_module,
         "settings",

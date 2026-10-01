@@ -161,10 +161,21 @@ def test_crypto_storage_rewrites_cross_region_postgres_endpoint_with_tls(
     store = CryptoStore(
         database_url="postgresql://user:pa%40ss@internal-host:5432/dbname"
     )
-    assert (
-        store.database_url
-        == "postgresql://user:pa%40ss@dpg-example-a.oregon-postgres.render.com:5432/dbname?sslmode=require"
-    )
+    from urllib.parse import parse_qs, urlsplit
+
+    parsed = urlsplit(store.database_url)
+    assert parsed.scheme == "postgresql"
+    assert parsed.netloc == "user:pa%40ss@dpg-example-a.oregon-postgres.render.com:5432"
+    assert parsed.path == "/dbname"
+    params = parse_qs(parsed.query)
+    assert params == {
+        "sslmode": ["require"],
+        "connect_timeout": ["5"],
+        "keepalives": ["1"],
+        "keepalives_idle": ["30"],
+        "keepalives_interval": ["10"],
+        "keepalives_count": ["3"],
+    }
 
 
 def test_crypto_read_events_can_scope_source_and_skip_payload(tmp_path: Path) -> None:

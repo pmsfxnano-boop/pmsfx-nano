@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+
+import httpx
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -607,21 +609,21 @@ def market_history(
     resolution: str = "5m",
     limit: int = 240,
 ) -> dict[str, Any]:
-    """Bounded historical OHLCV contract with a shared short-lived read cache."""
+    """UI history from Binance public klines; never enters the research ledger."""
     if not settings.ingest_enabled:
         raise HTTPException(status_code=503, detail="capture_not_enabled")
 
-    resolutions = {
-        "1m": 60,
-        "5m": 300,
-        "15m": 900,
-        "1h": 3600,
-        "4h": 14400,
-        "1d": 86400,
+    interval_map = {
+        "1m": "1m",
+        "5m": "5m",
+        "15m": "15m",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1d",
     }
     normalized_resolution = str(resolution).lower()
-    bucket_seconds = resolutions.get(normalized_resolution)
-    if bucket_seconds is None:
+    interval = interval_map.get(normalized_resolution)
+    if interval is None:
         raise HTTPException(status_code=400, detail="unsupported_resolution")
 
     normalized = str(symbol).upper().strip()
@@ -633,101 +635,141 @@ def market_history(
     now_monotonic = time.monotonic()
     with _HISTORY_CACHE_LOCK:
         cached = _HISTORY_CACHE.get(cache_key)
-        if (
-            cached is not None
-            and now_monotonic - cached[0] < _HISTORY_CACHE_TTL_SECONDS
-        ):
+        if cached is not None and now_monotonic - cached[0] < _HISTORY_CACHE_TTL_SECONDS:
             return cached[1]
 
-    lookback_seconds = int(bucket_seconds * safe_limit * 1.15)
-    start_time = (
-        datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
-    ).isoformat()
-
-    store = _new_store()
-    if not store.durable:
-        raise HTTPException(status_code=503, detail="durable_storage_required")
-
-    conn = store.connect()
+    candles: list[dict[str, Any]] = []
+    provider_error = None
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH buckets AS (
-                    SELECT
-                        to_timestamp(
-                            floor(
-                                extract(epoch from event_time::timestamptz) / %s
-                            ) * %s
-                        ) AS bucket,
-                        event_time,
-                        ledger_seq,
-                        (payload_json::jsonb->>'p')::double precision AS price,
-                        (payload_json::jsonb->>'q')::double precision AS quantity
-                    FROM crypto_events
-                    WHERE symbol=%s
-                      AND event_type='trade'
-                      AND event_time >= %s
-                ),
-                grouped AS (
-                    SELECT
-                        bucket,
-                        count(*)::bigint AS trades,
-                        sum(quantity)::double precision AS volume,
-                        min(price)::double precision AS low,
-                        max(price)::double precision AS high,
-                        (array_agg(price ORDER BY event_time, ledger_seq))[1]::double precision AS open,
-                        (array_agg(price ORDER BY event_time DESC, ledger_seq DESC))[1]::double precision AS close
-                    FROM buckets
-                    GROUP BY bucket
-                    ORDER BY bucket DESC
-                    LIMIT %s
-                )
-                SELECT
-                    bucket AT TIME ZONE 'UTC' AS bucket,
-                    open, high, low, close, volume, trades
-                FROM grouped
-                ORDER BY bucket ASC
-                """,
-                (
-                    bucket_seconds,
-                    bucket_seconds,
-                    normalized,
-                    start_time,
-                    safe_limit,
-                ),
+        with httpx.Client(
+            base_url="https://data-api.binance.vision",
+            timeout=httpx.Timeout(5.0, connect=2.0),
+        ) as client:
+            response = client.get(
+                "/api/v3/klines",
+                params={
+                    "symbol": normalized,
+                    "interval": interval,
+                    "limit": safe_limit,
+                },
             )
-            rows = cur.fetchall()
-    finally:
-        conn.close()
+            response.raise_for_status()
+            rows = response.json()
+        for row in rows:
+            candles.append(
+                {
+                    "time": datetime.fromtimestamp(
+                        float(row[0]) / 1000.0, tz=timezone.utc
+                    ).isoformat(),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5]),
+                    "trades": int(row[8]),
+                }
+            )
+    except Exception as exc:
+        provider_error = f"{type(exc).__name__}: {exc}"
 
-    candles = [
-        {
-            "time": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-            "volume": float(row[5]),
-            "trades": int(row[6]),
-        }
-        for row in rows
-    ]
+    # Fall back to the compact durable capture only when the public history
+    # endpoint is temporarily unavailable. This fallback is explicitly UI-only.
+    if not candles:
+        try:
+            bucket_seconds = {
+                "1m": 60,
+                "5m": 300,
+                "15m": 900,
+                "1h": 3600,
+                "4h": 14400,
+                "1d": 86400,
+            }[normalized_resolution]
+            lookback_seconds = int(bucket_seconds * safe_limit * 1.15)
+            start_time = (
+                datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+            ).isoformat()
+            store = _new_store()
+            conn = store.connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        WITH buckets AS (
+                            SELECT
+                                to_timestamp(
+                                    floor(extract(epoch from event_time::timestamptz) / %s) * %s
+                                ) AS bucket,
+                                event_time,
+                                ledger_seq,
+                                (payload_json::jsonb->>'p')::double precision AS price,
+                                (payload_json::jsonb->>'q')::double precision AS quantity
+                            FROM crypto_events
+                            WHERE symbol=%s
+                              AND event_type='trade'
+                              AND event_time >= %s
+                        ),
+                        grouped AS (
+                            SELECT
+                                bucket,
+                                count(*)::bigint AS trades,
+                                sum(quantity)::double precision AS volume,
+                                min(price)::double precision AS low,
+                                max(price)::double precision AS high,
+                                (array_agg(price ORDER BY event_time, ledger_seq))[1]::double precision AS open,
+                                (array_agg(price ORDER BY event_time DESC, ledger_seq DESC))[1]::double precision AS close
+                            FROM buckets
+                            GROUP BY bucket
+                            ORDER BY bucket DESC
+                            LIMIT %s
+                        )
+                        SELECT bucket AT TIME ZONE 'UTC', open, high, low, close, volume, trades
+                        FROM grouped ORDER BY bucket ASC
+                        """,
+                        (
+                            bucket_seconds,
+                            bucket_seconds,
+                            normalized,
+                            start_time,
+                            safe_limit,
+                        ),
+                    )
+                    rows = cur.fetchall()
+            finally:
+                conn.close()
+            candles = [
+                {
+                    "time": row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5] or 0.0),
+                    "trades": int(row[6] or 0),
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            provider_error = provider_error or f"{type(exc).__name__}: {exc}"
 
-    payload = {
+    if not candles:
+        raise HTTPException(
+            status_code=503,
+            detail=f"history_unavailable:{provider_error or 'no_data'}",
+        )
+
+    result = {
         "symbol": normalized,
         "resolution": normalized_resolution,
         "candles": candles,
+        "source": "binance_public_klines",
+        "research_safe": False,
     }
     with _HISTORY_CACHE_LOCK:
         if len(_HISTORY_CACHE) >= _HISTORY_CACHE_MAX_ENTRIES:
-            oldest_key = min(
-                _HISTORY_CACHE,
-                key=lambda key: _HISTORY_CACHE[key][0],
-            )
-            _HISTORY_CACHE.pop(oldest_key, None)
-        _HISTORY_CACHE[cache_key] = (time.monotonic(), payload)
-    return payload
+            oldest = min(_HISTORY_CACHE.items(), key=lambda item: item[1][0])[0]
+            _HISTORY_CACHE.pop(oldest, None)
+        _HISTORY_CACHE[cache_key] = (now_monotonic, result)
+    return result
 
 
 @app.get("/api/crypto/evidence")

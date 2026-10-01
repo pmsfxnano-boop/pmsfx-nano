@@ -46,6 +46,13 @@ class CryptoStudyProtocol:
     cscv_groups: int = 6
     cscv_test_groups: int = 3
     min_cscv_candidates: int = 2
+    # v3 storage contract: the market hot plane remains lossless, while the
+    # durable research ledger keeps a deterministic 5% trade sample plus
+    # 1-second bookTicker snapshots. This is pre-registered to fit the 1 GB
+    # free-tier Postgres envelope without changing PIT/OOS semantics.
+    trade_persistence_sample_rate: float = 0.05
+    bookticker_persistence_interval_seconds: float = 1.0
+    persistence_contract_version: str = "deterministic_sample_v1"
 
     def validate(self) -> None:
         if self.provider not in {"binance", "kraken"}:
@@ -86,6 +93,12 @@ class CryptoStudyProtocol:
             raise ValueError("CSCV group count must be even and >=4")
         if self.cscv_test_groups != self.cscv_groups // 2:
             raise ValueError("CSCV uses symmetric half-split evaluation")
+        if not 0.0 < self.trade_persistence_sample_rate <= 1.0:
+            raise ValueError("trade persistence sample rate must be in (0,1]")
+        if self.bookticker_persistence_interval_seconds <= 0:
+            raise ValueError("bookTicker persistence interval must be positive")
+        if not self.persistence_contract_version.strip():
+            raise ValueError("persistence contract version cannot be empty")
 
         if self.provider == "binance":
             if self.venue != "binance_spot":
@@ -96,6 +109,13 @@ class CryptoStudyProtocol:
                 raise ValueError("Binance study streams are immutable")
             if self.normalized_event_types not in {(), ("trade", "bookTicker")}:
                 raise ValueError("invalid Binance normalized event types")
+            if self.version == "3":
+                if self.trade_persistence_sample_rate != 0.05:
+                    raise ValueError("Binance v3 trade persistence sampling is immutable at 5%")
+                if self.bookticker_persistence_interval_seconds != 1.0:
+                    raise ValueError("Binance v3 bookTicker persistence interval is immutable at 1s")
+                if self.persistence_contract_version != "deterministic_sample_v1":
+                    raise ValueError("Binance v3 persistence contract is immutable")
         else:
             if self.venue != "kraken_spot":
                 raise ValueError("Kraken provider requires Kraken Spot venue")
@@ -114,6 +134,9 @@ class CryptoStudyProtocol:
         # than silently changing its protocol hash after data capture began.
         if self.version == "2":
             payload.pop("normalized_event_types", None)
+            payload.pop("trade_persistence_sample_rate", None)
+            payload.pop("bookticker_persistence_interval_seconds", None)
+            payload.pop("persistence_contract_version", None)
         return payload
 
     @property
@@ -167,6 +190,19 @@ BINANCE_CRYPTO_PROTOCOL = CryptoStudyProtocol(
 )
 BINANCE_CRYPTO_PROTOCOL.validate()
 
+
+
+BINANCE_CRYPTO_PROTOCOL_V3 = CryptoStudyProtocol(
+    study_id="crypto-binance-spot-prospective-v3",
+    version="3",
+    provider="binance",
+    venue="binance_spot",
+    symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+    streams=("trade", "bookTicker"),
+    normalized_event_types=("trade", "bookTicker"),
+)
+BINANCE_CRYPTO_PROTOCOL_V3.validate()
+
 KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
     study_id="crypto-kraken-spot-prospective-v1",
     version="1",
@@ -179,7 +215,7 @@ KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
 KRAKEN_CRYPTO_PROTOCOL.validate()
 
 CRYPTO_PROTOCOLS: Mapping[str, CryptoStudyProtocol] = {
-    "binance": BINANCE_CRYPTO_PROTOCOL,
+    "binance": BINANCE_CRYPTO_PROTOCOL_V3,
     "kraken": KRAKEN_CRYPTO_PROTOCOL,
 }
 
@@ -191,4 +227,4 @@ def protocol_for(provider: str) -> CryptoStudyProtocol:
         raise ValueError(f"no preregistered crypto protocol for provider={provider!r}") from exc
 
 
-PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL
+PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V3
