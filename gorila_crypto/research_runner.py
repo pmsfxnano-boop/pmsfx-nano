@@ -14,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .forecast import DetectionFeatureSnapshot, ForecastTargetSpec
+from .forecast import DetectionFeatureSnapshot, ForecastTargetSpec, MICROSTRUCTURE_FEATURES
 from .lead_lag import LeadLagConfig
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quality import (
@@ -1140,7 +1140,10 @@ def run_crypto_research_once(store) -> dict[str, Any]:
                         f"{leader_symbol}->{target_symbol}@{target_spec.horizon_ms}:INSUFFICIENT_DATASET"
                     )
                     continue
-                feature_names = tuple(sorted(dataset[0].snapshot.feature_values))
+                feature_names = tuple(MICROSTRUCTURE_FEATURES)
+                if any(set(row.snapshot.feature_values) != set(feature_names) for row in dataset):
+                    blocked_pairs.append(f"{leader_symbol}->{target_symbol}@{target_spec.horizon_ms}:FEATURE_SCHEMA_MISMATCH")
+                    continue
                 report_oos = run_quality_gated_walk_forward(
                     dataset,
                     feature_names,
