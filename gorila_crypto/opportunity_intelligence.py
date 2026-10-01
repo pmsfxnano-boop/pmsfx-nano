@@ -351,6 +351,14 @@ class DiscreteHazardLearner:
         scale = math.log1p(horizon_ms) / math.log1p(self.horizons_ms[-1])
         return [1.0, *features, scale]
 
+    def health(self) -> dict[str, Any]:
+        return {
+            "examples_seen": dict(self.examples_seen),
+            "brier_ewma": dict(self.brier_ewma),
+            "logloss_ewma": dict(self.logloss_ewma),
+            "mature_examples": min(self.examples_seen.values()) if self.examples_seen else 0,
+        }
+
     def predict(self, features: list[float], pair: str) -> HazardForecast:
         survival = 1.0
         hazards: dict[int, float] = {}
@@ -697,12 +705,25 @@ class AdaptiveOpportunityClock:
     def predict(self, leader_symbol: str, target_symbol: str, features: list[float]) -> HazardForecast:
         pair = self._pair(leader_symbol, target_symbol)
         base = self.global_model.predict(features, pair)
-        specific = self._model_for(pair).predict(features, pair)
+        specific_model = self._model_for(pair)
+        specific = specific_model.predict(features, pair)
 
-        # Hierarchical shrinkage: pair-specific adaptation is strong enough to
-        # react quickly, but the global model prevents cold-start instability.
+        global_health = self.global_model.health()
+        pair_health = specific_model.health()
+        pair_n = min(pair_health["examples_seen"].values()) if pair_health["examples_seen"] else 0
+        pair_brier = sum(pair_health["brier_ewma"].values()) / len(pair_health["brier_ewma"])
+        global_brier = sum(global_health["brier_ewma"].values()) / len(global_health["brier_ewma"])
+        sample_weight = pair_n / (pair_n + 200.0)
+        calibration_delta = global_brier - pair_brier
+        calibration_bonus = max(-0.20, min(0.20, 2.0 * calibration_delta))
+        pair_weight = max(0.10, min(0.90, 0.10 + 0.70 * sample_weight + calibration_bonus))
+        global_weight = 1.0 - pair_weight
+
         hazards = {
-            h: max(1e-5, min(1.0 - 1e-5, 0.65 * specific.hazards[h] + 0.35 * base.hazards[h]))
+            h: max(1e-5, min(
+                1.0 - 1e-5,
+                pair_weight * specific.hazards[h] + global_weight * base.hazards[h],
+            ))
             for h in self.horizons_ms
         }
         survival = 1.0
@@ -725,6 +746,17 @@ class AdaptiveOpportunityClock:
             model_version=MODEL_VERSION,
         )
 
+    def _pair_blend_weight(self, pair: str) -> float:
+        pair_model = self._model_for(pair)
+        pair_health = pair_model.health()
+        global_health = self.global_model.health()
+        pair_n = min(pair_health["examples_seen"].values()) if pair_health["examples_seen"] else 0
+        pair_brier = sum(pair_health["brier_ewma"].values()) / len(pair_health["brier_ewma"])
+        global_brier = sum(global_health["brier_ewma"].values()) / len(global_health["brier_ewma"])
+        sample_weight = pair_n / (pair_n + 200.0)
+        calibration_bonus = max(-0.20, min(0.20, 2.0 * (global_brier - pair_brier)))
+        return max(0.10, min(0.90, 0.10 + 0.70 * sample_weight + calibration_bonus))
+
     def snapshot(self, leader_symbol: str, target_symbol: str, now: datetime, leader_return_bps: float) -> dict[str, Any]:
         features = self._features(leader_symbol, target_symbol, now, leader_return_bps)
         forecast = self.predict(leader_symbol, target_symbol, features)
@@ -746,10 +778,11 @@ class AdaptiveOpportunityClock:
                 "logloss_ewma": self.global_model.logloss_ewma,
                 "examples_seen": self.global_model.examples_seen,
             },
-            "pair_calibration": {
-                "brier_ewma": self._model_for(forecast.pair).brier_ewma,
-                "logloss_ewma": self._model_for(forecast.pair).logloss_ewma,
-                "examples_seen": self._model_for(forecast.pair).examples_seen,
+            "pair_calibration": self._model_for(forecast.pair).health(),
+            "global_model_health": self.global_model.health(),
+            "blend": {
+                "pair_weight": self._pair_blend_weight(forecast.pair),
+                "global_weight": 1.0 - self._pair_blend_weight(forecast.pair),
             },
             "feature_schema_hash": hashlib.sha256(
                 json.dumps(FEATURE_NAMES, separators=(",", ":")).encode("utf-8")
