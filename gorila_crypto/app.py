@@ -26,6 +26,7 @@ from gorila_crypto.config import settings
 from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, quality_fingerprint
 from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
 from gorila_crypto.market_cache import MARKET_CACHE
+from gorila_crypto.evidence import build_evidence_snapshot
 from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
@@ -674,6 +675,23 @@ def market_history(
         "resolution": resolution.lower(),
         "candles": candles,
     }
+
+
+@app.get("/api/crypto/evidence")
+def evidence_snapshot() -> dict[str, Any]:
+    """Unified, bounded evidence read contract for the quant UI."""
+    if not settings.ingest_enabled:
+        raise HTTPException(status_code=503, detail="capture_not_enabled")
+    try:
+        payload = build_evidence_snapshot()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"evidence_unavailable:{exc}") from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"evidence_unavailable:{type(exc).__name__}",
+        ) from exc
+    return payload
 
 
 @app.head("/", include_in_schema=False)
