@@ -41,12 +41,15 @@ def _dt(value: datetime) -> datetime:
 class ForecastTargetSpec:
     horizon_ms: int
     kind: str = "SIGNED_TARGET_RETURN_BPS_POSITIVE"
+    alignment_tolerance_ms: int = 50
 
     def validate(self) -> None:
         if self.horizon_ms <= 0:
             raise ValueError("forecast horizon must be positive")
         if self.kind != "SIGNED_TARGET_RETURN_BPS_POSITIVE":
             raise ValueError("unsupported forecast target semantics")
+        if self.alignment_tolerance_ms < 0:
+            raise ValueError("alignment tolerance must be non-negative")
 
 
 @dataclass(frozen=True)
