@@ -116,6 +116,49 @@ def test_label_horizon_is_conservative_when_leader_information_arrives_late() ->
     assert label is not None
     assert label.label_event_id == "valid"
 
+def test_label_horizon_rejects_future_point_beyond_declared_tolerance() -> None:
+    decision_event = BASE + timedelta(seconds=20)
+    decision_received = decision_event + timedelta(milliseconds=50)
+    snap = DetectionFeatureSnapshot(
+        feature_set_version="test",
+        decision_event_time=decision_event,
+        decision_received_time=decision_received,
+        leader_symbol="BTCUSDT",
+        target_symbol="ETHUSDT",
+        leader_event_id="late-label",
+        feature_values={"leader_direction": 1.0},
+        source_event_ids=("late-label",),
+        feature_set_hash="late-label-hash",
+    )
+    target = [
+        type("P", (), {
+            "event_time": decision_event,
+            "received_time": decision_received,
+            "price": 100.0,
+            "event_id": "base-20",
+        })(),
+        type("P", (), {
+            "event_time": decision_event + timedelta(milliseconds=575),
+            "received_time": decision_received + timedelta(milliseconds=575),
+            "price": 100.2,
+            "event_id": "outside-tolerance",
+        })(),
+        type("P", (), {
+            "event_time": decision_event + timedelta(milliseconds=550),
+            "received_time": decision_received + timedelta(milliseconds=550),
+            "price": 100.15,
+            "event_id": "at-tolerance",
+        })(),
+    ]
+    from gorila_crypto.validation import label_snapshot
+
+    assert label_snapshot(
+        target,
+        snap,
+        ForecastTargetSpec(horizon_ms=500, alignment_tolerance_ms=50),
+    ) is None
+
+
 def test_probabilistic_metrics_have_expected_extremes() -> None:
     perfect = probabilistic_metrics([0, 1, 0, 1], [0.01, 0.99, 0.01, 0.99])
     coin = probabilistic_metrics([0, 1, 0, 1], [0.5, 0.5, 0.5, 0.5])
