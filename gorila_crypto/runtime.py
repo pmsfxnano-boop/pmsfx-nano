@@ -1,4 +1,4 @@
-"""Prospective Binance market-data ingestion for the Crypto cleanroom.
+"""Prospective multi-venue market-data ingestion for the Crypto cleanroom.
 
 A9 turns the proven adapter into a persistence-only 24/7 research feed.
 It records raw normalized events, connection lifecycle, sequence gaps, and
@@ -8,17 +8,36 @@ source freshness. It never forecasts, trades, or promotes a model.
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from gorila_core.market_freshness import assess_observation
 
 from .binance import BinanceSpotMarketAdapter, BinanceStreamConfig, NormalizedMarketEvent
 from .kraken import KrakenSpotMarketAdapter, KrakenStreamConfig
 from .config import settings
+from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
+
+
+class MarketAdapterProtocol(Protocol):
+    config: Any
+    source_family: str
+
+    def iter_forever(
+        self,
+        *,
+        stop_event=None,
+        on_connection: Callable[[str, dict[str, Any]], None] | None = None,
+        initial_backoff_s: float = 1.0,
+        max_backoff_s: float = 60.0,
+    ):
+        ...
 
 
 @dataclass(frozen=True)
@@ -27,12 +46,21 @@ class IngestRuntimeConfig:
     gap_status: str = "GAP_DETECTED"
     health_status: str = "HEALTHY"
     error_status: str = "DEGRADED"
+    health_flush_interval_seconds: float = 1.0
+    event_batch_size: int = 250
+    event_batch_flush_interval_seconds: float = 0.050
 
     def validate(self) -> None:
         if not self.kind.strip():
             raise ValueError("runtime kind cannot be empty")
         if not self.gap_status.strip() or not self.health_status.strip():
             raise ValueError("runtime statuses cannot be empty")
+        if self.health_flush_interval_seconds <= 0:
+            raise ValueError("health flush interval must be positive")
+        if self.event_batch_size < 1:
+            raise ValueError("event batch size must be positive")
+        if self.event_batch_flush_interval_seconds <= 0:
+            raise ValueError("event batch flush interval must be positive")
 
 
 class SequenceContinuityMonitor:
@@ -72,7 +100,7 @@ class ProspectiveCryptoIngestor:
     def __init__(
         self,
         store: CryptoStore,
-        adapter: BinanceSpotMarketAdapter,
+        adapter: MarketAdapterProtocol,
         *,
         config: IngestRuntimeConfig | None = None,
         now: Callable[[], datetime] | None = None,
@@ -89,6 +117,18 @@ class ProspectiveCryptoIngestor:
         self.gaps_detected = 0
         self.last_error: str | None = None
         self.last_event: NormalizedMarketEvent | None = None
+        self.protocol = PREREGISTERED_CRYPTO_PROTOCOL
+        self.session_id: str | None = None
+        self._last_runtime_heartbeat = 0.0
+        self._health_last_persist_monotonic: dict[str, float] = {}
+        self._health_last_status: dict[str, str] = {}
+        self._health_pending_rows: dict[str, int] = {}
+        self._symbol_lock = threading.Lock()
+        self._symbol_first_received: dict[str, datetime] = {}
+        self._symbol_last_received: dict[str, datetime] = {}
+        self._capture_started_at = self.now()
+        self._pending_event_rows: list[dict[str, Any]] = []
+        self._pending_event_started_monotonic: float | None = None
 
         self.config.validate()
 
@@ -116,10 +156,15 @@ class ProspectiveCryptoIngestor:
         )
 
     def _on_connection(self, status: str, metadata: dict[str, Any]) -> None:
+        if self.run_id is not None and isinstance(self.store, QuantCryptoStore):
+            self.store.heartbeat_runtime_run(self.run_id)
+            self._last_runtime_heartbeat = time.monotonic()
         if status == "CONNECTED":
             self.sequence.new_connection()
             self.last_error = None
             self._record_connection(status, metadata)
+            # Connection state belongs in crypto_connection_events.
+            # Source health is reserved for actual market-data observations.
             return
 
         self._record_connection(status, metadata)
@@ -145,10 +190,35 @@ class ProspectiveCryptoIngestor:
                 error=self.last_error,
             )
 
+    def _flush_pending_events(self) -> None:
+        if not self._pending_event_rows:
+            self._pending_event_started_monotonic = None
+            return
+        rows = self._pending_event_rows
+        self._pending_event_rows = []
+        self._pending_event_started_monotonic = None
+        if isinstance(self.store, QuantCryptoStore):
+            if self.session_id is None:
+                raise RuntimeError("capture_session_not_started")
+            results = self.store.append_scoped_events(
+                study_id=self.protocol.study_id,
+                capture_session_id=self.session_id,
+                events=rows,
+            )
+        else:
+            results = self.store.append_events(rows)
+        self.events_inserted += sum(1 for result in results if result["inserted"])
+        self.events_duplicate += sum(1 for result in results if not result["inserted"])
+
     def _ingest(self, event: NormalizedMarketEvent) -> None:
         event_time = event.event_time.astimezone(timezone.utc)
         received_time = event.received_time.astimezone(timezone.utc)
-        result = self.store.append_event(
+        assessment = assess_observation(
+            event_time,
+            received_time,
+            now=self.now(),
+        )
+        event_kwargs = dict(
             symbol=event.symbol,
             event_type=event.event_type,
             event_time=event_time.isoformat(),
@@ -168,13 +238,11 @@ class ProspectiveCryptoIngestor:
                 "receive_time_ns": event.receive_time_ns,
                 "runtime_run_id": self.run_id,
                 "ingest_epoch": self.sequence.epoch,
+                "event_age_seconds": assessment["event_age_seconds"],
+                "received_age_seconds": assessment["received_age_seconds"],
+                "transport_latency_seconds": assessment["transport_latency_seconds"],
             },
         )
-
-        if result["inserted"]:
-            self.events_inserted += 1
-        else:
-            self.events_duplicate += 1
 
         gap = self.sequence.observe(event)
         if gap is not None:
@@ -188,6 +256,8 @@ class ProspectiveCryptoIngestor:
                 status=self.config.gap_status,
                 metadata={
                     "run_id": self.run_id,
+                    "capture_session_id": self.session_id,
+                    "crypto_study_id": self.protocol.study_id,
                     "event_type": event.event_type,
                     "ingest_epoch": self.sequence.epoch,
                     "message": "Continuity gap detected within one connection epoch; "
@@ -195,34 +265,146 @@ class ProspectiveCryptoIngestor:
                 },
             )
 
-        assessment = assess_observation(
-            event_time,
-            received_time,
-            now=self.now(),
+        source = event.source
+        self._health_pending_rows[source] = self._health_pending_rows.get(source, 0) + 1
+        now_monotonic = time.monotonic()
+        last_persisted = self._health_last_persist_monotonic.get(source, 0.0)
+        previous_status = self._health_last_status.get(source)
+        should_persist_health = (
+            previous_status != assessment["status"]
+            or now_monotonic - last_persisted >= self.config.health_flush_interval_seconds
         )
-        self.store.upsert_source_health(
-            source=event.source,
-            status=assessment["status"],
-            last_event_time=assessment["event_time"],
-            last_received_time=assessment["received_time"],
-            event_age_seconds=assessment["event_age_seconds"],
-            transport_age_seconds=assessment["transport_age_seconds"],
-            rows_last_batch=1,
-            error=None,
-        )
+        if should_persist_health:
+            self.store.upsert_source_health(
+                source=source,
+                status=assessment["status"],
+                last_event_time=assessment["event_time"],
+                last_received_time=assessment["received_time"],
+                event_age_seconds=assessment["event_age_seconds"],
+                transport_age_seconds=assessment["transport_age_seconds"],
+                rows_last_batch=self._health_pending_rows[source],
+                error=None,
+            )
+            self._health_last_persist_monotonic[source] = now_monotonic
+            self._health_last_status[source] = assessment["status"]
+            self._health_pending_rows[source] = 0
+        with self._symbol_lock:
+            symbol = event.symbol.upper()
+            self._symbol_first_received.setdefault(symbol, received_time)
+            self._symbol_last_received[symbol] = received_time
         self.last_event = event
+        if self._pending_event_started_monotonic is None:
+            self._pending_event_started_monotonic = now_monotonic
+        self._pending_event_rows.append(event_kwargs)
+
+    def symbol_health(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Report readiness of every required symbol from observed receive times.
+
+        A live worker is not enough for production readiness: every preregistered
+        symbol must actually produce market-data events within the configured
+        freshness window. Missing symbols remain STARTING only during the initial
+        live-age grace period; after that they are NO_DATA.
+        """
+        reference = now or self.now()
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        reference = reference.astimezone(timezone.utc)
+
+        with self._symbol_lock:
+            first = dict(self._symbol_first_received)
+            last = dict(self._symbol_last_received)
+            capture_started = self._capture_started_at
+
+        startup_age = max(0.0, (reference - capture_started).total_seconds())
+        rows: list[dict[str, Any]] = []
+        for symbol in tuple(self.adapter.config.symbols):
+            normalized = str(symbol).upper()
+            first_received = first.get(normalized)
+            last_received = last.get(normalized)
+            if last_received is None:
+                age = startup_age
+                status = (
+                    "STARTING"
+                    if startup_age <= settings.event_live_max_age_seconds
+                    else "NO_DATA"
+                )
+            else:
+                age = max(0.0, (reference - last_received).total_seconds())
+                if age <= settings.event_live_max_age_seconds:
+                    status = "LIVE"
+                elif age <= settings.event_delayed_max_age_seconds:
+                    status = "DELAYED"
+                else:
+                    status = "STALE"
+            rows.append(
+                {
+                    "symbol": normalized,
+                    "status": status,
+                    "first_received_time": first_received.isoformat() if first_received else None,
+                    "last_received_time": last_received.isoformat() if last_received else None,
+                    "age_seconds": round(age, 3) if last_received is not None or startup_age else None,
+                    "required": True,
+                    "healthy": status == "LIVE",
+                }
+            )
+        return rows
 
     def stop(self) -> None:
         self.stop_event.set()
 
     def run(self) -> dict[str, Any]:
-        """Run until stop_event, adapter failure, or external interruption."""
-        self.run_id = self.store.start_runtime_run(kind=self.config.kind)
-        self._record_connection("RUN_STARTED", {"symbols": list(self.adapter.config.symbols)})
+        """Run the capture runtime, with the preregistered cohort enforced in production."""
+        production_scoped = isinstance(self.store, QuantCryptoStore)
+        if production_scoped:
+            if not self.protocol.matches_runtime(
+                provider=settings.provider,
+                symbols=tuple(self.adapter.config.symbols),
+                streams=tuple(settings.streams),
+            ):
+                raise RuntimeError("runtime_does_not_match_preregistered_protocol")
+            stale = self.store.reconcile_stale_runtime_runs(stale_after_seconds=120.0)
+            self.store.register_study(self.protocol)
+            effective_protocol_hash = self.store.get_study_protocol_hash(self.protocol.study_id)
+            self.session_id = self.store.start_capture_session(
+                study_id=self.protocol.study_id,
+                protocol_hash=effective_protocol_hash,
+                provider=settings.provider,
+                venue=self.protocol.venue,
+                symbols=tuple(self.adapter.config.symbols),
+                streams=tuple(settings.streams),
+                region=os.getenv("RENDER_REGION"),
+                instance_id=os.getenv("RENDER_INSTANCE_ID"),
+                code_version=os.getenv("RENDER_GIT_COMMIT") or os.getenv("GORILA_CRYPTO_CODE_VERSION"),
+                metadata={"stale_runs_reconciled": stale},
+            )
+            self.run_id = self.store.start_runtime_run_scoped(
+                kind=self.config.kind,
+                session_id=self.session_id,
+            )
+            self._record_connection("RUN_STARTED", {
+                "symbols": list(self.adapter.config.symbols),
+                "study_id": self.protocol.study_id,
+                "protocol_hash": effective_protocol_hash,
+                "capture_session_id": self.session_id,
+            })
+        else:
+            # Legacy/unit-test harness: persistence semantics are still exercised,
+            # but production-only study binding is deliberately not activated.
+            self.run_id = self.store.start_runtime_run(kind=self.config.kind)
+            self._record_connection("RUN_STARTED", {"symbols": list(self.adapter.config.symbols)})
         self.events_inserted = 0
         self.events_duplicate = 0
         self.gaps_detected = 0
         self.last_error = None
+        self._health_last_persist_monotonic.clear()
+        self._health_last_status.clear()
+        self._health_pending_rows.clear()
+        self._pending_event_rows.clear()
+        self._pending_event_started_monotonic = None
+        with self._symbol_lock:
+            self._symbol_first_received.clear()
+            self._symbol_last_received.clear()
+            self._capture_started_at = self.now()
 
         status = "STOPPED"
         result: dict[str, Any] = {}
@@ -232,6 +414,20 @@ class ProspectiveCryptoIngestor:
                 on_connection=self._on_connection,
             ):
                 self._ingest(event)
+                now_monotonic = time.monotonic()
+                pending_age = (
+                    now_monotonic - self._pending_event_started_monotonic
+                    if self._pending_event_started_monotonic is not None
+                    else 0.0
+                )
+                if (
+                    len(self._pending_event_rows) >= self.config.event_batch_size
+                    or pending_age >= self.config.event_batch_flush_interval_seconds
+                ):
+                    self._flush_pending_events()
+                if production_scoped and now_monotonic - self._last_runtime_heartbeat >= 5.0:
+                    self.store.heartbeat_runtime_run(self.run_id)
+                    self._last_runtime_heartbeat = now_monotonic
                 if self.stop_event.is_set():
                     status = "STOPPED"
                     break
@@ -245,6 +441,7 @@ class ProspectiveCryptoIngestor:
             self._record_connection("ERROR", {"error": self.last_error})
             raise
         finally:
+            self._flush_pending_events()
             result = {
                 "events_inserted": self.events_inserted,
                 "events_duplicate": self.events_duplicate,
@@ -259,12 +456,23 @@ class ProspectiveCryptoIngestor:
                 "forecast": False,
                 "execution": False,
             }
-            self.store.finish_runtime_run(
-                run_id=self.run_id,
-                status=status,
-                result=result,
-            )
+            if production_scoped:
+                self.store.finish_runtime_run_scoped(
+                    run_id=self.run_id,
+                    session_id=self.session_id,
+                    status=status,
+                    result=result,
+                )
+                if self.session_id is not None:
+                    self.store.set_capture_session_status(self.session_id, status)
+            else:
+                self.store.finish_runtime_run(
+                    run_id=self.run_id,
+                    status=status,
+                    result=result,
+                )
             self._record_connection("RUN_FINISHED", result)
+            self.store.close()
 
         return {
             "status": status,
@@ -286,7 +494,7 @@ def build_market_adapter():
     return BinanceSpotMarketAdapter(
         BinanceStreamConfig(
             symbols=settings.symbols,
-            streams=("trade", "bookTicker", "depth"),
+            streams=tuple(settings.streams),
             depth_speed=settings.depth_speed,
         )
     )
@@ -301,7 +509,7 @@ def build_prospective_runtime() -> ProspectiveCryptoIngestor:
         )
     adapter = build_market_adapter()
     return ProspectiveCryptoIngestor(
-        CryptoStore(database_url=CRYPTO_DATABASE_URL, require_durable=True),
+        QuantCryptoStore(database_url=CRYPTO_DATABASE_URL, require_durable=True),
         adapter,
     )
 
