@@ -335,3 +335,41 @@ def test_recovery_gate_blocks_pending_production_evidence(tmp_path) -> None:
     gate = ingestor.recovery_gate()
     assert gate["status"] == "BLOCKED"
     assert "EVIDENCE_SPOOL_PENDING" in gate["reasons"]
+
+
+def test_spool_replay_is_idempotent_against_ledger(tmp_path) -> None:
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "idempotent.sqlite3"))
+    adapter = FakeAdapter([event(trade_id=1)])
+    ingestor = ProspectiveCryptoIngestor(store, adapter)
+    ingestor.session_id = "session-idempotency"
+
+    row = {
+        "symbol": "BTCUSDT",
+        "event_type": "trade",
+        "event_time": BASE.isoformat(),
+        "received_time": BASE.isoformat(),
+        "source": "binance.websocket.trade",
+        "payload": {"p": "100.0", "q": "0.01"},
+        "quality": "OK",
+        "metadata": {},
+        "event_key": "same-replay-key",
+    }
+    ingestor._evidence_spool.append([row])
+    ingestor._evidence_spool.append([row])
+
+    assert ingestor._drain_one_spool_batch() is True
+    assert ingestor._drain_one_spool_batch() is True
+    assert ingestor._evidence_spool.stats()["batches"] == 0
+    assert ingestor.events_inserted == 1
+    assert ingestor.events_duplicate == 1
+
+    conn = store.connect()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM crypto_events WHERE event_key=?",
+            ("same-replay-key",),
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
