@@ -269,3 +269,24 @@ def test_pairwise_overlap_is_suppressed() -> None:
         replay_fingerprint="overlap:test",
     )
     assert engine.opportunities_started == started
+
+
+def test_microstructure_state_round_trip_preserves_book_and_trade_window() -> None:
+    state = SymbolMicrostructure("BTCUSDT")
+    state.feed("bookTicker", {"b": "100.0", "a": "100.1", "B": "5", "A": "4"}, ts(0))
+    state.feed("trade", {"p": "100.06", "q": "1", "m": False}, ts(100))
+    state.feed("depthUpdate", {"b": [["99.9", "2"]], "a": [["100.2", "3"]]}, ts(200))
+    restored = SymbolMicrostructure.from_state(state.state())
+    assert restored.bid == state.bid
+    assert restored.ask == state.ask
+    assert restored.last_trade_price == state.last_trade_price
+    assert restored.last_market_received == state.last_market_received
+    assert restored.last_depth_received == state.last_depth_received
+    assert len(restored.recent_trades) == len(state.recent_trades)
+
+
+def test_pair_blend_weight_starts_global_heavy_and_is_bounded() -> None:
+    engine = AdaptiveOpportunityClock()
+    weight = engine._pair_blend_weight("BTCUSDT->ETHUSDT")
+    assert 0.10 <= weight <= 0.90
+    assert weight < 0.5
