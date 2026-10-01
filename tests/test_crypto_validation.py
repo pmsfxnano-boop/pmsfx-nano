@@ -101,8 +101,8 @@ def test_label_horizon_is_conservative_when_leader_information_arrives_late() ->
             "event_id": "too-soon",
         })(),
         type("P", (), {
-            "event_time": decision_received + timedelta(milliseconds=600),
-            "received_time": decision_received + timedelta(milliseconds=600),
+            "event_time": decision_received + timedelta(milliseconds=500),
+            "received_time": decision_received + timedelta(milliseconds=500),
             "price": 100.2,
             "event_id": "valid",
         })(),
