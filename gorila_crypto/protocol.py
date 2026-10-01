@@ -134,6 +134,9 @@ class CryptoStudyProtocol:
         # than silently changing its protocol hash after data capture began.
         if self.version == "2":
             payload.pop("normalized_event_types", None)
+            payload.pop("trade_persistence_sample_rate", None)
+            payload.pop("bookticker_persistence_interval_seconds", None)
+            payload.pop("persistence_contract_version", None)
         return payload
 
     @property
