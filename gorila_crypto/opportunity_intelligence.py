@@ -620,6 +620,11 @@ class HazardForecast:
     probability_by_horizon: dict[int, float]
     survival_by_horizon: dict[int, float]
     expected_reaction_ms: float
+    conditional_response_bps: dict[int, float]
+    response_std_bps: dict[int, float]
+    expected_net_bps: dict[int, float]
+    risk_adjusted_net_bps: dict[int, float]
+    execution_drag_bps: float
     model_version: str
 
 
