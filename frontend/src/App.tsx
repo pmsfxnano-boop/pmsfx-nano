@@ -223,9 +223,9 @@ function App() {
       if (results[0].status === "fulfilled") setMatrix(values[0] as MatrixResponse); else failed++;
       if (results[1].status === "fulfilled") setTerminal(values[1] as TerminalResponse); else failed++;
       if (kind === "cold") {
-        if (results[2].status === "fulfilled") setHealth(values[2] as HealthResponse); else failed++;
-        if (results[3].status === "fulfilled") setControl(values[3] as ControlResponse); else failed++;
-        if (results[4].status === "fulfilled") setBcra(values[4] as JsonMap); else failed++;
+        if (results[2]?.status === "fulfilled") setHealth(results[2].value as HealthResponse); else failed++;
+        if (results[3]?.status === "fulfilled") setControl(results[3].value as ControlResponse); else failed++;
+        if (results[4]?.status === "fulfilled") setBcra(results[4].value as JsonMap); else failed++;
       }
       if (failed >= (kind === "cold" ? 4 : 2)) setError("BACKEND DEGRADED · mostrando el último estado confirmado");
       else setError(null);
