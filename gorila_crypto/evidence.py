@@ -1,4 +1,4 @@
-"""Unified quantitative evidence read-model for Gorila Argentum.
+"""Unified quantitative evidence read-model for Cryptonita.
 
 This module is intentionally off the market hot path. It reads bounded, persisted
 research artifacts plus the in-process market projection and exposes one coherent

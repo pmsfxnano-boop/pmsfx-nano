@@ -1,7 +1,4 @@
-"""Configuration for the isolated Crypto runtime.
-
-No Argentina, US-equity, or legacy provider settings belong here.
-"""
+"""Configuration for the isolated Cryptonita Crypto runtime."""
 
 from __future__ import annotations
 
