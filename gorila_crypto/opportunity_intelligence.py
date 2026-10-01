@@ -492,7 +492,7 @@ class AdaptiveOpportunityClock:
         received_time: datetime,
         event_id: str,
         replay_fingerprint: str,
-        learn: bool = true,
+        learn: bool = True,
     ) -> list[dict[str, Any]]:
         """Consume exactly one ledger event in ingest order."""
         self.events_seen += 1
