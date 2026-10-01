@@ -37,7 +37,7 @@ from .ledger import canonical_replay_row
 
 
 RESEARCH_STATUS_SOURCE = "gorila.crypto.research_runner"
-FEATURE_SET_VERSION = "crypto_detection_v1"
+FEATURE_SET_VERSION = "crypto_microstructure_alpha_v1"
 DEFAULT_BATCH = 5000
 
 
