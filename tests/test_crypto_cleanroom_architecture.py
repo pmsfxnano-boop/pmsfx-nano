@@ -54,7 +54,6 @@ def test_importing_crypto_app_does_not_load_unapproved_repo_domains() -> None:
 import sys
 import gorila_crypto.app
 
-repo_root = {str(REPO_ROOT)!r}
 allowed = {{"gorila_core", "gorila_crypto"}}
 loaded = {{
     name.split(".")[0]
