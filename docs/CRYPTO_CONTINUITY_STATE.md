@@ -1,6 +1,6 @@
 # Crypto Backend Continuity State
 
-Last verified: 2026-10-01 UTC.
+Last verified: 2026-10-01 01:09 UTC.
 
 Canonical scope: Crypto only. Active branches: main, gorila-crypto-binance-parallel, gorila-crypto-cleanroom.
 
@@ -33,10 +33,9 @@ Current blockers:
 5. Production PIT/walk-forward/OOS evidence cannot exist until a complete 7-day prospective cohort passes Quality Gate.
 
 Exact continuation:
-1. Verify CI for current Binance head.
-2. Deploy Oregon Binance and verify new session, runtime RUNNING, fresh BTCUSDT/ETHUSDT/SOLUSDT events, zero gaps, and creation of crypto_research_runs.
-3. Synchronize the verified head to main and cleanroom.
-4. Reconcile Frankfurt only after Oregon is stable.
-5. At cohort maturity, verify all 36 PIT/walk-forward/OOS reports in Postgres.
+1. Keep session a3a0e7ff-805d-4cbc-96e5-55f3959f3d46 under observation until the full 7-day cohort matures.
+2. Verify periodic ledger growth and freshness for all six channels; if feed stalls, watchdog/supervisor must recycle the runtime.
+3. At maturity, execute the autonomous research runner against the exact session fingerprint and require Quality Gate before PIT/walk-forward/OOS persistence.
+4. Verify all 36 preregistered directed-pair x horizon reports and their costs/slippage/OOS evidence.
+5. Only after the quantitative gates pass, consider any model promotion. Automatic promotion remains disabled.
 
-This file is the durable engineering handoff. Always re-verify GitHub, Render and Postgres before changing anything. Never infer live/OOS state from chat context alone.
