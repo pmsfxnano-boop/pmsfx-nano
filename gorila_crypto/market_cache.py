@@ -24,6 +24,10 @@ class MarketCacheEvent:
     price: float | None
     quantity: float | None
     side: str | None
+    bid: float | None = None
+    ask: float | None = None
+    bid_qty: float | None = None
+    ask_qty: float | None = None
 
 
 class MarketReadCache:
@@ -46,6 +50,10 @@ class MarketReadCache:
         price: float | None = None
         quantity: float | None = None
         side: str | None = None
+        bid: float | None = None
+        ask: float | None = None
+        bid_qty: float | None = None
+        ask_qty: float | None = None
 
         if event_type == "trade":
             price = float(payload["p"])
@@ -54,6 +62,8 @@ class MarketReadCache:
         elif event_type == "bookTicker":
             bid = float(payload["b"])
             ask = float(payload["a"])
+            bid_qty = float(payload.get("B", 0.0))
+            ask_qty = float(payload.get("A", 0.0))
             price = (bid + ask) / 2.0
 
         return MarketCacheEvent(
@@ -65,6 +75,10 @@ class MarketReadCache:
             price=price,
             quantity=quantity,
             side=side,
+            bid=bid,
+            ask=ask,
+            bid_qty=bid_qty,
+            ask_qty=ask_qty,
         )
 
     def clear(self) -> None:
