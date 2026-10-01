@@ -401,7 +401,7 @@ function Microstructure({ item, trades }: { item: SymbolMarket | undefined; trad
     : 1;
   const ppm = trades.length / span;
   return (
-    <section className="panel">
+    <section className="panel terminal-late-panel">
       <div className="section-head">
         <div><div className="eyebrow"><Icon name="flow" /> MICROSTRUCTURE</div><h2>Market state</h2></div>
         <span className="muted">top-of-book + trade flow</span>
@@ -430,7 +430,7 @@ function Metric({ label, value, sub }: { label: string; value: string; sub: stri
 
 function LiveTape({ trades }: { trades: MarketEvent[] }) {
   return (
-    <section className="panel">
+    <section className="panel terminal-late-panel">
       <div className="section-head">
         <div><div className="eyebrow"><Icon name="flow" /> FLOW</div><h2>Live tape</h2></div>
         <span className="muted">{trades.length} prints</span>
@@ -467,7 +467,7 @@ function QuantTimeline({
   const promotion = evidence?.opportunity_clock?.validated ? "ACTIVE" : "BLOCKED";
   const durability = health?.storage_backend || "UNKNOWN";
   return (
-    <section className="panel">
+    <section className="panel terminal-late-panel">
       <div className="section-head">
         <div><div className="eyebrow"><Icon name="pipeline" /> PIPELINE</div><h2>Quantitative timeline</h2></div>
         <span className="muted">single system</span>
@@ -676,7 +676,6 @@ function App() {
   const [symbols, setSymbols] = useState<SymbolMarket[]>([]);
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [selected, setSelected] = useState("BTCUSDT");
-  const [cursor, setCursor] = useState(0);
   const cursorRef = useRef(0);
   const [marketStatus, setMarketStatus] = useState("STARTING");
   const [durabilityStatus, setDurabilityStatus] = useState("UNKNOWN");
@@ -730,14 +729,13 @@ function App() {
             .slice(-360);
         });
         cursorRef.current = response.next_cursor || cursorRef.current;
-        setCursor(cursorRef.current);
         setError(null);
       } catch (err) {
         if (!disposed) setError(err instanceof Error ? err.message : "market stream unavailable");
       } finally {
         window.clearTimeout(timeout);
         inFlight.current = false;
-        if (!disposed) timer = window.setTimeout(poll, 2000);
+        if (!disposed) timer = window.setTimeout(poll, 5000);
       }
     };
     void poll();
@@ -867,7 +865,6 @@ function App() {
             <Microstructure item={selectedMarket} trades={selectedTrades} />
             <LiveTape trades={selectedTrades} />
             <QuantTimeline health={health} evidence={evidence} market={displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
-            <PriceChart history={history} resolution={resolution} onResolution={setResolution} />
           </>
         )}
 
