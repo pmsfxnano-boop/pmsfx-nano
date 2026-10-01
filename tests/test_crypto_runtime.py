@@ -189,6 +189,80 @@ def test_feed_watchdog_survives_first_restart_request(tmp_path) -> None:
     store.close()
 
 
+def test_production_feed_exception_restarts_with_same_session(tmp_path, monkeypatch) -> None:
+    import gorila_crypto.runtime as runtime
+
+    from gorila_crypto.quant_store import QuantCryptoStore
+
+    class FlakyProductionAdapter:
+        source_family = "binance.websocket.market"
+
+        def __init__(self, calls: dict[str, int], control: dict[str, object]) -> None:
+            self.config = BinanceStreamConfig(
+                symbols=tuple(runtime.PREREGISTERED_CRYPTO_PROTOCOL.symbols),
+                streams=tuple(runtime.settings.streams),
+            )
+            self.calls = calls
+            self.control = control
+
+        def iter_forever(self, *, stop_event, on_connection):
+            self.calls["n"] += 1
+            on_connection("CONNECTED", {"at": BASE.isoformat()})
+            yield event(trade_id=self.calls["n"])
+            if self.calls["n"] == 1:
+                raise RuntimeError("simulated transport failure")
+            overall_stop = self.control["overall_stop"]
+            assert hasattr(overall_stop, "set")
+            overall_stop.set()
+
+    calls = {"n": 0}
+    control: dict[str, object] = {"overall_stop": None}
+    first = FlakyProductionAdapter(calls, control)
+    second = FlakyProductionAdapter(calls, control)
+    adapters = iter([second])
+
+    store = QuantCryptoStore(sqlite_path=str(tmp_path / "production-restart.sqlite3"))
+
+    monkeypatch.setattr(runtime, "build_market_adapter", lambda: next(adapters))
+
+    ingestor = ProspectiveCryptoIngestor(
+        store,
+        first,
+        now=lambda: BASE,
+    )
+    control["overall_stop"] = ingestor.stop_event
+
+    result = ingestor.run()
+
+    assert result["status"] == "STOPPED"
+    assert result["events_inserted"] == 2
+    assert calls["n"] == 2
+
+    conn = store.connect()
+    try:
+        sessions = conn.execute(
+            "SELECT session_id,status FROM crypto_capture_sessions ORDER BY started_at"
+        ).fetchall()
+        assert len(sessions) == 1
+        assert sessions[0]["status"] == "STOPPED"
+
+        metadata_rows = conn.execute(
+            "SELECT status,metadata FROM crypto_connection_events ORDER BY created_at"
+        ).fetchall()
+        statuses = [row["status"] for row in metadata_rows]
+        assert "FEED_ERROR" in statuses
+        assert "FEED_RESTARTED" in statuses
+        run_ids = {
+            __import__("json").loads(row["metadata"])["run_id"]
+            for row in metadata_rows
+            if row["metadata"]
+        }
+        assert len(run_ids) == 1
+    finally:
+        conn.close()
+        store.close()
+
+
 def test_runtime_config_rejects_empty_kind() -> None:
     config = IngestRuntimeConfig(kind="   ")
     try:
