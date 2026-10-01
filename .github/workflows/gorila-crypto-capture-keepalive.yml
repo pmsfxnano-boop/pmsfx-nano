@@ -43,8 +43,9 @@ jobs:
               fi
             fi
 
+            contract_ok=0
             if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ]; then
-              python - "$tmp_body" <<'PY'
+              if python - "$tmp_body" <<'PY'
           import json
           import sys
 
@@ -58,7 +59,7 @@ jobs:
           if not payload["symbols"]:
               raise SystemExit("market contract returned no symbols")
           if not payload["events"]:
-              raise SystemExit("market contract returned no persisted events")
+              raise SystemExit("market contract returned no persisted events yet")
           forecast = payload["forecast"]
           if forecast.get("automatic_promotion") is not False:
               raise SystemExit("automatic promotion must remain disabled")
@@ -72,6 +73,12 @@ jobs:
               f"next_cursor={payload['next_cursor']}",
           )
           PY
+              then
+                contract_ok=1
+              fi
+            fi
+
+            if [ "$health_ok" -eq 1 ] && [ "$market_ok" -eq 1 ] && [ "$cors_ok" -eq 1 ] && [ "$contract_ok" -eq 1 ]; then
               rm -f "$tmp_headers" "$tmp_body"
               echo "Render capture + market contract + CORS OK on attempt $attempt"
               exit 0
