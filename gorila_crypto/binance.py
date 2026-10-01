@@ -58,7 +58,7 @@ class BinanceStreamConfig:
     rest_base_url: str = SPOT_REST_BASE
     depth_limit: int = DEFAULT_DEPTH_LIMIT
     connect_timeout_s: float = 10.0
-    ping_interval_s: float | None = None
+    ping_interval_s: float | None = 15.0
     recv_timeout_s: float = 20.0
     websocket_read_poll_timeout_s: float = 2.0
     market_data_stall_timeout_s: float = 10.0
