@@ -45,6 +45,7 @@ FEATURE_NAMES = (
     "leader_microprice_gap_bps",
     "leader_trade_flow_z",
     "leader_trade_intensity",
+    "leader_depth_activity",
     "leader_realized_vol_bps",
     "leader_transport_age_ms",
     "target_imbalance",
@@ -52,10 +53,12 @@ FEATURE_NAMES = (
     "target_microprice_gap_bps",
     "target_trade_flow_z",
     "target_trade_intensity",
+    "target_depth_activity",
     "target_realized_vol_bps",
     "target_transport_age_ms",
     "cross_imbalance_delta",
     "cross_flow_delta",
+    "cross_depth_activity_delta",
     "cross_vol_delta",
     "transport_age_delta_ms",
 )
@@ -145,6 +148,7 @@ class SymbolMicrostructure:
     signed_flow: EWMA = field(default_factory=EWMA)
     trade_intensity: EWMA = field(default_factory=EWMA)
     realized_vol: EWMA = field(default_factory=EWMA)
+    depth_activity: EWMA = field(default_factory=EWMA)
     flow_moments: OnlineMoments = field(default_factory=lambda: OnlineMoments(alpha=0.02))
     recent_trades: deque[tuple[datetime, float]] = field(default_factory=lambda: deque(maxlen=256))
 
@@ -158,20 +162,15 @@ class SymbolMicrostructure:
                 self.bid_size = max(0.0, _safe_float(payload.get("B"), self.bid_size))
                 self.ask_size = max(0.0, _safe_float(payload.get("A"), self.ask_size))
             else:
-                bids = payload.get("b") or payload.get("bids") or []
-                asks = payload.get("a") or payload.get("asks") or []
-                if bids:
-                    best = bids[0]
-                    bid = _safe_float(best[0] if isinstance(best, (list, tuple)) else best.get("p"), self.bid or 0.0)
-                    self.bid_size = max(0.0, _safe_float(best[1] if isinstance(best, (list, tuple)) else best.get("q"), self.bid_size))
-                else:
-                    bid = self.bid or 0.0
-                if asks:
-                    best = asks[0]
-                    ask = _safe_float(best[0] if isinstance(best, (list, tuple)) else best.get("p"), self.ask or 0.0)
-                    self.ask_size = max(0.0, _safe_float(best[1] if isinstance(best, (list, tuple)) else best.get("q"), self.ask_size))
-                else:
-                    ask = self.ask or 0.0
+                # Binance diff-depth is a delta stream, not a standalone L2 snapshot.
+                # Do not pretend its first level is the best level. Track activity only
+                # until a proper sequence-aware depth reducer is available.
+                bid_deltas = payload.get("b") or payload.get("bids") or []
+                ask_deltas = payload.get("a") or payload.get("asks") or []
+                update_count = len(bid_deltas) + len(ask_deltas)
+                self.depth_activity.update(float(update_count))
+                self.last_book_received = received_time
+                return
             if bid > 0:
                 self.bid = bid
             if ask > 0:
@@ -247,6 +246,7 @@ class SymbolMicrostructure:
             "microprice_gap_bps": float(max(-1000.0, min(1000.0, microprice_gap_bps))),
             "trade_flow_z": float(max(-12.0, min(12.0, flow_z))),
             "trade_intensity": float(min(1e6, intensity)),
+            "depth_activity": float(min(1e6, self.depth_activity.value)),
             "realized_vol_bps": float(min(1e6, vol_bps)),
             "transport_age_ms": float(transport_age_ms if math.isfinite(transport_age_ms) else 1e9),
             "mid": float(mid),
@@ -468,6 +468,7 @@ class AdaptiveOpportunityClock:
         self.global_model = DiscreteHazardLearner(len(FEATURE_NAMES), self.horizons_ms)
         self.pair_models: dict[str, DiscreteHazardLearner] = {}
         self.pending: dict[str, PendingOpportunity] = {}
+        self.pending_by_pair: dict[str, str] = {}
         self.last_impulse_received: dict[str, datetime] = {}
         self.events_seen = 0
         self.opportunities_started = 0
@@ -489,6 +490,7 @@ class AdaptiveOpportunityClock:
             max(-50.0, min(50.0, l["microprice_gap_bps"])),
             max(-6.0, min(6.0, l["trade_flow_z"])),
             min(20.0, math.log1p(l["trade_intensity"])),
+            min(20.0, math.log1p(l["depth_activity"])),
             min(20.0, math.log1p(l["realized_vol_bps"])),
             min(1_000.0, l["transport_age_ms"]),
             t["imbalance"],
@@ -496,10 +498,12 @@ class AdaptiveOpportunityClock:
             max(-50.0, min(50.0, t["microprice_gap_bps"])),
             max(-6.0, min(6.0, t["trade_flow_z"])),
             min(20.0, math.log1p(t["trade_intensity"])),
+            min(20.0, math.log1p(t["depth_activity"])),
             min(20.0, math.log1p(t["realized_vol_bps"])),
             min(1_000.0, t["transport_age_ms"]),
             max(-2.0, min(2.0, l["imbalance"] - t["imbalance"])),
             max(-12.0, min(12.0, l["trade_flow_z"] - t["trade_flow_z"])),
+            max(-10.0, min(10.0, math.log1p(l["depth_activity"]) - math.log1p(t["depth_activity"]))),
             max(-10.0, min(10.0, math.log1p(l["realized_vol_bps"]) - math.log1p(t["realized_vol_bps"]))),
             max(-1_000.0, min(1_000.0, l["transport_age_ms"] - t["transport_age_ms"])),
         ]
@@ -541,11 +545,23 @@ class AdaptiveOpportunityClock:
                     continue
                 if pending.baseline_target_price <= 0:
                     continue
+                duration = _ms(received_time, pending.detected_received_time)
+                # Reactions after the modeled opportunity window are censored,
+                # never positive labels.
+                if duration > MAX_OPPORTUNITY_MS:
+                    continue
                 signed = pending.direction * 10_000.0 * math.log(price / pending.baseline_target_price)
                 if signed >= REACTION_THRESHOLD_BPS:
-                    duration = _ms(received_time, pending.detected_received_time)
                     outcomes.append(self._resolve(pending, duration, event_id, observed=True, signed_return_bps=signed, learn=learn))
                     self.pending.pop(opportunity_id, None)
+                self.pending_by_pair.pop(
+                    self._pair(pending.leader_symbol, pending.target_symbol),
+                    None,
+                )
+                    self.pending_by_pair.pop(
+                        self._pair(pending.leader_symbol, pending.target_symbol),
+                        None,
+                    )
 
             # Leader impulse detection uses only the current symbol's own received order.
             state = self.book.symbols.get(symbol.upper())
@@ -574,6 +590,8 @@ class AdaptiveOpportunityClock:
                 ):
                     continue
                 pair = self._pair(symbol, target)
+                if pair in self.pending_by_pair:
+                    continue
                 features = self._features(symbol, target, received_time, recent_bps)
                 opportunity_id = hashlib.sha256(
                     json.dumps(
@@ -598,6 +616,7 @@ class AdaptiveOpportunityClock:
                     replay_fingerprint=replay_fingerprint,
                     created_at=received_time,
                 )
+                self.pending_by_pair[pair] = opportunity_id
                 self.opportunities_started += 1
 
         # Expire/censor after processing this event, preserving PIT ordering.
@@ -729,6 +748,7 @@ class AdaptiveOpportunityClock:
             "training_updates": self.training_updates,
             "resolved": self.resolved,
             "censored": self.censored,
+            "pending_by_pair": dict(self.pending_by_pair),
             "last_impulse_received": {symbol: dt.isoformat() for symbol, dt in self.last_impulse_received.items()},
             "pending": [
                 {
@@ -774,6 +794,11 @@ class AdaptiveOpportunityClock:
                 created_at=_dt(row["created_at"]),
             )
             engine.pending[pending.opportunity_id] = pending
+        engine.pending_by_pair = {
+            str(pair): str(opportunity_id)
+            for pair, opportunity_id in (payload.get("pending_by_pair") or {}).items()
+            if opportunity_id in engine.pending
+        }
         return engine
 
 
