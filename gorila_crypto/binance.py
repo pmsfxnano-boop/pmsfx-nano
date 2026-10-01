@@ -15,20 +15,22 @@ transport and sequencing boundary before a 24/7 worker is introduced.
 from __future__ import annotations
 
 import json
+import queue
+import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Iterator, Mapping
-from urllib.parse import urlencode
 
 import httpx
 import websocket
 
 
-SPOT_WS_BASE = "wss://stream.binance.com:9443/stream"
-SPOT_REST_BASE = "https://api.binance.com"
+# Binance's official public market-data-only endpoints.
+SPOT_WS_BASE = "wss://data-stream.binance.vision:443/stream"
+SPOT_REST_BASE = "https://data-api.binance.vision"
 DEFAULT_DEPTH_SPEED = "100ms"
 DEFAULT_DEPTH_LIMIT = 5000
 
@@ -136,8 +138,9 @@ def build_stream_names(config: BinanceStreamConfig) -> tuple[str, ...]:
 
 
 def build_ws_url(config: BinanceStreamConfig) -> str:
-    query = urlencode({"streams": "/".join(build_stream_names(config))})
-    return f"{config.ws_base_url}?{query}"
+    # Preserve Binance's documented combined-stream separators and '@' tokens.
+    streams = "/".join(build_stream_names(config))
+    return f"{config.ws_base_url}?streams={streams}"
 
 
 def unwrap_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -165,6 +168,8 @@ def normalize_trade(
         raise InvalidMarketEvent("trade event missing symbol/trade id")
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_provider"] = "binance"
+    payload["_event_time_semantics"] = "PROVIDER_EVENT_TIME"
     return NormalizedMarketEvent(
         symbol=symbol,
         event_type="trade",
@@ -191,6 +196,7 @@ def normalize_book_ticker(
     symbol = str(data["s"]).upper()
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_provider"] = "binance"
     payload["_event_time_semantics"] = "RECEIVE_TIME_ONLY"
     return NormalizedMarketEvent(
         symbol=symbol,
@@ -226,6 +232,8 @@ def normalize_depth(
         raise InvalidMarketEvent("depth event bids/asks must be lists")
     received = received_time or datetime.now(timezone.utc)
     payload = dict(data)
+    payload["_provider"] = "binance"
+    payload["_event_time_semantics"] = "PROVIDER_EVENT_TIME"
     return NormalizedMarketEvent(
         symbol=symbol,
         event_type="depthUpdate",
@@ -233,6 +241,7 @@ def normalize_depth(
         received_time=received,
         source="binance.websocket.depth",
         payload=payload,
+        provider_time=_epoch_ms(data.get("E"), "E"),
         sequence_start=int(first_id),
         sequence_end=int(final_id),
         sequence_kind="book_update_id",
@@ -426,11 +435,15 @@ class BinanceRestClient:
 
 
 class BinanceSpotMarketAdapter:
-    """Single-connection market stream adapter.
+    """Binance market-stream transport with per-symbol isolation.
 
-    This object is a transport component. It does not start automatically and it
-    does not make forecasts or trading decisions.
+    For multi-symbol capture each symbol owns an independent WebSocket transport.
+    This keeps one symbol's stream health from suppressing the others while the
+    research protocol still treats the three-symbol set as one prospective cohort.
     """
+
+
+    source_family = "binance.websocket.market"
 
     def __init__(
         self,
@@ -457,12 +470,14 @@ class BinanceSpotMarketAdapter:
         }
 
     def connect(self):
-        return websocket.create_connection(
-            self.connection_url(),
+        ws = websocket.create_connection(
+            self.config.ws_base_url,
             timeout=self.config.recv_timeout_s,
             ping_interval=self.config.ping_interval_s,
             enable_multithread=True,
         )
+        ws.send(json.dumps(self.subscription_request(), separators=(",", ":")))
+        return ws
 
     def iter_events_once(self, *, ws) -> Iterator[NormalizedMarketEvent]:
         connected_ns = time.time_ns()
@@ -483,6 +498,9 @@ class BinanceSpotMarketAdapter:
                 raise InvalidMarketEvent("Binance websocket payload is not valid JSON") from exc
             if not isinstance(message, Mapping):
                 raise InvalidMarketEvent("Binance websocket message must be an object")
+            if "result" in message and "id" in message:
+                # Binance control-plane acknowledgement, not market data.
+                continue
             event = normalize_market_message(
                 message,
                 received_ns=received_ns,
@@ -500,7 +518,7 @@ class BinanceSpotMarketAdapter:
         except Exception:
             pass
 
-    def iter_forever(
+    def _iter_forever_single(
         self,
         *,
         stop_event=None,
@@ -508,12 +526,7 @@ class BinanceSpotMarketAdapter:
         initial_backoff_s: float = 1.0,
         max_backoff_s: float = 60.0,
     ) -> Iterator[NormalizedMarketEvent]:
-        """Reconnect with bounded exponential backoff.
-
-        The stream URL embeds the subscription, so no extra SUBSCRIBE control
-        message is necessary after connect. A controlled reconnect is also the
-        normal path before Binance's documented 24-hour connection boundary.
-        """
+        """Run one symbol socket with bounded reconnect backoff."""
         backoff = max(0.1, float(initial_backoff_s))
         while stop_event is None or not stop_event.is_set():
             ws = None
@@ -524,7 +537,17 @@ class BinanceSpotMarketAdapter:
                 ws = self.connect()
                 backoff = max(0.1, float(initial_backoff_s))
                 if on_connection:
-                    on_connection("CONNECTED", {"at": datetime.now(timezone.utc).isoformat()})
+                    on_connection(
+                        "SUBSCRIBE_SENT",
+                        {
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "streams": list(build_stream_names(self.config)),
+                        },
+                    )
+                    on_connection(
+                        "CONNECTED",
+                        {"at": datetime.now(timezone.utc).isoformat()},
+                    )
                 for event in self.iter_events_once(ws=ws):
                     yield event
                     if stop_event is not None and stop_event.is_set():
@@ -553,6 +576,95 @@ class BinanceSpotMarketAdapter:
             finally:
                 if ws is not None:
                     self.close(ws)
+
+    def iter_forever(
+        self,
+        *,
+        stop_event=None,
+        on_connection: Callable[[str, dict[str, Any]], None] | None = None,
+        initial_backoff_s: float = 1.0,
+        max_backoff_s: float = 60.0,
+    ) -> Iterator[NormalizedMarketEvent]:
+        """Run isolated symbol sockets and merge their normalized events."""
+        if len(self.config.symbols) == 1:
+            yield from self._iter_forever_single(
+                stop_event=stop_event,
+                on_connection=on_connection,
+                initial_backoff_s=initial_backoff_s,
+                max_backoff_s=max_backoff_s,
+            )
+            return
+
+        merged: queue.Queue[NormalizedMarketEvent] = queue.Queue(maxsize=20000)
+        worker_stop = threading.Event()
+        threads: list[threading.Thread] = []
+        worker_errors: list[str] = []
+
+        def run_symbol(symbol: str) -> None:
+            child_config = replace(self.config, symbols=(symbol,))
+            child = BinanceSpotMarketAdapter(
+                child_config,
+                rest_client=self.rest_client,
+                event_sink=None,
+            )
+
+            def child_connection(status: str, metadata: dict[str, Any]) -> None:
+                enriched = {
+                    **metadata,
+                    "symbol": symbol,
+                    "connection_scope": "SYMBOL_ISOLATED",
+                }
+                if on_connection is not None:
+                    on_connection(status, enriched)
+
+            try:
+                for event in child._iter_forever_single(
+                    stop_event=worker_stop,
+                    on_connection=child_connection,
+                    initial_backoff_s=initial_backoff_s,
+                    max_backoff_s=max_backoff_s,
+                ):
+                    while not worker_stop.is_set():
+                        try:
+                            merged.put(event, timeout=1.0)
+                            break
+                        except queue.Full:
+                            continue
+            except Exception as exc:
+                worker_errors.append(f"{symbol}:{type(exc).__name__}:{exc}")
+                if on_connection is not None:
+                    on_connection(
+                        "ERROR",
+                        {
+                            "symbol": symbol,
+                            "connection_scope": "SYMBOL_ISOLATED",
+                            "error": worker_errors[-1],
+                        },
+                    )
+
+        for symbol in self.config.symbols:
+            thread = threading.Thread(
+                target=run_symbol,
+                args=(symbol,),
+                name=f"binance-{symbol.lower()}",
+                daemon=True,
+            )
+            threads.append(thread)
+            thread.start()
+
+        try:
+            while stop_event is None or not stop_event.is_set():
+                try:
+                    yield merged.get(timeout=1.0)
+                except queue.Empty:
+                    if not any(thread.is_alive() for thread in threads):
+                        if worker_errors:
+                            raise BinanceAdapterError("; ".join(worker_errors))
+                        raise BinanceAdapterError("all Binance symbol workers stopped")
+        finally:
+            worker_stop.set()
+            for thread in threads:
+                thread.join(timeout=2.0)
                 if on_connection:
                     on_connection(
                         "DISCONNECTED",
