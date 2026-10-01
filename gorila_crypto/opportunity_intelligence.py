@@ -584,7 +584,7 @@ class AdaptiveOpportunityClock:
         *,
         observed: bool,
         signed_return_bps: float,
-        learn: bool = true,
+        learn: bool = True,
     ) -> dict[str, Any]:
         pair = self._pair(pending.leader_symbol, pending.target_symbol)
         global_out = {}
