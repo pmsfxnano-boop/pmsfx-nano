@@ -518,11 +518,17 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
 
         status = health_by_symbol.get(symbol, {}).get("status", "UNKNOWN")
         spread_bps = None
+        imbalance = None
         if book and book.get("bid") is not None and book.get("ask") is not None:
             bid_value = float(book["bid"])
             ask_value = float(book["ask"])
             if bid_value > 0:
                 spread_bps = (ask_value / bid_value - 1.0) * 10000.0
+            bid_qty_value = float(book.get("bid_qty") or 0.0)
+            ask_qty_value = float(book.get("ask_qty") or 0.0)
+            denom = bid_qty_value + ask_qty_value
+            if denom > 0:
+                imbalance = (bid_qty_value - ask_qty_value) / denom
         summary.append(
             {
                 "symbol": symbol,
@@ -534,6 +540,7 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
                 "bid_qty": book["bid_qty"] if book else None,
                 "ask_qty": book["ask_qty"] if book else None,
                 "spread_bps": spread_bps,
+                "imbalance": imbalance,
                 "freshness_ms": freshness_ms,
                 "last_trade_time": trade_times[-1] if trade_times else None,
                 "last_book_time": book["received_time"] if book else None,
@@ -628,7 +635,7 @@ def market_history(
                         (array_agg(price ORDER BY event_time DESC, ledger_seq DESC))[1]::double precision AS close
                     FROM buckets
                     GROUP BY bucket
-                    ORDER BY bucket ASC
+                    ORDER BY bucket DESC
                     LIMIT %s
                 )
                 SELECT
