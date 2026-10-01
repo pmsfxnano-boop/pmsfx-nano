@@ -123,10 +123,11 @@ export interface ConfigResponse extends AnyMap {
   quality_required_event_types: string[];
 }
 
-// Canonical production crypto capture service.
+// The production terminal uses a same-origin gateway. This removes browser-to-API
+// DNS/CORS fragility while the gateway forwards /api/crypto/* to the durable service.
 export const API_BASE = (
   import.meta.env.VITE_CRYPTO_API_BASE_URL ||
-  "https://gorila-crypto-cleanroom-binance-capture.onrender.com"
+  (typeof window !== "undefined" ? window.location.origin : "https://gorila-crypto-cleanroom-binance-capture.onrender.com")
 ).replace(/\/$/, "");
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
