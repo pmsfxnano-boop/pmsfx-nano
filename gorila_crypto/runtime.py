@@ -993,6 +993,13 @@ class ProspectiveCryptoIngestor:
                         ),
                         metadata={"stale_runs_reconciled": stale},
                     )
+                    if (
+                        isinstance(self.store, QuantCryptoStore)
+                        and self.protocol.version == "3"
+                    ):
+                        self.store.purge_legacy_unvalidated_events(
+                            keep_study_id=self.protocol.study_id
+                        )
 
                 if self.run_id is None:
                     self.run_id = self.store.start_runtime_run_scoped(
