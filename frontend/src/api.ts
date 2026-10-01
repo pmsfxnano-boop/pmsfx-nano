@@ -123,9 +123,10 @@ export interface ConfigResponse extends AnyMap {
   quality_required_event_types: string[];
 }
 
+// Canonical production crypto capture service.
 export const API_BASE = (
   import.meta.env.VITE_CRYPTO_API_BASE_URL ||
-  "https://gorila-crypto-cleanroom-binance.onrender.com"
+  "https://gorila-crypto-cleanroom-binance-capture.onrender.com"
 ).replace(/\/$/, "");
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
