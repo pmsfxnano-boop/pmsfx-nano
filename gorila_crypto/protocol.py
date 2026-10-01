@@ -172,7 +172,7 @@ class CryptoStudyProtocol:
         self.validate()
         event_types = self.normalized_event_types or self.streams
         persisted_trade_min = self.min_trade_rows_per_symbol
-        if self.provider == "binance" and self.version == "3":
+        if self.provider == "binance" and self.version in {"3", "4"}:
             persisted_trade_min = max(
                 1,
                 math.ceil(
