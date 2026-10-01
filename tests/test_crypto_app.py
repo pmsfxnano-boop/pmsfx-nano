@@ -29,9 +29,14 @@ def test_capture_health_fails_closed_when_worker_dies(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "_capture_block_reason", None)
     monkeypatch.setattr(app_module, "_runtime_thread", None)
 
-    payload = app_module.health()
-    assert payload["status"] == "CAPTURE_WORKER_DEAD"
-    assert payload["worker_alive"] is False
+    try:
+        app_module.health()
+    except HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail["status"] == "CAPTURE_WORKER_DEAD"
+        assert exc.detail["worker_alive"] is False
+    else:
+        raise AssertionError("capture health accepted a dead ingest worker")
 
 def test_capture_health_is_liveness_only_when_symbols_are_stale(monkeypatch) -> None:
     monkeypatch.setattr(app_module, "settings", replace(settings, ingest_enabled=True))
