@@ -337,3 +337,34 @@ def test_postgres_normal_connections_do_not_take_schema_advisory_lock(
     second.init()
     second_calls = conn.sql[before_second_init:]
     assert not any("pg_advisory_xact_lock" in sql for sql in second_calls)
+
+
+
+def test_postgres_connections_require_tls(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.closed = False
+        def cursor(self):
+            raise AssertionError("cursor should not be needed")
+        def close(self):
+            self.closed = True
+
+    captured: list[str] = []
+
+    def fake_connect(url: str):
+        captured.append(url)
+        return FakeConnection()
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=fake_connect))
+
+    db_url = "postgresql://user:pass@example.test:5432/crypto_lock_tls"
+    store = CryptoStore(database_url=db_url)
+
+    conn = store.connect()
+    conn.close()
+
+    assert captured
+    assert "sslmode=require" in captured[0]
