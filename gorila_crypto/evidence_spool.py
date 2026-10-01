@@ -240,6 +240,88 @@ class EvidenceSpool:
             finally:
                 pass
 
+    def peek_many(self, *, max_batches: int = 16, max_rows: int = 4000) -> list[SpoolBatch]:
+        """Read an ordered batch group so durable replay amortizes SQLite/PG round trips."""
+        max_batches = max(1, int(max_batches))
+        max_rows = max(1, int(max_rows))
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT batch_id,created_at,payload_json,payload_zlib,byte_count
+                    FROM evidence_spool_batches
+                    ORDER BY batch_id
+                    LIMIT ?
+                    """,
+                    (max_batches,),
+                ).fetchall()
+                output: list[SpoolBatch] = []
+                total_rows = 0
+                for row in rows:
+                    payload_json = str(row["payload_json"] or "")
+                    if row["payload_zlib"] is not None:
+                        payload_json = zlib.decompress(
+                            bytes(row["payload_zlib"])
+                        ).decode("utf-8")
+                    decoded = list(json.loads(payload_json))
+                    if not decoded:
+                        continue
+                    if output and total_rows + len(decoded) > max_rows:
+                        break
+                    if not output and len(decoded) > max_rows:
+                        decoded = decoded[:max_rows]
+                    output.append(
+                        SpoolBatch(
+                            batch_id=int(row["batch_id"]),
+                            created_at=str(row["created_at"]),
+                            rows=decoded,
+                            byte_count=int(row["byte_count"]),
+                        )
+                    )
+                    total_rows += len(decoded)
+                    if total_rows >= max_rows:
+                        break
+                return output
+            finally:
+                pass
+
+    def delete_many(self, batch_ids: Iterable[int]) -> None:
+        ids = [int(value) for value in batch_ids]
+        if not ids:
+            return
+        with self._lock:
+            conn = self._connect()
+            try:
+                placeholders = ",".join("?" for _ in ids)
+                rows = conn.execute(
+                    f"""
+                    SELECT batch_id,byte_count
+                    FROM evidence_spool_batches
+                    WHERE batch_id IN ({placeholders})
+                    """,
+                    ids,
+                ).fetchall()
+                if not rows:
+                    return
+                removed_bytes = sum(int(row["byte_count"]) for row in rows)
+                conn.execute(
+                    f"DELETE FROM evidence_spool_batches WHERE batch_id IN ({placeholders})",
+                    ids,
+                )
+                conn.execute(
+                    """
+                    UPDATE evidence_spool_state
+                    SET queued_bytes=MAX(0, queued_bytes-?),
+                        queued_batches=MAX(0, queued_batches-?)
+                    WHERE state_id=1
+                    """,
+                    (removed_bytes, len(rows)),
+                )
+                conn.commit()
+            finally:
+                pass
+
     def delete(self, batch_id: int) -> None:
         with self._lock:
             conn = self._connect()
