@@ -98,7 +98,7 @@ function SectionTitle({
 }: {
   kicker?: string;
   title: string;
-  right?: React.ReactNode;
+  right?: ReactNode;
 }) {
   return (
     <div className="section-title">
@@ -321,6 +321,7 @@ function SymbolRail({
   selected,
   symbols,
   onSelect,
+  eventsBySymbol,
 }: {
   selected: SymbolId;
   symbols: SymbolSnapshot[];
@@ -349,7 +350,7 @@ function SymbolRail({
               <strong>{fmtPrice(data?.price ?? null)}</strong>
               <span>{fmtMs(data?.freshness_ms ?? null)}</span>
             </div>
-            <Spark value={data?.window_change_pct ?? 0} />
+            <Spark events={eventsBySymbol[symbol] ?? []} />
           </button>
         );
       })}
