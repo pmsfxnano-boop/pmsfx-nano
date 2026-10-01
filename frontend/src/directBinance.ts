@@ -87,8 +87,9 @@ export function createDirectBinanceFeed(
         try {
           const envelope = JSON.parse(String(message.data)) as {
             data?: Record<string, unknown>;
+            [key: string]: unknown;
           };
-          const data = envelope.data || envelope;
+          const data = (envelope.data ?? envelope) as Record<string, unknown>;
           const type = String(data.e || "");
           const symbol = String(data.s || "").toUpperCase();
           if (!SYMBOLS.includes(symbol)) return;
