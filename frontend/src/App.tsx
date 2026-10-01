@@ -887,7 +887,7 @@ export default function App() {
         <Brand />
         <TopNav view={view} onView={setView} />
         <div className="topbar-right">
-          <Status status={headerStatus} />
+          <Status status={headerLabel} />
           <span className="latency-label">{durability === "DEGRADED" ? "HOT MARKET · LEDGER DEGRADED" : "READ MODEL · HOT"}</span>
         </div>
       </header>
