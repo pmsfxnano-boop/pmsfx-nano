@@ -39,6 +39,7 @@ _runtime_thread: threading.Thread | None = None
 _quality_thread: threading.Thread | None = None
 _research_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
+_maintenance_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
 
@@ -133,6 +134,27 @@ def _safe_store_stats() -> dict[str, Any] | None:
         return None
 
 
+def _runtime_operational_snapshot() -> dict[str, Any]:
+    runtime = _runtime
+    if runtime is None:
+        return {
+            "market_plane": "STARTING",
+            "durability": "UNKNOWN",
+            "persistence_queue_batches": 0,
+        }
+    method = getattr(runtime, "operational_snapshot", None)
+    if callable(method):
+        try:
+            return dict(method())
+        except Exception:
+            pass
+    return {
+        "market_plane": "LIVE" if runtime is not None else "STARTING",
+        "durability": "UNKNOWN",
+        "persistence_queue_batches": 0,
+    }
+
+
 def _storage_backend_status() -> str:
     if not settings.ingest_enabled:
         return "NOT_REQUIRED"
@@ -204,6 +226,36 @@ def _heartbeat_loop() -> None:
             )
         _stop_event.wait(settings.heartbeat_interval_seconds)
 
+
+def _maintenance_loop() -> None:
+    """Run bounded storage maintenance outside the market hot path."""
+    store = _new_store()
+    first_run = True
+    while not _stop_event.is_set():
+        try:
+            result = store.maintain_storage(
+                trade_retention_hours=settings.retention_trade_hours,
+                bookticker_retention_hours=settings.retention_bookticker_hours,
+                depth_retention_hours=settings.retention_depth_hours,
+                vacuum=first_run,
+            )
+            print(
+                "GORILA_STORAGE_MAINTENANCE "
+                + json.dumps(
+                    result,
+                    sort_keys=True,
+                    default=str,
+                ),
+                flush=True,
+            )
+            first_run = False
+        except Exception as exc:
+            print(
+                "GORILA_STORAGE_MAINTENANCE_ERROR "
+                + f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        _stop_event.wait(settings.storage_maintenance_interval_seconds)
 
 def _required_quality_event_types() -> tuple[str, ...]:
     event_types = ["trade"]
@@ -329,7 +381,7 @@ def _research_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _capture_block_reason
+    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _maintenance_thread, _capture_block_reason
     _stop_event.clear()
     _capture_block_reason = None
 
@@ -392,6 +444,13 @@ async def lifespan(app: FastAPI):
             )
             _heartbeat_thread.start()
 
+            _maintenance_thread = threading.Thread(
+                target=_maintenance_loop,
+                name="gorila-crypto-storage-maintenance",
+                daemon=True,
+            )
+            _maintenance_thread.start()
+
             if settings.quality_monitor_enabled:
                 _quality_thread = threading.Thread(
                     target=_quality_loop,
@@ -421,6 +480,8 @@ async def lifespan(app: FastAPI):
         _research_thread.join(timeout=5.0)
     if _heartbeat_thread is not None:
         _heartbeat_thread.join(timeout=5.0)
+    if _maintenance_thread is not None:
+        _maintenance_thread.join(timeout=5.0)
 
 
 app = FastAPI(
@@ -453,9 +514,7 @@ app.add_middleware(
 
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, Any]:
-    stats = _safe_store_stats()
-    if stats is not None:
-        print("GORILA_PROSPECTIVE_STATS " + json.dumps(stats, sort_keys=True, default=str), flush=True)
+    stats = _runtime_operational_snapshot() if _runtime is not None else None
     return {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -480,12 +539,7 @@ def root() -> dict[str, Any]:
 
 @app.get("/api/crypto/market/stream")
 def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
-    """Low-latency read contract backed by the durable-commit market cache.
-
-    PostgreSQL remains the ledger of record. The hot read path serves only a
-    bounded in-process projection that is updated after successful persistence,
-    keeping frontend latency independent of database query latency.
-    """
+    """Low-latency market contract backed by the independent hot market plane."""
     if not settings.ingest_enabled:
         raise HTTPException(status_code=503, detail="capture_not_enabled")
 
@@ -558,6 +612,7 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
             denom = bid_qty_value + ask_qty_value
             if denom > 0:
                 imbalance = (bid_qty_value - ask_qty_value) / denom
+
         summary.append(
             {
                 "symbol": symbol,
@@ -576,22 +631,21 @@ def market_stream(cursor: int = 0, limit: int = 360) -> dict[str, Any]:
             }
         )
 
-    next_cursor = max(
-        [int(event["ledger_seq"]) for event in events] + [int(cursor)]
-    )
-    status = (
-        "LIVE"
-        if summary and all(row["status"] == "LIVE" for row in summary) and events
-        else "DEGRADED"
-    )
-
+    all_symbols_live = bool(summary) and all(row["status"] == "LIVE" for row in summary)
+    durability = snapshot.get("persistence") or {}
+    durable_healthy = not bool(durability.get("degraded"))
     return {
-        "status": status,
+        "status": "LIVE" if all_symbols_live and events else "DEGRADED",
+        "market_status": "LIVE" if all_symbols_live and events else "DEGRADED",
+        "durability_status": "LIVE" if durable_healthy else "DEGRADED",
         "server_time": now.isoformat(),
-        "next_cursor": next_cursor,
+        "next_cursor": snapshot["next_cursor"],
+        "cursor_kind": snapshot["cursor_kind"],
+        "last_durable_stream_seq": snapshot["last_durable_stream_seq"],
         "symbols": summary,
         "events": events,
         "cache_events_available": snapshot["cache_events_available"],
+        "persistence": durability,
         "forecast": {"automatic_promotion": False, "execution": False},
     }
 
@@ -735,6 +789,7 @@ def health() -> dict[str, Any]:
     symbols_live = bool(symbol_health) and all(
         row.get("status") == "LIVE" for row in symbol_health
     )
+    runtime_snapshot = _runtime_operational_snapshot()
     payload = {
         "service": "gorila-crypto",
         "domain": "crypto",
@@ -759,6 +814,7 @@ def health() -> dict[str, Any]:
             "delayed_max_age_seconds": DELAYED_MAX_AGE_SECONDS,
         },
         "storage_backend": _storage_backend_status(),
+        "market_plane": runtime_snapshot,
         "health_contract": "lightweight_no_ledger_scan",
         "forecast": {
             "automatic_promotion": False,
@@ -793,29 +849,23 @@ def prospective_status() -> dict[str, Any]:
             "automatic_promotion": False,
             "execution": False,
         }
-    store = _new_store()
     symbol_health = _runtime.symbol_health() if _runtime is not None else []
-    if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider:
-        session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
-        health_rows = [
-            row for row in store.health(source_prefix="binance.websocket.")
-            if row.get("last_event_time") is not None
-        ]
-        stats = store.scoped_stats(
-            study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
-            capture_session_id=session_id,
-        )
-    else:
-        health_rows = store.health(
-            source_prefix=f"{settings.provider}.websocket.",
-        )
-        stats = store.prospective_stats(
-            source_prefix=f"{settings.provider}.websocket.",
-        )
+    runtime_snapshot = _runtime_operational_snapshot()
+    store = _new_store()
+    health_rows = [
+        row for row in store.health(source_prefix="binance.websocket.")
+        if row.get("last_event_time") is not None
+    ]
     return {
         "status": "CAPTURE_ENABLED" if settings.ingest_enabled else "CAPTURE_DISABLED",
         "worker_alive": bool(_runtime_thread and _runtime_thread.is_alive()),
-        "ledger": stats,
+        "ledger": {
+            "backend": store.backend,
+            "capture_session_id": store.active_capture_session(
+                PREREGISTERED_CRYPTO_PROTOCOL.study_id
+            ) if settings.provider == PREREGISTERED_CRYPTO_PROTOCOL.provider else None,
+            "hot_path": runtime_snapshot,
+        },
         "source_health": health_rows,
         "symbol_health": symbol_health,
         "symbols_live": bool(symbol_health) and all(
@@ -854,4 +904,10 @@ def config_snapshot() -> dict[str, Any]:
         ),
         "durable_storage_required_when_ingesting": settings.ingest_enabled,
         "storage_backend": _storage_backend_status(),
+        "persist_bookticker_interval_seconds": settings.persist_bookticker_interval_seconds,
+        "persistence_queue_batches": settings.persistence_queue_batches,
+        "storage_maintenance_interval_seconds": settings.storage_maintenance_interval_seconds,
+        "retention_trade_hours": settings.retention_trade_hours,
+        "retention_bookticker_hours": settings.retention_bookticker_hours,
+        "retention_depth_hours": settings.retention_depth_hours,
     }

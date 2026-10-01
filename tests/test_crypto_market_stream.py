@@ -29,11 +29,12 @@ def _seed_cache() -> None:
         "received_time": "2026-10-01T03:40:00.020000+00:00",
         "payload": {"b": "99.9", "a": "100.1", "B": "2.0", "A": "3.0"},
     }
+    observed = MARKET_CACHE.append_observed([trade, book])
     results = [
-        {"ledger_seq": 101, "event_id": "trade-1", "event_key": "trade-key"},
-        {"ledger_seq": 999, "event_id": "book-1", "event_key": "book-key"},
+        {"ledger_seq": 101, "event_id": "trade-1", "event_key": observed[0].event_key, "inserted": True},
+        {"ledger_seq": 999, "event_id": "book-1", "event_key": observed[1].event_key, "inserted": True},
     ]
-    MARKET_CACHE.append_persisted([trade, book], results)
+    MARKET_CACHE.mark_persisted([trade, book], results)
 
 
 def test_market_stream_bootstrap_keeps_side_snapshot_out_of_cursor(monkeypatch) -> None:
@@ -55,8 +56,9 @@ def test_market_stream_bootstrap_keeps_side_snapshot_out_of_cursor(monkeypatch) 
 
     payload = app_module.market_stream(cursor=0, limit=36)
 
-    assert payload["next_cursor"] == 101
-    assert [row["ledger_seq"] for row in payload["events"]] == [101]
+    assert payload["next_cursor"] == 2
+    assert [row["stream_seq"] for row in payload["events"]] == [1]
+    assert payload["events"][0]["ledger_seq"] == 101
     assert payload["symbols"][0]["bid"] == 99.9
     assert payload["symbols"][0]["ask"] == 100.1
     assert payload["symbols"][0]["spread_bps"] > 0
@@ -79,10 +81,11 @@ def test_market_stream_incremental_cursor_includes_delivered_book_events(monkeyp
         ),
     )
 
-    payload = app_module.market_stream(cursor=100, limit=36)
+    payload = app_module.market_stream(cursor=1, limit=36)
 
-    assert payload["next_cursor"] == 999
-    assert [row["ledger_seq"] for row in payload["events"]] == [101, 999]
+    assert payload["next_cursor"] == 2
+    assert [row["stream_seq"] for row in payload["events"]] == [2]
+    assert payload["events"][0]["ledger_seq"] == 999
 
 
 def test_market_stream_fails_closed_when_capture_is_disabled(monkeypatch) -> None:
@@ -159,3 +162,33 @@ def test_market_history_rejects_unsupported_resolution(monkeypatch) -> None:
         app_module.market_history(symbol="BTCUSDT", resolution="13m", limit=60)
 
     assert exc.value.status_code == 400
+
+
+
+def test_market_cache_advances_before_durable_commit() -> None:
+    MARKET_CACHE.clear()
+    row = {
+        "symbol": "ETHUSDT",
+        "event_type": "trade",
+        "event_time": "2026-10-01T03:41:00+00:00",
+        "received_time": "2026-10-01T03:41:00.010000+00:00",
+        "source": "binance.websocket.trade",
+        "sequence_start": 77,
+        "sequence_end": 77,
+        "payload": {"p": "2000.0", "q": "0.25", "m": True},
+    }
+    observed = MARKET_CACHE.append_observed([row])
+    assert observed[0].stream_seq == 1
+    assert observed[0].durable is False
+
+    snapshot = MARKET_CACHE.snapshot(symbols=("ETHUSDT",), cursor=0, limit=32)
+    assert snapshot["next_cursor"] == 1
+    assert snapshot["events"][0]["durable"] is False
+
+    MARKET_CACHE.mark_persisted(
+        [row],
+        [{"ledger_seq": 1234, "event_key": observed[0].event_key, "inserted": True}],
+    )
+    snapshot = MARKET_CACHE.snapshot(symbols=("ETHUSDT",), cursor=0, limit=32)
+    assert snapshot["events"][0]["durable"] is True
+    assert snapshot["events"][0]["ledger_seq"] == 1234

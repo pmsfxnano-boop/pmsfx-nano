@@ -31,7 +31,7 @@ CRYPTO_SCHEMA_VERSION = 4
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crypto_events (
     ledger_seq BIGSERIAL PRIMARY KEY,
-    event_id TEXT NOT NULL UNIQUE,
+    event_id TEXT NOT NULL,
     event_key TEXT NOT NULL UNIQUE,
     symbol TEXT NOT NULL,
     event_type TEXT NOT NULL,
@@ -49,8 +49,6 @@ CREATE TABLE IF NOT EXISTS crypto_events (
 );
 CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_time
     ON crypto_events(symbol, event_time, ledger_seq);
-CREATE INDEX IF NOT EXISTS idx_crypto_events_received
-    ON crypto_events(received_time, ledger_seq);
 
 CREATE TABLE IF NOT EXISTS crypto_connection_events (
     connection_id TEXT PRIMARY KEY,
@@ -403,7 +401,7 @@ class CryptoStore:
             raise ValueError("crypto_sqlite_path_matches_legacy_storage")
         self._pg = bool(self.database_url)
         self._schema_ready = False
-        self._write_conn = None
+        self._write_local = threading.local()
 
     @property
     def backend(self) -> str:
@@ -429,15 +427,17 @@ class CryptoStore:
         return conn
 
     def _write_connection(self):
-        """Return a reusable writer connection for the hot ingestion path."""
+        """Return a reusable writer connection local to the calling thread."""
         self.init()
-        if self._write_conn is None:
-            self._write_conn = self.connect()
-        return self._write_conn
+        conn = getattr(self._write_local, "conn", None)
+        if conn is None or getattr(conn, "closed", False):
+            conn = self.connect()
+            self._write_local.conn = conn
+        return conn
 
     def close(self) -> None:
-        conn = self._write_conn
-        self._write_conn = None
+        conn = getattr(self._write_local, "conn", None)
+        self._write_local.conn = None
         if conn is not None:
             try:
                 conn.close()
@@ -471,6 +471,8 @@ class CryptoStore:
                             "idx_crypto_events_sequence",
                             "idx_crypto_events_symbol_type_ledger",
                             "idx_crypto_events_symbol_type_time",
+                            "idx_crypto_events_received",
+                            "crypto_events_event_id_key",
                         ):
                             cur.execute(
                                 f'DROP INDEX IF EXISTS "{index_name}"'
@@ -491,6 +493,83 @@ class CryptoStore:
             conn.commit()
         finally:
             conn.close()
+
+    def maintain_storage(
+        self,
+        *,
+        trade_retention_hours: float,
+        bookticker_retention_hours: float,
+        depth_retention_hours: float,
+        vacuum: bool = False,
+    ) -> dict[str, Any]:
+        """Bounded storage maintenance; never reads the full event ledger."""
+        self.init()
+        now = datetime.now(timezone.utc)
+        trade_cutoff = (
+            now.timestamp() - float(trade_retention_hours) * 3600.0
+        )
+        bookticker_cutoff = (
+            now.timestamp() - float(bookticker_retention_hours) * 3600.0
+        )
+        depth_cutoff = (
+            now.timestamp() - float(depth_retention_hours) * 3600.0
+        )
+
+        def iso_from_epoch(value: float) -> str:
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+        conn = self.connect()
+        deleted = {"trade": 0, "bookTicker": 0, "depthUpdate": 0}
+        try:
+            cutoff_specs = (
+                ("trade", iso_from_epoch(trade_cutoff)),
+                ("bookTicker", iso_from_epoch(bookticker_cutoff)),
+                ("depthUpdate", iso_from_epoch(depth_cutoff)),
+            )
+            if self._pg:
+                with conn.cursor() as cur:
+                    for event_type, cutoff in cutoff_specs:
+                        cur.execute(
+                            """
+                            DELETE FROM crypto_events
+                            WHERE event_type=%s AND received_time < %s
+                            """,
+                            (event_type, cutoff),
+                        )
+                        deleted[event_type] = int(cur.rowcount)
+                conn.commit()
+            else:
+                for event_type, cutoff in cutoff_specs:
+                    cur = conn.execute(
+                        """
+                        DELETE FROM crypto_events
+                        WHERE event_type=? AND received_time < ?
+                        """,
+                        (event_type, cutoff),
+                    )
+                    deleted[event_type] = int(cur.rowcount)
+                conn.commit()
+        finally:
+            conn.close()
+
+        if vacuum and self._pg:
+            vacuum_conn = self.connect()
+            try:
+                vacuum_conn.autocommit = True
+                with vacuum_conn.cursor() as cur:
+                    cur.execute("VACUUM (ANALYZE) crypto_events")
+            finally:
+                vacuum_conn.close()
+
+        return {
+            "deleted": deleted,
+            "vacuum": bool(vacuum and self._pg),
+            "retention_hours": {
+                "trade": float(trade_retention_hours),
+                "bookTicker": float(bookticker_retention_hours),
+                "depthUpdate": float(depth_retention_hours),
+            },
+        }
 
     def ping(self) -> bool:
         self.init()
@@ -1959,7 +2038,9 @@ class CryptoStore:
             conn.close()
 
     def health(self, *, source_prefix: str | None = None) -> list[dict[str, Any]]:
+        """Return source health with freshness recomputed at read time."""
         self.init()
+        now = datetime.now(timezone.utc)
         conn = self.connect()
         try:
             placeholder = "%s" if self._pg else "?"
@@ -1968,37 +2049,52 @@ class CryptoStore:
             if source_prefix is not None:
                 where = f" WHERE source LIKE {placeholder}"
                 params.append(source_prefix.rstrip("%") + "%")
-            if self._pg:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT source,status,updated_at,last_event_time,last_received_time,"
-                        "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                        "FROM crypto_source_health"
-                        + where
-                        + " ORDER BY source",
-                        params,
-                    )
-                    rows = cur.fetchall()
-                    return [
-                        dict(zip(
-                            [
-                                "source","status","updated_at","last_event_time",
-                                "last_received_time","event_age_seconds",
-                                "transport_age_seconds","rows_last_batch","error"
-                            ],
-                            row,
-                        ))
-                        for row in rows
-                    ]
 
-            rows = conn.execute(
+            sql = (
                 "SELECT source,status,updated_at,last_event_time,last_received_time,"
                 "event_age_seconds,transport_age_seconds,rows_last_batch,error "
-                "FROM crypto_source_health"
-                + where
-                + " ORDER BY source",
-                params,
-            ).fetchall()
-            return [dict(row) for row in rows]
+                "FROM crypto_source_health" + where + " ORDER BY source"
+            )
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    raw_rows = cur.fetchall()
+            else:
+                raw_rows = conn.execute(sql, params).fetchall()
+
+            names = [
+                "source","status","updated_at","last_event_time","last_received_time",
+                "event_age_seconds","transport_age_seconds","rows_last_batch","error"
+            ]
+            result: list[dict[str, Any]] = []
+            for raw in raw_rows:
+                row = dict(zip(names, raw))
+                last_received = row.get("last_received_time")
+                dynamic_age = None
+                if last_received:
+                    try:
+                        dt = datetime.fromisoformat(
+                            str(last_received).replace("Z", "+00:00")
+                        )
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        dynamic_age = max(
+                            0.0,
+                            (now - dt.astimezone(timezone.utc)).total_seconds(),
+                        )
+                    except ValueError:
+                        dynamic_age = None
+
+                if dynamic_age is not None:
+                    row["event_age_seconds"] = dynamic_age
+                    row["transport_age_seconds"] = dynamic_age
+                    if dynamic_age <= 90.0:
+                        row["status"] = "LIVE"
+                    elif dynamic_age <= 1800.0:
+                        row["status"] = "DELAYED"
+                    else:
+                        row["status"] = "STALE"
+                result.append(row)
+            return result
         finally:
             conn.close()

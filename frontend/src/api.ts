@@ -1,5 +1,8 @@
 export type StreamEvent = {
-  ledger_seq: number;
+  stream_seq: number;
+  ledger_seq: number | null;
+  durable: boolean;
+  event_key: string;
   symbol: string;
   event_type: "trade" | "bookTicker";
   event_time: string;
@@ -29,9 +32,18 @@ export type MarketStreamResponse = {
   status: string;
   server_time: string;
   next_cursor: number;
+  cursor_kind: string;
+  market_status: string;
+  durability_status: string;
+  last_durable_stream_seq: number;
   symbols: SymbolSnapshot[];
   events: StreamEvent[];
   cache_events_available?: number;
+  persistence?: {
+    degraded: boolean;
+    last_error: string | null;
+    dropped_events: number;
+  };
   forecast: {
     automatic_promotion: boolean;
     execution: boolean;
