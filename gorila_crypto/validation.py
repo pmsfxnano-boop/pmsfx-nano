@@ -11,12 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
+from .protocol import CryptoStudyProtocol, PREREGISTERED_CRYPTO_PROTOCOL
+from .research_gates import combinatorial_pbo, deflated_sharpe_p_value, holm_bonferroni
 from .forecast import (
     DetectionFeatureSnapshot,
     ForecastTargetSpec,
@@ -47,6 +49,8 @@ class ForecastLabel:
     label_received_time: datetime
     label_event_id: str
     horizon_ms: int
+    actual_event_horizon_ms: int | None = None
+    actual_receive_horizon_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -60,8 +64,8 @@ class WalkForwardConfig:
     min_train_rows: int = 200
     test_rows: int = 50
     step_rows: int = 50
-    purge_ms: int = 1000
-    embargo_ms: int = 1000
+    purge_ms: int = 5000
+    embargo_ms: int = 5000
     min_group_rows: int = 20
     min_fold_pass_fraction: float = 0.67
     temporal_max_logloss_rel_increase: float = 0.10
@@ -136,8 +140,8 @@ class ProbabilisticMetrics:
 class EconomicPolicySpec:
     long_threshold: float = 0.55
     short_threshold: float = 0.45
-    round_trip_cost_bps: float = 0.0
-    round_trip_slippage_bps: float = 0.0
+    round_trip_cost_bps: float = 1.0
+    round_trip_slippage_bps: float = 1.0
 
     def validate(self) -> None:
         if not 0.0 <= self.short_threshold < self.long_threshold <= 1.0:
@@ -217,6 +221,11 @@ class ValidationReport:
     stability_by_symbol: Mapping[str, ProbabilisticMetrics]
     stability_by_horizon_ms: Mapping[int, ProbabilisticMetrics]
     stress_results: Mapping[str, EconomicMetrics]
+    multiple_testing_p_value: float | None
+    dsr_p_value: float | None
+    pbo: float | None
+    research_robustness_status: str
+    research_robustness_reasons: tuple[str, ...]
     promotion_eligible: bool
 
 
@@ -233,9 +242,6 @@ def label_snapshot(
     if baseline is None:
         return None
 
-    # Conservative actionable horizon: do not credit a market move that
-    # occurred before the information was actually available. The target event
-    # must be after BOTH the event-time horizon and the receive-time horizon.
     future_cutoff = max(
         snapshot.decision_event_time + timedelta(milliseconds=target_spec.horizon_ms),
         snapshot.decision_received_time + timedelta(milliseconds=target_spec.horizon_ms),
@@ -251,6 +257,22 @@ def label_snapshot(
     if future is None:
         return None
 
+    actual_event_horizon_ms = int(
+        round(
+            (future.event_time - snapshot.decision_event_time).total_seconds()
+            * 1000.0
+        )
+    )
+    actual_receive_horizon_ms = int(
+        round(
+            (future.received_time - snapshot.decision_received_time).total_seconds()
+            * 1000.0
+        )
+    )
+    tolerance = int(target_spec.alignment_tolerance_ms)
+    if actual_receive_horizon_ms > target_spec.horizon_ms + tolerance:
+        return None
+
     raw_return = _log_return_bps(future.price, baseline.price)
     direction = 1.0 if snapshot.feature_values["leader_direction"] >= 0 else -1.0
     signed_return = direction * raw_return
@@ -263,6 +285,8 @@ def label_snapshot(
         label_received_time=_dt(future.received_time),
         label_event_id=future.event_id,
         horizon_ms=target_spec.horizon_ms,
+        actual_event_horizon_ms=actual_event_horizon_ms,
+        actual_receive_horizon_ms=actual_receive_horizon_ms,
     )
 
 
@@ -711,6 +735,77 @@ def temporal_stability_metrics(
     )
 
 
+class QualityGateBlocked(RuntimeError):
+    """Raised when OOS validation is attempted before data quality passes."""
+
+
+def require_quality_gate(
+    quality_report: Mapping[str, object],
+    *,
+    minimum_rows: int,
+    expected_replay_fingerprint: str | None = None,
+) -> None:
+    """Hard-stop OOS until the exact replay slice has passed data quality."""
+    if minimum_rows < 1:
+        raise ValueError("minimum_rows must be positive")
+    status = str(quality_report.get("status") or "")
+    rows = int(quality_report.get("rows") or 0)
+    if status != "PASS":
+        reasons = quality_report.get("reasons") or ()
+        raise QualityGateBlocked(
+            f"quality_gate_status={status or 'UNKNOWN'} reasons={tuple(reasons)}"
+        )
+    if rows < minimum_rows:
+        raise QualityGateBlocked(
+            f"quality_gate_rows={rows} below required minimum={minimum_rows}"
+        )
+    if expected_replay_fingerprint is not None:
+        actual_fingerprint = str(quality_report.get("replay_fingerprint") or "")
+        if actual_fingerprint != expected_replay_fingerprint:
+            raise QualityGateBlocked(
+                "quality_gate_replay_fingerprint_mismatch:"
+                f"expected={expected_replay_fingerprint} actual={actual_fingerprint}"
+            )
+
+
+def run_quality_gated_walk_forward(
+    dataset: Sequence[ForecastDatasetRow],
+    feature_names: Sequence[str],
+    config: WalkForwardConfig,
+    policy: EconomicPolicySpec,
+    *,
+    quality_report: Mapping[str, object],
+    minimum_quality_rows: int,
+    replay_fingerprint: str,
+    model_id: str = "crypto-ridge-logit-wf",
+    model_version: str = "1",
+    placebo_block_size: int = 20,
+    placebo_iterations: int = 500,
+    stress_scenarios: Sequence[StressScenario] = (),
+    candidate_strategy_returns: Sequence[Sequence[float]] = (),
+    protocol: CryptoStudyProtocol = PREREGISTERED_CRYPTO_PROTOCOL,
+) -> ValidationReport:
+    """Run PIT/OOS evaluation only after a passed quality gate."""
+    require_quality_gate(
+        quality_report,
+        minimum_rows=minimum_quality_rows,
+        expected_replay_fingerprint=replay_fingerprint,
+    )
+    return run_walk_forward_validation(
+        dataset,
+        feature_names,
+        config,
+        policy,
+        model_id=model_id,
+        model_version=model_version,
+        placebo_block_size=placebo_block_size,
+        placebo_iterations=placebo_iterations,
+        stress_scenarios=stress_scenarios,
+        candidate_strategy_returns=candidate_strategy_returns,
+        protocol=protocol,
+    )
+
+
 def run_walk_forward_validation(
     dataset: Sequence[ForecastDatasetRow],
     feature_names: Sequence[str],
@@ -722,6 +817,8 @@ def run_walk_forward_validation(
     placebo_block_size: int = 20,
     placebo_iterations: int = 500,
     stress_scenarios: Sequence[StressScenario] = (),
+    candidate_strategy_returns: Sequence[Sequence[float]] = (),
+    protocol: CryptoStudyProtocol = PREREGISTERED_CRYPTO_PROTOCOL,
 ) -> ValidationReport:
     config.validate()
     if not dataset:
@@ -760,6 +857,11 @@ def run_walk_forward_validation(
             stability_by_symbol={},
             stability_by_horizon_ms={},
             stress_results={},
+            multiple_testing_p_value=None,
+            dsr_p_value=None,
+            pbo=None,
+            research_robustness_status="INSUFFICIENT_OOS_DATA",
+            research_robustness_reasons=("NO_OOS_FOLDS",),
             promotion_eligible=False,
         )
 
@@ -767,16 +869,22 @@ def run_walk_forward_validation(
     oos_probabilities: list[float] = []
     oos_labels: list[int] = []
     oos_returns: list[float] = []
+    candidate_family = tuple(float(x) for x in protocol.candidate_ridge_alphas)
+    candidate_oos_net: dict[float, list[float]] = {alpha: [] for alpha in candidate_family}
 
     for fold in folds:
-        model = fit_ridge_logistic(
-            dataset,
-            fold.train_indices,
-            feature_names,
-            config,
-            model_id=model_id,
-            version=f"{model_version}.fold{fold.fold_id}",
-        )
+        candidate_models = {
+            alpha: fit_ridge_logistic(
+                dataset,
+                fold.train_indices,
+                feature_names,
+                replace(config, ridge_alpha=alpha),
+                model_id=model_id,
+                version=f"{model_version}.alpha{alpha}.fold{fold.fold_id}",
+            )
+            for alpha in candidate_family
+        }
+        model = candidate_models[1.0]
         test_rows = [dataset[i] for i in fold.test_indices]
         probabilities = [predict_probability(model, row.snapshot) for row in test_rows]
         labels = [row.label.realized_target for row in test_rows]
@@ -784,6 +892,23 @@ def run_walk_forward_validation(
         baseline_fifty = baseline_constant(labels, 0.5)
         baseline_prevalence = baseline_constant(labels, model.training_positive_rate)
         economic = economic_metrics(test_rows, probabilities, policy)
+
+        for alpha, candidate_model in candidate_models.items():
+            candidate_probabilities = [predict_probability(candidate_model, row.snapshot) for row in test_rows]
+            for row, probability in zip(test_rows, candidate_probabilities):
+                if probability >= policy.long_threshold:
+                    action = 1
+                elif probability <= policy.short_threshold:
+                    action = -1
+                else:
+                    action = 0
+                if action == 0:
+                    candidate_oos_net[alpha].append(0.0)
+                else:
+                    gross = float(row.label.realized_signed_return_bps) * action
+                    candidate_oos_net[alpha].append(
+                        gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
+                    )
 
         fold_evaluations.append(
             FoldEvaluation(
@@ -799,6 +924,9 @@ def run_walk_forward_validation(
         oos_labels.extend(labels)
         oos_returns.extend(row.label.realized_signed_return_bps for row in test_rows)
 
+    if not candidate_strategy_returns:
+        candidate_strategy_returns = tuple(candidate_oos_net[alpha] for alpha in candidate_family)
+
     stability_by_symbol, stability_by_horizon = stability_metrics(
         [dataset[i] for fold in folds for i in fold.test_indices],
         oos_probabilities,
@@ -811,6 +939,12 @@ def run_walk_forward_validation(
         seed=config.seed,
     )
 
+    if not stress_scenarios:
+        stress_scenarios = (
+            StressScenario("base"),
+            StressScenario("stress_1", cost_multiplier=2.0, slippage_multiplier=2.0),
+            StressScenario("stress_2", cost_multiplier=4.0, slippage_multiplier=4.0),
+        )
     stress_results = {}
     oos_rows = [dataset[i] for fold in folds for i in fold.test_indices]
     for scenario in stress_scenarios:
@@ -866,7 +1000,126 @@ def run_walk_forward_validation(
     explicit_friction_pass = (
         policy.round_trip_cost_bps + policy.round_trip_slippage_bps
     ) > 0.0
-    placebo_pass = placebo_p <= 0.05
+    # Multiplicity is corrected over hypotheses that were actually evaluated,
+    # not by duplicating one aggregate p-value. Each symbol and horizon cell is
+    # a distinct predeclared research hypothesis; Holm controls FWER under
+    # arbitrary dependence.
+    hypothesis_p_values: list[float] = [placebo_p] if placebo_p is not None else []
+    oos_rows = [dataset[i] for fold in folds for i in fold.test_indices]
+    by_symbol_labels: dict[str, list[int]] = {}
+    by_symbol_probs: dict[str, list[float]] = {}
+    by_horizon_labels: dict[int, list[int]] = {}
+    by_horizon_probs: dict[int, list[float]] = {}
+    for row, probability in zip(oos_rows, oos_probabilities):
+        by_symbol_labels.setdefault(row.snapshot.target_symbol, []).append(row.label.realized_target)
+        by_symbol_probs.setdefault(row.snapshot.target_symbol, []).append(probability)
+        by_horizon_labels.setdefault(row.label.horizon_ms, []).append(row.label.realized_target)
+        by_horizon_probs.setdefault(row.label.horizon_ms, []).append(probability)
+
+    hypothesis_sample_sizes: list[int] = []
+    for key in sorted(by_symbol_labels):
+        labels = by_symbol_labels[key]
+        probs = by_symbol_probs[key]
+        if len(labels) >= config.min_group_rows:
+            p_value, _ = placebo_logloss_edge(
+                labels,
+                probs,
+                block_size=placebo_block_size,
+                iterations=placebo_iterations,
+                seed=config.seed + sum(ord(ch) for ch in key),
+            )
+            hypothesis_p_values.append(p_value)
+            hypothesis_sample_sizes.append(len(labels))
+    for key in sorted(by_horizon_labels):
+        labels = by_horizon_labels[key]
+        probs = by_horizon_probs[key]
+        if len(labels) >= config.min_group_rows:
+            p_value, _ = placebo_logloss_edge(
+                labels,
+                probs,
+                block_size=placebo_block_size,
+                iterations=placebo_iterations,
+                seed=config.seed + int(key),
+            )
+            hypothesis_p_values.append(p_value)
+            hypothesis_sample_sizes.append(len(labels))
+
+    if len(hypothesis_p_values) < 2:
+        adjusted_placebo_values = ()
+    else:
+        adjusted_placebo_values = holm_bonferroni(hypothesis_p_values)
+    adjusted_placebo = (
+        max(adjusted_placebo_values)
+        if adjusted_placebo_values
+        else None
+    )
+    multiple_testing_pass = (
+        adjusted_placebo is not None
+        and all(
+            value <= protocol.multiple_testing_alpha
+            for value in adjusted_placebo_values
+        )
+        and len(hypothesis_sample_sizes) >= 1
+    )
+
+    strategy_net_series: list[float] = []
+    for row, probability in zip(oos_rows, oos_probabilities):
+        if probability >= policy.long_threshold:
+            action = 1
+        elif probability <= policy.short_threshold:
+            action = -1
+        else:
+            action = 0
+        if action == 0:
+            strategy_net_series.append(0.0)
+            continue
+        gross = float(row.label.realized_signed_return_bps) * action
+        strategy_net_series.append(
+            gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
+        )
+
+    dsr = deflated_sharpe_p_value(
+        strategy_net_series,
+        n_trials=protocol.declared_hypothesis_family_size,
+    )
+    dsr_pass = (
+        dsr.status == "ESTIMATED"
+        and (dsr.adjusted_p_value or 1.0)
+        <= protocol.multiple_testing_alpha
+    )
+
+    pbo_result = (
+        combinatorial_pbo(
+            candidate_strategy_returns,
+            groups=protocol.cscv_groups,
+            test_groups=protocol.cscv_test_groups,
+        )
+        if candidate_strategy_returns
+        else None
+    )
+    pbo_value = (
+        pbo_result.pbo
+        if pbo_result is not None and pbo_result.status == "ESTIMATED"
+        else None
+    )
+    pbo_pass = (
+        pbo_result is not None
+        and pbo_result.status == "ESTIMATED"
+        and (pbo_value or 1.0) < 0.5
+    )
+
+    research_reasons: list[str] = []
+    if not multiple_testing_pass:
+        research_reasons.append("MULTIPLE_TESTING_GATE_FAILED")
+    if not dsr_pass:
+        research_reasons.append("DSR_GATE_FAILED")
+    if not pbo_pass:
+        research_reasons.append(
+            "PBO_GATE_FAILED" if pbo_result is not None else "PBO_NOT_RUN"
+        )
+    research_status = "PASS" if not research_reasons else "BLOCKED"
+
+    placebo_pass = adjusted_placebo is not None and adjusted_placebo <= protocol.multiple_testing_alpha
     stress_pass = all(result.net_mean_bps > 0.0 for result in stress_results.values()) if stress_results else False
     group_sample_pass = all(
         metric.n >= config.min_group_rows
@@ -885,6 +1138,7 @@ def run_walk_forward_validation(
         and explicit_friction_pass
         and placebo_pass
         and stress_pass
+        and research_status == "PASS"
         and group_sample_pass
         and fold_consistency_pass
         and temporal.passed
@@ -904,6 +1158,11 @@ def run_walk_forward_validation(
         stability_by_symbol=stability_by_symbol,
         stability_by_horizon_ms=stability_by_horizon,
         stress_results=stress_results,
+        multiple_testing_p_value=adjusted_placebo,
+        dsr_p_value=dsr.adjusted_p_value,
+        pbo=pbo_value,
+        research_robustness_status=research_status,
+        research_robustness_reasons=tuple(research_reasons),
         promotion_eligible=promotion_eligible,
     )
 
@@ -916,9 +1175,12 @@ def validation_run_id(
     target_spec: ForecastTargetSpec,
     config: WalkForwardConfig,
     policy: EconomicPolicySpec,
+    protocol: CryptoStudyProtocol = PREREGISTERED_CRYPTO_PROTOCOL,
 ) -> str:
     identity = {
         "replay_fingerprint": replay_fingerprint,
+        "protocol_hash": protocol.protocol_hash,
+        "study_id": protocol.study_id,
         "model_id": model_id,
         "model_version": model_version,
         "target_horizon_ms": target_spec.horizon_ms,
@@ -942,6 +1204,7 @@ def persist_validation_report(
     policy: EconomicPolicySpec,
     model_id: str,
     model_version: str,
+    protocol: CryptoStudyProtocol = PREREGISTERED_CRYPTO_PROTOCOL,
 ) -> dict[str, int | str | bool]:
     """Persist immutable research evidence generated by one OOS validation run."""
     from .storage import CryptoStore
@@ -959,6 +1222,7 @@ def persist_validation_report(
         target_spec=target_spec,
         config=config,
         policy=policy,
+        protocol=protocol,
     )
     if report.oos_labels:
         aggregate = probabilistic_metrics(report.oos_labels, report.oos_probabilities)
@@ -974,6 +1238,8 @@ def persist_validation_report(
     run_row = {
         "run_id": run_id,
         "replay_fingerprint": replay_fingerprint,
+        "study_id": protocol.study_id,
+        "protocol_hash": protocol.protocol_hash,
         "model_id": model_id,
         "model_version": model_version,
         "target_kind": target_spec.kind,
@@ -995,6 +1261,13 @@ def persist_validation_report(
             "fold_baseline_pass_fraction": report.fold_baseline_pass_fraction,
             "fold_economic_positive_fraction": report.fold_economic_positive_fraction,
             "temporal_stability": asdict(report.temporal_stability),
+            "research_robustness": {
+                "multiple_testing_p_value": report.multiple_testing_p_value,
+                "dsr_p_value": report.dsr_p_value,
+                "pbo": report.pbo,
+                "status": report.research_robustness_status,
+                "reasons": list(report.research_robustness_reasons),
+            },
         },
         "stability": {
             "by_symbol": {
