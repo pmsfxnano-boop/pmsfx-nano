@@ -343,6 +343,14 @@ class ProspectiveCryptoIngestor:
             except queue.Empty:
                 continue
 
+            # During cold start the market plane can become live before the
+            # durable session bootstrap finishes. Preserve those rows in the
+            # local evidence spool instead of treating the normal startup
+            # fence as a durability error.
+            if isinstance(self.store, QuantCryptoStore) and self.session_id is None:
+                self._spool_failed_rows(rows)
+                continue
+
             try:
                 results = self._write_durable_rows(rows)
                 self._record_persist_success(rows, results)
