@@ -31,7 +31,7 @@ CRYPTO_SCHEMA_VERSION = 4
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crypto_events (
     ledger_seq BIGSERIAL PRIMARY KEY,
-    event_id TEXT NOT NULL UNIQUE,
+    event_id TEXT NOT NULL,
     event_key TEXT NOT NULL UNIQUE,
     symbol TEXT NOT NULL,
     event_type TEXT NOT NULL,
@@ -49,8 +49,6 @@ CREATE TABLE IF NOT EXISTS crypto_events (
 );
 CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_time
     ON crypto_events(symbol, event_time, ledger_seq);
-CREATE INDEX IF NOT EXISTS idx_crypto_events_received
-    ON crypto_events(received_time, ledger_seq);
 
 CREATE TABLE IF NOT EXISTS crypto_connection_events (
     connection_id TEXT PRIMARY KEY,
@@ -471,6 +469,8 @@ class CryptoStore:
                             "idx_crypto_events_sequence",
                             "idx_crypto_events_symbol_type_ledger",
                             "idx_crypto_events_symbol_type_time",
+                            "idx_crypto_events_received",
+                            "crypto_events_event_id_key",
                         ):
                             cur.execute(
                                 f'DROP INDEX IF EXISTS "{index_name}"'
@@ -491,6 +491,83 @@ class CryptoStore:
             conn.commit()
         finally:
             conn.close()
+
+    def maintain_storage(
+        self,
+        *,
+        trade_retention_hours: float,
+        bookticker_retention_hours: float,
+        depth_retention_hours: float,
+        vacuum: bool = False,
+    ) -> dict[str, Any]:
+        """Bounded storage maintenance; never reads the full event ledger."""
+        self.init()
+        now = datetime.now(timezone.utc)
+        trade_cutoff = (
+            now.timestamp() - float(trade_retention_hours) * 3600.0
+        )
+        bookticker_cutoff = (
+            now.timestamp() - float(bookticker_retention_hours) * 3600.0
+        )
+        depth_cutoff = (
+            now.timestamp() - float(depth_retention_hours) * 3600.0
+        )
+
+        def iso_from_epoch(value: float) -> str:
+            return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+        conn = self.connect()
+        deleted = {"trade": 0, "bookTicker": 0, "depthUpdate": 0}
+        try:
+            cutoff_specs = (
+                ("trade", iso_from_epoch(trade_cutoff)),
+                ("bookTicker", iso_from_epoch(bookticker_cutoff)),
+                ("depthUpdate", iso_from_epoch(depth_cutoff)),
+            )
+            if self._pg:
+                with conn.cursor() as cur:
+                    for event_type, cutoff in cutoff_specs:
+                        cur.execute(
+                            """
+                            DELETE FROM crypto_events
+                            WHERE event_type=%s AND received_time < %s
+                            """,
+                            (event_type, cutoff),
+                        )
+                        deleted[event_type] = int(cur.rowcount)
+                conn.commit()
+            else:
+                for event_type, cutoff in cutoff_specs:
+                    cur = conn.execute(
+                        """
+                        DELETE FROM crypto_events
+                        WHERE event_type=? AND received_time < ?
+                        """,
+                        (event_type, cutoff),
+                    )
+                    deleted[event_type] = int(cur.rowcount)
+                conn.commit()
+        finally:
+            conn.close()
+
+        if vacuum and self._pg:
+            vacuum_conn = self.connect()
+            try:
+                vacuum_conn.autocommit = True
+                with vacuum_conn.cursor() as cur:
+                    cur.execute("VACUUM (ANALYZE) crypto_events")
+            finally:
+                vacuum_conn.close()
+
+        return {
+            "deleted": deleted,
+            "vacuum": bool(vacuum and self._pg),
+            "retention_hours": {
+                "trade": float(trade_retention_hours),
+                "bookTicker": float(bookticker_retention_hours),
+                "depthUpdate": float(depth_retention_hours),
+            },
+        }
 
     def ping(self) -> bool:
         self.init()
