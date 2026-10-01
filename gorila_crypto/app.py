@@ -8,6 +8,7 @@ are not modified by this module.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -270,7 +271,31 @@ async def lifespan(app: FastAPI):
     _stop_event.clear()
     _capture_block_reason = None
 
-    if settings.ingest_enabled:
+    retirement_flag = os.getenv("GORILA_CRYPTO_RETIRE_LEGACY", "").strip().lower()
+    print(
+        "GORILA_LEGACY_RETIREMENT_CHECK "
+        + json.dumps(
+            {
+                "enabled": retirement_flag in {"1", "true", "yes", "on"},
+                "ingest_enabled": settings.ingest_enabled,
+                "database_configured": bool(CryptoStore().database_url),
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    if retirement_flag in {"1", "true", "yes", "on"}:
+        try:
+            _retire_legacy_objects_if_enabled(_new_store())
+        except Exception as exc:
+            _capture_block_reason = f"LEGACY_RETIREMENT_FAILED:{type(exc).__name__}:{exc}"
+            print(
+                "GORILA_LEGACY_RETIREMENT_FAILED "
+                + _capture_block_reason,
+                flush=True,
+            )
+
+    if settings.ingest_enabled and _capture_block_reason is None:
         try:
             store = _new_store()
         except RuntimeError as exc:
@@ -289,18 +314,6 @@ async def lifespan(app: FastAPI):
                 flush=True,
             )
         else:
-            try:
-                _retire_legacy_objects_if_enabled(store)
-            except Exception as exc:
-                _capture_block_reason = f"LEGACY_RETIREMENT_FAILED:{type(exc).__name__}:{exc}"
-                print(
-                    "GORILA_LEGACY_RETIREMENT_FAILED "
-                    + _capture_block_reason,
-                    flush=True,
-                )
-                yield
-                _stop_event.set()
-                return
             adapter = build_market_adapter()
             _runtime = ProspectiveCryptoIngestor(store, adapter)
             _runtime_thread = threading.Thread(
