@@ -502,9 +502,12 @@ def test_source_health_batch_is_atomic_and_scoped(tmp_path: Path) -> None:
 
     conn = store.connect()
     try:
-        rows = conn.execute(
-            "SELECT source,status,rows_last_batch FROM crypto_source_health ORDER BY source"
-        ).fetchall()
+        rows = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT source,status,rows_last_batch FROM crypto_source_health ORDER BY source"
+            ).fetchall()
+        ]
     finally:
         conn.close()
 
