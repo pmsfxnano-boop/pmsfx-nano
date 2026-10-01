@@ -221,6 +221,7 @@ class ValidationReport:
     stability_by_symbol: Mapping[str, ProbabilisticMetrics]
     stability_by_horizon_ms: Mapping[int, ProbabilisticMetrics]
     stress_results: Mapping[str, EconomicMetrics]
+    latency_feasibility: Mapping[str, object]
     multiple_testing_p_value: float | None
     dsr_p_value: float | None
     pbo: float | None
@@ -857,6 +858,7 @@ def run_walk_forward_validation(
             stability_by_symbol={},
             stability_by_horizon_ms={},
             stress_results={},
+            latency_feasibility={},
             multiple_testing_p_value=None,
             dsr_p_value=None,
             pbo=None,
@@ -1108,7 +1110,41 @@ def run_walk_forward_validation(
         and (pbo_value or 1.0) < 0.5
     )
 
+    # A signal that is materially older than its forecast horizon is not a
+    # credible short-horizon alpha candidate even when predictive metrics look good.
+    # The rule is fixed ex ante for the alpha engine: median transport age <= 50% of
+    # the horizon and p95 <= 75% of the horizon.
+    protocol_horizon_ms = int(oos_rows[0].label.horizon_ms) if oos_rows else 0
+    transport_ages = [
+        float(row.snapshot.feature_values.get("leader_transport_latency_ms", 0.0))
+        for row in oos_rows
+        if row.snapshot.feature_values.get("leader_transport_latency_ms") is not None
+    ]
+    if transport_ages:
+        latency_p50 = float(np.percentile(transport_ages, 50))
+        latency_p95 = float(np.percentile(transport_ages, 95))
+        latency_p99 = float(np.percentile(transport_ages, 99))
+    else:
+        latency_p50 = float("inf")
+        latency_p95 = float("inf")
+        latency_p99 = float("inf")
+    latency_feasible = bool(
+        latency_p50 <= 0.50 * float(protocol_horizon_ms)
+        and latency_p95 <= 0.75 * float(protocol_horizon_ms)
+    )
+    latency_feasibility = {
+        "horizon_ms": int(protocol_horizon_ms),
+        "p50_transport_latency_ms": latency_p50,
+        "p95_transport_latency_ms": latency_p95,
+        "p99_transport_latency_ms": latency_p99,
+        "max_p50_ratio": 0.50,
+        "max_p95_ratio": 0.75,
+        "passed": latency_feasible,
+    }
+
     research_reasons: list[str] = []
+    if not latency_feasible:
+        research_reasons.append("SIGNAL_LATENCY_NOT_FEASIBLE")
     if not multiple_testing_pass:
         research_reasons.append("MULTIPLE_TESTING_GATE_FAILED")
     if not dsr_pass:
@@ -1142,6 +1178,7 @@ def run_walk_forward_validation(
         and group_sample_pass
         and fold_consistency_pass
         and temporal.passed
+        and latency_feasible
     )
     return ValidationReport(
         status="OOS_EVALUATED",
@@ -1158,6 +1195,7 @@ def run_walk_forward_validation(
         stability_by_symbol=stability_by_symbol,
         stability_by_horizon_ms=stability_by_horizon,
         stress_results=stress_results,
+        latency_feasibility=latency_feasibility,
         multiple_testing_p_value=adjusted_placebo,
         dsr_p_value=dsr.adjusted_p_value,
         pbo=pbo_value,
@@ -1260,6 +1298,7 @@ def persist_validation_report(
             "economic": asdict(aggregate_economic) if aggregate_economic else {},
             "fold_baseline_pass_fraction": report.fold_baseline_pass_fraction,
             "fold_economic_positive_fraction": report.fold_economic_positive_fraction,
+            "latency_feasibility": dict(report.latency_feasibility),
             "temporal_stability": asdict(report.temporal_stability),
             "research_robustness": {
                 "multiple_testing_p_value": report.multiple_testing_p_value,

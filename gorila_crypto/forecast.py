@@ -46,6 +46,12 @@ MICROSTRUCTURE_FEATURES = (
     "target_microprice_gap_bps",
     "leader_flow_x_shock",
     "relative_flow_pressure",
+    "leader_flow_persistence",
+    "target_flow_persistence",
+    "leader_flow_x_queue",
+    "target_flow_x_queue",
+    "target_adverse_selection_pressure",
+    "cross_asset_dislocation_bps",
 )
 FORECAST_SEMANTICS = "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)"
 
