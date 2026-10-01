@@ -333,6 +333,46 @@ class QuantCryptoStore(CryptoStore):
         try:
             if self._pg:
                 with conn.cursor() as cur:
+                    # Fence any lease whose capture session is already terminal
+                    # before evaluating the single-active-session invariant.
+                    cur.execute(
+                        """
+                        UPDATE crypto_runtime_leases l
+                        SET status='ABORTED_STALE', heartbeat_at=NOW()::text
+                        WHERE l.status='RUNNING'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM crypto_capture_sessions s
+                              WHERE s.session_id=l.session_id
+                                AND s.status NOT IN ('STARTING','RUNNING')
+                          )
+                        """
+                    )
+                    terminal_lease_count = cur.rowcount
+                    if terminal_lease_count:
+                        cur.execute(
+                            """
+                            UPDATE crypto_runtime_runs r
+                            SET status='ABORTED_STALE',
+                                completed_at=NOW()::text,
+                                result=%s
+                            WHERE r.status='RUNNING'
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM crypto_runtime_leases l
+                                  WHERE l.run_id=r.run_id
+                                    AND l.status='ABORTED_STALE'
+                                    AND EXISTS (
+                                        SELECT 1
+                                        FROM crypto_capture_sessions s
+                                        WHERE s.session_id=l.session_id
+                                          AND s.status NOT IN ('STARTING','RUNNING')
+                                    )
+                              )
+                            """,
+                            (json.dumps({"reason": "terminal_capture_session"}, sort_keys=True),),
+                        )
+                    conn.commit()
                     cur.execute(
                         """
                         SELECT s.session_id,
