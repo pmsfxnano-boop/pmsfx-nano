@@ -1764,6 +1764,75 @@ class CryptoStore:
                 self.close()
             raise
 
+    def upsert_source_health_batch(self, rows: list[dict[str, Any]]) -> None:
+        """Persist multiple source-health snapshots in one transaction."""
+        self.init()
+        if not rows:
+            return
+
+        values = [
+            (
+                str(row["source"]),
+                _utc_now(),
+                str(row["status"]),
+                row.get("last_event_time"),
+                row.get("last_received_time"),
+                row.get("event_age_seconds"),
+                row.get("transport_age_seconds"),
+                int(row.get("rows_last_batch", 0)),
+                row.get("error"),
+            )
+            for row in rows
+        ]
+        conn = self._write_connection()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO crypto_source_health
+                        (source,updated_at,status,last_event_time,last_received_time,
+                         event_age_seconds,transport_age_seconds,rows_last_batch,error)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT(source) DO UPDATE SET
+                          updated_at=EXCLUDED.updated_at,
+                          status=EXCLUDED.status,
+                          last_event_time=EXCLUDED.last_event_time,
+                          last_received_time=EXCLUDED.last_received_time,
+                          event_age_seconds=EXCLUDED.event_age_seconds,
+                          transport_age_seconds=EXCLUDED.transport_age_seconds,
+                          rows_last_batch=EXCLUDED.rows_last_batch,
+                          error=EXCLUDED.error
+                        """,
+                        values,
+                    )
+            else:
+                conn.executemany(
+                    """
+                    INSERT INTO crypto_source_health
+                    (source,updated_at,status,last_event_time,last_received_time,
+                     event_age_seconds,transport_age_seconds,rows_last_batch,error)
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(source) DO UPDATE SET
+                      updated_at=excluded.updated_at,
+                      status=excluded.status,
+                      last_event_time=excluded.last_event_time,
+                      last_received_time=excluded.last_received_time,
+                      event_age_seconds=excluded.event_age_seconds,
+                      transport_age_seconds=excluded.transport_age_seconds,
+                      rows_last_batch=excluded.rows_last_batch,
+                      error=excluded.error
+                    """,
+                    values,
+                )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
+
     def start_runtime_run(self, *, kind: str, run_id: str | None = None) -> str:
         self.init()
         run_id = run_id or str(uuid.uuid4())
