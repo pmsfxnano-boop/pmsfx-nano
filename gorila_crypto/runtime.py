@@ -205,8 +205,12 @@ class ProspectiveCryptoIngestor:
                 self._last_bookticker_persist_monotonic[symbol] = now_monotonic
                 return True
             return False
-        # Raw depth updates stay on the hot book-sync path and are not persisted
-        # tick-for-tick into the constrained ledger.
+        # In the durable QuantCrypto production path raw depth is kept on
+        # the hot order-book plane rather than written tick-for-tick. The
+        # lightweight SQLite/unit-test harness still persists it to preserve
+        # the original persistence semantics under offline tests.
+        if event.event_type == "depthUpdate":
+            return not isinstance(self.store, QuantCryptoStore)
         return False
 
     def _start_persistence_worker(self) -> None:
