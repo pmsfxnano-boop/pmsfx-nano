@@ -80,6 +80,72 @@ class QuantCryptoStore(CryptoStore):
                             );
                             CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
                                 ON crypto_runtime_leases(heartbeat_at,status);
+                            CREATE TABLE IF NOT EXISTS crypto_events_v5 (
+                                ledger_seq BIGSERIAL PRIMARY KEY,
+                                event_id UUID NOT NULL,
+                                study_id TEXT NOT NULL,
+                                capture_session_id UUID NOT NULL,
+                                symbol TEXT NOT NULL,
+                                event_type TEXT NOT NULL,
+                                event_time TIMESTAMPTZ NOT NULL,
+                                received_time TIMESTAMPTZ NOT NULL,
+                                provider_time TIMESTAMPTZ,
+                                source TEXT NOT NULL,
+                                sequence_start BIGINT NOT NULL,
+                                sequence_end BIGINT NOT NULL,
+                                payload_hash BYTEA NOT NULL,
+                                quality TEXT NOT NULL,
+                                ingest_epoch BIGINT,
+                                price DOUBLE PRECISION,
+                                quantity DOUBLE PRECISION,
+                                buyer_maker BOOLEAN,
+                                bid DOUBLE PRECISION,
+                                bid_qty DOUBLE PRECISION,
+                                ask DOUBLE PRECISION,
+                                ask_qty DOUBLE PRECISION,
+                                recorded_at TIMESTAMPTZ NOT NULL,
+                                UNIQUE(symbol,event_type,sequence_start)
+                            );
+                            CREATE INDEX IF NOT EXISTS idx_crypto_events_v5_scope_time
+                                ON crypto_events_v5(study_id,capture_session_id,symbol,event_type,event_time,received_time,ledger_seq);
+                            CREATE INDEX IF NOT EXISTS idx_crypto_events_v5_scope_seq
+                                ON crypto_events_v5(study_id,capture_session_id,ledger_seq);
+                            CREATE OR REPLACE VIEW crypto_events_v5_replay AS
+                            SELECT
+                                e.ledger_seq,
+                                e.event_id::text AS event_id,
+                                md5(
+                                    e.source || '|' || e.symbol || '|' || e.event_type || '|' ||
+                                    e.sequence_start::text || '|' || e.sequence_end::text
+                                ) AS event_key,
+                                e.symbol,
+                                e.event_type,
+                                e.event_time,
+                                e.received_time,
+                                e.provider_time,
+                                e.source,
+                                e.sequence_start,
+                                e.sequence_end,
+                                encode(e.payload_hash,'hex') AS payload_hash,
+                                CASE
+                                    WHEN e.event_type='trade' THEN jsonb_build_object(
+                                        'e','trade','s',e.symbol,'t',e.sequence_start,
+                                        'p',e.price::text,'q',e.quantity::text,'m',e.buyer_maker
+                                    )
+                                    ELSE jsonb_build_object(
+                                        'e','bookTicker','s',e.symbol,'u',e.sequence_end,
+                                        'b',e.bid::text,'B',e.bid_qty::text,
+                                        'a',e.ask::text,'A',e.ask_qty::text
+                                    )
+                                END AS payload_json,
+                                e.quality,
+                                jsonb_build_object(
+                                    'crypto_study_id',e.study_id,
+                                    'capture_session_id',e.capture_session_id::text,
+                                    'ingest_epoch',e.ingest_epoch
+                                ) AS metadata,
+                                e.recorded_at
+                            FROM crypto_events_v5 e;
                             CREATE TABLE IF NOT EXISTS crypto_storage_actions (
                                 action_key TEXT PRIMARY KEY,
                                 completed_at TEXT NOT NULL,
@@ -135,6 +201,36 @@ class QuantCryptoStore(CryptoStore):
                 );
                 CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
                     ON crypto_runtime_leases(heartbeat_at,status);
+                CREATE TABLE IF NOT EXISTS crypto_events_v5 (
+                    ledger_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL,
+                    study_id TEXT NOT NULL,
+                    capture_session_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_time TEXT NOT NULL,
+                    received_time TEXT NOT NULL,
+                    provider_time TEXT,
+                    source TEXT NOT NULL,
+                    sequence_start INTEGER NOT NULL,
+                    sequence_end INTEGER NOT NULL,
+                    payload_hash BLOB NOT NULL,
+                    quality TEXT NOT NULL,
+                    ingest_epoch INTEGER,
+                    price REAL,
+                    quantity REAL,
+                    buyer_maker INTEGER,
+                    bid REAL,
+                    bid_qty REAL,
+                    ask REAL,
+                    ask_qty REAL,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(symbol,event_type,sequence_start)
+                );
+                CREATE INDEX IF NOT EXISTS idx_crypto_events_v5_scope_time
+                    ON crypto_events_v5(study_id,capture_session_id,symbol,event_type,event_time,received_time,ledger_seq);
+                CREATE INDEX IF NOT EXISTS idx_crypto_events_v5_scope_seq
+                    ON crypto_events_v5(study_id,capture_session_id,ledger_seq);
                 """
             )
             conn.commit()
@@ -689,7 +785,183 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
 
+    @staticmethod
+    def _is_v5_study(study_id: str) -> bool:
+        return str(study_id) == str(PREREGISTERED_CRYPTO_PROTOCOL.study_id) and PREREGISTERED_CRYPTO_PROTOCOL.version == "5"
+
+    @staticmethod
+    def _v5_prepare_row(*, study_id: str, capture_session_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
+        payload = dict(row.get("payload") or {})
+        event_type = str(row["event_type"])
+        symbol = str(row["symbol"]).upper()
+        sequence_start = int(row["sequence_start"])
+        sequence_end = int(row["sequence_end"])
+        identity = f"{row['source']}|{symbol}|{event_type}|{sequence_start}|{sequence_end}"
+        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+        import hashlib
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        payload_hash = hashlib.sha256(payload_json.encode("utf-8")).digest()
+        typed = {
+            "price": None,
+            "quantity": None,
+            "buyer_maker": None,
+            "bid": None,
+            "bid_qty": None,
+            "ask": None,
+            "ask_qty": None,
+        }
+        if event_type == "trade":
+            typed["price"] = float(payload.get("p"))
+            typed["quantity"] = float(payload.get("q"))
+            typed["buyer_maker"] = payload.get("m")
+        elif event_type == "bookTicker":
+            typed["bid"] = float(payload.get("b"))
+            typed["bid_qty"] = float(payload.get("B"))
+            typed["ask"] = float(payload.get("a"))
+            typed["ask_qty"] = float(payload.get("A"))
+        else:
+            raise ValueError(f"v5 persistence does not support event_type={event_type}")
+        metadata = dict(row.get("metadata") or {})
+        ingest_epoch = metadata.get("ingest_epoch")
+        return {
+            "event_id": event_id,
+            "study_id": study_id,
+            "capture_session_id": capture_session_id,
+            "symbol": symbol,
+            "event_type": event_type,
+            "event_time": str(row["event_time"]),
+            "received_time": str(row["received_time"]),
+            "provider_time": row.get("provider_time"),
+            "source": str(row["source"]),
+            "sequence_start": sequence_start,
+            "sequence_end": sequence_end,
+            "payload_hash": payload_hash,
+            "quality": str(row.get("quality") or "OK"),
+            "ingest_epoch": int(ingest_epoch) if ingest_epoch is not None else None,
+            **typed,
+            "recorded_at": str(row.get("recorded_at") or _utc_now()),
+        }
+
+    def _append_scoped_events_v5(
+        self,
+        *,
+        study_id: str,
+        capture_session_id: str,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        self.init()
+        if not events:
+            return []
+        prepared = [
+            self._v5_prepare_row(
+                study_id=study_id,
+                capture_session_id=capture_session_id,
+                row=item,
+            )
+            for item in events
+        ]
+        keys = list(dict.fromkeys(
+            (row["symbol"], row["event_type"], row["sequence_start"])
+            for row in prepared
+        ))
+        conn = self._write_connection()
+        try:
+            found: dict[tuple[str, str, int], tuple[int, str, bytes]] = {}
+            if self._pg:
+                with conn.cursor() as cur:
+                    sql = """
+                        INSERT INTO crypto_events_v5(
+                            event_id,study_id,capture_session_id,symbol,event_type,
+                            event_time,received_time,provider_time,source,
+                            sequence_start,sequence_end,payload_hash,quality,ingest_epoch,
+                            price,quantity,buyer_maker,bid,bid_qty,ask,ask_qty,recorded_at
+                        ) VALUES (
+                            %s,%s,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                            %s,%s,%s,%s,%s,%s,%s
+                        )
+                        ON CONFLICT(symbol,event_type,sequence_start) DO NOTHING
+                        RETURNING symbol,event_type,sequence_start,ledger_seq,event_id,payload_hash
+                    """
+                    flat = []
+                    for row in prepared:
+                        flat.extend([
+                            row["event_id"],row["study_id"],row["capture_session_id"],row["symbol"],
+                            row["event_type"],row["event_time"],row["received_time"],row["provider_time"],
+                            row["source"],row["sequence_start"],row["sequence_end"],row["payload_hash"],
+                            row["quality"],row["ingest_epoch"],row["price"],row["quantity"],
+                            row["buyer_maker"],row["bid"],row["bid_qty"],row["ask"],row["ask_qty"],row["recorded_at"]
+                        ])
+                    cur.execute(sql, flat)
+                    for symbol,event_type,seq,ledger_seq,event_id,payload_hash in cur.fetchall():
+                        found[(str(symbol),str(event_type),int(seq))] = (int(ledger_seq),str(event_id),bytes(payload_hash))
+                    missing=[key for key in keys if key not in found]
+                    if missing:
+                        cur.execute(
+                            "SELECT symbol,event_type,sequence_start,ledger_seq,event_id,payload_hash "
+                            "FROM crypto_events_v5 WHERE "
+                            + " OR ".join(["(symbol=%s AND event_type=%s AND sequence_start=%s)"]*len(missing)),
+                            [value for key in missing for value in key],
+                        )
+                        for symbol,event_type,seq,ledger_seq,event_id,payload_hash in cur.fetchall():
+                            found[(str(symbol),str(event_type),int(seq))]=(int(ledger_seq),str(event_id),bytes(payload_hash))
+            else:
+                for row in prepared:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO crypto_events_v5(
+                            event_id,study_id,capture_session_id,symbol,event_type,event_time,received_time,
+                            provider_time,source,sequence_start,sequence_end,payload_hash,quality,ingest_epoch,
+                            price,quantity,buyer_maker,bid,bid_qty,ask,ask_qty,recorded_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            row["event_id"],row["study_id"],row["capture_session_id"],row["symbol"],
+                            row["event_type"],row["event_time"],row["received_time"],row["provider_time"],
+                            row["source"],row["sequence_start"],row["sequence_end"],row["payload_hash"],
+                            row["quality"],row["ingest_epoch"],row["price"],row["quantity"],
+                            row["buyer_maker"],row["bid"],row["bid_qty"],row["ask"],row["ask_qty"],row["recorded_at"]
+                        ),
+                    )
+                placeholders=",".join(["(?,?,?)"]*len(missing := keys))
+                conn_rows=conn.execute(
+                    "SELECT symbol,event_type,sequence_start,ledger_seq,event_id,payload_hash "
+                    "FROM crypto_events_v5 WHERE " + " OR ".join(["(symbol=? AND event_type=? AND sequence_start=?)"]*len(missing)),
+                    [value for key in missing for value in key],
+                ).fetchall()
+                for symbol,event_type,seq,ledger_seq,event_id,payload_hash in conn_rows:
+                    found[(str(symbol),str(event_type),int(seq))]=(int(ledger_seq),str(event_id),bytes(payload_hash))
+            if len(found) != len(keys):
+                raise RuntimeError("v5_event_batch_resolution_failed")
+            results=[]
+            for row in prepared:
+                key=(row["symbol"],row["event_type"],row["sequence_start"])
+                ledger_seq,event_id,payload_hash=found[key]
+                if payload_hash != row["payload_hash"]:
+                    raise RuntimeError("provider_identity_conflict: v5 payload hash differs")
+                results.append({
+                    "inserted": str(event_id) == str(row["event_id"]),
+                    "ledger_seq": ledger_seq,
+                    "event_id": event_id,
+                    "event_key": hashlib.md5(
+                        f"{row['source']}|{row['symbol']}|{row['event_type']}|{row['sequence_start']}|{row['sequence_end']}".encode()
+                    ).hexdigest(),
+                })
+            conn.commit()
+            return results
+        except Exception:
+            try:
+                conn.rollback()
+            finally:
+                self.close()
+            raise
+
     def append_scoped_event(self, *, study_id: str, capture_session_id: str, **kwargs: Any) -> dict[str, Any]:
+        if self._is_v5_study(study_id):
+            return self._append_scoped_events_v5(
+                study_id=study_id,
+                capture_session_id=capture_session_id,
+                events=[kwargs],
+            )[0]
         metadata = dict(kwargs.pop("metadata", None) or {})
         metadata.update(
             {
@@ -706,6 +978,12 @@ class QuantCryptoStore(CryptoStore):
         capture_session_id: str,
         events: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        if self._is_v5_study(study_id):
+            return self._append_scoped_events_v5(
+                study_id=study_id,
+                capture_session_id=capture_session_id,
+                events=events,
+            )
         scoped: list[dict[str, Any]] = []
         for item in events:
             row = dict(item)
@@ -1055,6 +1333,118 @@ class QuantCryptoStore(CryptoStore):
         finally:
             conn.close()
 
+    def _read_scoped_events_v5(
+        self,
+        *,
+        study_id: str,
+        capture_session_id: str | None = None,
+        symbol: str | None = None,
+        source: str | None = None,
+        start_received_time: str | None = None,
+        end_received_time: str | None = None,
+        start_event_time: str | None = None,
+        end_event_time: str | None = None,
+        order: str = "ingest",
+        limit: int = 100_000,
+        include_payload: bool = True,
+    ) -> list[dict[str, Any]]:
+        self.init()
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        clauses = ["study_id=%s"] if self._pg else ["study_id=?"]
+        params: list[Any] = [study_id]
+        if capture_session_id is not None:
+            clauses.append("capture_session_id=%s" if self._pg else "capture_session_id=?")
+            params.append(capture_session_id)
+        if symbol is not None:
+            clauses.append("symbol=%s" if self._pg else "symbol=?")
+            params.append(symbol.upper())
+        if source is not None:
+            clauses.append("source=%s" if self._pg else "source=?")
+            params.append(source)
+        if start_received_time is not None:
+            clauses.append("received_time>=%s" if self._pg else "received_time>=?")
+            params.append(start_received_time)
+        if end_received_time is not None:
+            clauses.append("received_time<=%s" if self._pg else "received_time<=?")
+            params.append(end_received_time)
+        if start_event_time is not None:
+            clauses.append("event_time>=%s" if self._pg else "event_time>=?")
+            params.append(start_event_time)
+        if end_event_time is not None:
+            clauses.append("event_time<=%s" if self._pg else "event_time<=?")
+            params.append(end_event_time)
+        where=" AND ".join(clauses)
+        order_by={
+            "ingest":"ledger_seq ASC",
+            "event_time":"event_time ASC,received_time ASC,ledger_seq ASC",
+        }.get(order)
+        if order_by is None:
+            raise ValueError("invalid replay order")
+        payload_sql = "" if include_payload else ""
+        query=f"""
+            SELECT ledger_seq,event_id,study_id,capture_session_id,symbol,event_type,
+                   event_time,received_time,provider_time,source,sequence_start,sequence_end,
+                   encode(payload_hash,'hex') AS payload_hash,quality,ingest_epoch,
+                   price,quantity,buyer_maker,bid,bid_qty,ask,ask_qty,recorded_at
+            FROM crypto_events_v5
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT {int(limit)}
+        """
+        if not self._pg:
+            query=query.replace("encode(payload_hash,'hex')","lower(hex(payload_hash))")
+        conn=self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    cur.execute(query,params); rows=cur.fetchall()
+            else:
+                rows=conn.execute(query,params).fetchall()
+        finally:
+            conn.close()
+        result=[]
+        for row in rows:
+            if self._pg:
+                vals=list(row)
+            else:
+                vals=list(row)
+            (ledger_seq,event_id,row_study,row_session,symbol,event_type,event_time,received_time,
+             provider_time,source,seq_start,seq_end,payload_hash,quality,ingest_epoch,price,quantity,
+             buyer_maker,bid,bid_qty,ask,ask_qty,recorded_at)=vals
+            if event_type=="trade":
+                payload={"e":"trade","s":symbol,"t":int(seq_start),"p":str(price),"q":str(quantity),"m":buyer_maker}
+            else:
+                payload={"e":"bookTicker","s":symbol,"u":int(seq_end),"b":str(bid),"B":str(bid_qty),"a":str(ask),"A":str(ask_qty)}
+            if not include_payload:
+                payload=None
+            event_key=__import__("hashlib").md5(
+                f"{source}|{symbol}|{event_type}|{seq_start}|{seq_end}".encode()
+            ).hexdigest()
+            result.append({
+                "ledger_seq":int(ledger_seq),
+                "event_id":str(event_id),
+                "event_key":event_key,
+                "symbol":str(symbol),
+                "event_type":str(event_type),
+                "event_time":str(event_time),
+                "received_time":str(received_time),
+                "provider_time":str(provider_time) if provider_time is not None else None,
+                "source":str(source),
+                "sequence_start":int(seq_start),
+                "sequence_end":int(seq_end),
+                "payload_hash":str(payload_hash),
+                "payload":payload,
+                "quality":str(quality),
+                "metadata":{
+                    "crypto_study_id":str(row_study),
+                    "capture_session_id":str(row_session),
+                    "ingest_epoch":int(ingest_epoch) if ingest_epoch is not None else None,
+                },
+                "recorded_at":str(recorded_at),
+            })
+        return result
+
     def read_scoped_events(
         self,
         *,
@@ -1072,6 +1462,20 @@ class QuantCryptoStore(CryptoStore):
         include_payload: bool = True,
     ) -> list[dict[str, Any]]:
         """Read exactly one study/session cohort using the immutable metadata scope."""
+        if self._is_v5_study(study_id):
+            return self._read_scoped_events_v5(
+                study_id=study_id,
+                capture_session_id=capture_session_id,
+                symbol=symbol,
+                source=source,
+                start_received_time=start_received_time,
+                end_received_time=end_received_time,
+                start_event_time=start_event_time,
+                end_event_time=end_event_time,
+                order=order,
+                limit=limit,
+                include_payload=include_payload,
+            )
         self.init()
         if limit < 1:
             raise ValueError("limit must be positive")
