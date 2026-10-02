@@ -889,7 +889,7 @@ function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null })
         </div>
         <div>
           <span>FEATURE SET</span>
-          <strong>α-v2</strong>
+          <strong>{evidence?.study?.alpha_feature_set || "α-v2"}</strong>
         </div>
       </div>
 
