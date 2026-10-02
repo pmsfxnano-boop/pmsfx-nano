@@ -63,6 +63,138 @@ MICROSTRUCTURE_FEATURES = (
 FORECAST_SEMANTICS = "P(SIGNED_TARGET_RETURN_BPS_POSITIVE)"
 
 
+def build_microstructure_feature_vector(
+    *,
+    leader_return_bps: float,
+    leader_transport_latency_ms: float,
+    target_return_bps_lookback: float,
+    target_information_age_ms: float,
+    target_market_age_ms: float,
+    leader_flow_imbalance_1s: float,
+    leader_flow_imbalance_5s: float,
+    leader_trade_intensity_1s: float,
+    leader_trade_intensity_5s: float,
+    target_flow_imbalance_1s: float,
+    target_flow_imbalance_5s: float,
+    target_trade_intensity_1s: float,
+    target_trade_intensity_5s: float,
+    leader_bid: float,
+    leader_ask: float,
+    leader_bid_qty: float,
+    leader_ask_qty: float,
+    target_bid: float,
+    target_ask: float,
+    target_bid_qty: float,
+    target_ask_qty: float,
+    leader_book_age_ms: float,
+    target_book_age_ms: float,
+    bookticker_interval_seconds: float,
+) -> dict[str, float]:
+    """Canonical feature map shared by live capture and offline PIT research."""
+    if min(
+        leader_bid,
+        leader_ask,
+        leader_bid_qty,
+        leader_ask_qty,
+        target_bid,
+        target_ask,
+        target_bid_qty,
+        target_ask_qty,
+    ) < 0:
+        raise ValueError("book quantities/prices cannot be negative")
+    leader_depth = leader_bid_qty + leader_ask_qty
+    target_depth = target_bid_qty + target_ask_qty
+    leader_mid = 0.5 * (leader_bid + leader_ask)
+    target_mid = 0.5 * (target_bid + target_ask)
+    leader_micro = (
+        (leader_ask * leader_bid_qty + leader_bid * leader_ask_qty) / leader_depth
+        if leader_depth > 0 else leader_mid
+    )
+    target_micro = (
+        (target_ask * target_bid_qty + target_bid * target_ask_qty) / target_depth
+        if target_depth > 0 else target_mid
+    )
+    interval = max(float(bookticker_interval_seconds), 1.0)
+    leader_book_conf = math.exp(-max(0.0, float(leader_book_age_ms)) / 1000.0 / interval)
+    target_book_conf = math.exp(-max(0.0, float(target_book_age_ms)) / 1000.0 / interval)
+    leader_queue = (leader_bid_qty - leader_ask_qty) / leader_depth if leader_depth > 0 else 0.0
+    target_queue = (target_bid_qty - target_ask_qty) / target_depth if target_depth > 0 else 0.0
+    leader_spread = ((leader_ask / leader_bid) - 1.0) * 10_000.0 if leader_bid > 0 else 0.0
+    target_spread = ((target_ask / target_bid) - 1.0) * 10_000.0 if target_bid > 0 else 0.0
+    leader_gap = ((leader_micro / leader_mid) - 1.0) * 10_000.0 if leader_mid > 0 else 0.0
+    target_gap = ((target_micro / target_mid) - 1.0) * 10_000.0 if target_mid > 0 else 0.0
+
+    leader_flow_1s = float(leader_flow_imbalance_1s)
+    leader_flow_5s = float(leader_flow_imbalance_5s)
+    target_flow_1s = float(target_flow_imbalance_1s)
+    target_flow_5s = float(target_flow_imbalance_5s)
+    return {
+        "leader_return_bps": float(leader_return_bps),
+        "leader_abs_return_bps": abs(float(leader_return_bps)),
+        "leader_direction": 1.0 if leader_return_bps > 0 else -1.0,
+        "leader_transport_latency_ms": max(0.0, float(leader_transport_latency_ms)),
+        "target_return_bps_lookback": float(target_return_bps_lookback),
+        "target_abs_return_bps_lookback": abs(float(target_return_bps_lookback)),
+        "target_information_age_ms": max(0.0, float(target_information_age_ms)),
+        "target_market_age_ms": max(0.0, float(target_market_age_ms)),
+        "leader_flow_imbalance_1s": leader_flow_1s,
+        "leader_flow_imbalance_5s": leader_flow_5s,
+        "leader_trade_intensity_1s": float(leader_trade_intensity_1s),
+        "leader_trade_intensity_5s": float(leader_trade_intensity_5s),
+        "target_flow_imbalance_1s": target_flow_1s,
+        "target_flow_imbalance_5s": target_flow_5s,
+        "target_trade_intensity_1s": float(target_trade_intensity_1s),
+        "target_trade_intensity_5s": float(target_trade_intensity_5s),
+        "leader_queue_imbalance": leader_queue,
+        "leader_spread_bps": leader_spread,
+        "leader_microprice_gap_bps": leader_gap,
+        "target_queue_imbalance": target_queue,
+        "target_spread_bps": target_spread,
+        "target_microprice_gap_bps": target_gap,
+        "leader_flow_x_shock": leader_return_bps * leader_flow_1s,
+        "relative_flow_pressure": leader_flow_1s - target_flow_1s,
+        "leader_flow_persistence": leader_flow_1s - leader_flow_5s,
+        "target_flow_persistence": target_flow_1s - target_flow_5s,
+        "leader_flow_x_queue": leader_flow_1s * leader_queue,
+        "target_flow_x_queue": target_flow_1s * target_queue,
+        "target_adverse_selection_pressure": target_flow_1s * target_gap,
+        "cross_asset_dislocation_bps": float(leader_return_bps) - float(target_return_bps_lookback),
+        "leader_book_age_ms": max(0.0, float(leader_book_age_ms)),
+        "target_book_age_ms": max(0.0, float(target_book_age_ms)),
+        "book_age_gap_ms": max(0.0, float(leader_book_age_ms)) - max(0.0, float(target_book_age_ms)),
+        "leader_book_confidence": leader_book_conf,
+        "target_book_confidence": target_book_conf,
+        "leader_flow_x_book_confidence": leader_flow_1s * leader_book_conf,
+        "target_flow_x_book_confidence": target_flow_1s * target_book_conf,
+    }
+
+
+def feature_set_hash(
+    *,
+    leader_symbol: str,
+    target_symbol: str,
+    decision_event_time: datetime,
+    decision_received_time: datetime,
+    source_event_ids: tuple[str, ...],
+    feature_values: Mapping[str, float],
+) -> str:
+    canonical = {
+        "version": FEATURE_SET_VERSION,
+        "leader_symbol": leader_symbol.upper(),
+        "target_symbol": target_symbol.upper(),
+        "decision_event_time": _dt(decision_event_time).isoformat(),
+        "decision_received_time": _dt(decision_received_time).isoformat(),
+        "source_event_ids": tuple(source_event_ids),
+        "features": {
+            name: float(feature_values[name])
+            for name in sorted(feature_values)
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _ms(a: datetime, b: datetime) -> float:
     return (a - b).total_seconds() * 1000.0
 
