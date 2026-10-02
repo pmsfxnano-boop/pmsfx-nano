@@ -181,13 +181,16 @@ class OnlineShadowAlpha:
         self,
         store: QuantCryptoStore,
         *,
-        interval_seconds: float = 5.0,
+        interval_seconds: float = 1.0,
         min_training_rows: int = 500,
         training_rows: int = 5000,
         training_interval_seconds: float = 30.0,
     ) -> None:
         self.store = store
-        self.interval_seconds = float(interval_seconds)
+        # Shadow sampling is off the market hot path. A 1 Hz fixed schedule
+        # accelerates prospective label maturation while preserving the
+        # preregistered round-robin pair/horizon collection rule.
+        self.interval_seconds = max(1.0, float(interval_seconds))
         self.min_training_rows = int(min_training_rows)
         self.training_rows = int(training_rows)
         self.training_interval_seconds = float(training_interval_seconds)
