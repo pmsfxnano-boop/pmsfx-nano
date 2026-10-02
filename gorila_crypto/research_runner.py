@@ -618,6 +618,9 @@ def _dataset_rows(
                i.rt AS leader_received_time,
                i.price AS leader_price,
                i.leader_return_bps,
+               i.sequence_start AS leader_sequence_start,
+               baseline.sequence_start AS baseline_sequence_start,
+               prior_point.sequence_start AS prior_sequence_start,
                baseline.event_id AS baseline_event_id,
                baseline.et AS baseline_event_time,
                baseline.rt AS baseline_received_time,
@@ -631,12 +634,14 @@ def _dataset_rows(
                future_point.rt AS label_received_time,
                future_point.price AS future_price,
                lb.event_id AS leader_book_event_id,
+               lb.sequence_end AS leader_book_sequence_end,
                lb.rt AS leader_book_received_time,
                lb.bid AS leader_bid,
                lb.bid_qty AS leader_bid_qty,
                lb.ask AS leader_ask,
                lb.ask_qty AS leader_ask_qty,
                tb.event_id AS target_book_event_id,
+               tb.sequence_end AS target_book_sequence_end,
                tb.rt AS target_book_received_time,
                tb.bid AS target_bid,
                tb.bid_qty AS target_bid_qty,
@@ -873,11 +878,11 @@ def _dataset_rows(
         )
 
         source_ids = (
-            str(item["leader_event_id"]),
-            str(item["baseline_event_id"]),
-            str(item["prior_event_id"]),
-            str(item["leader_book_event_id"]),
-            str(item["target_book_event_id"]),
+            f"trade:{leader_symbol.upper()}:{int(item['leader_sequence_start'])}",
+            f"trade:{target_symbol.upper()}:{int(item['baseline_sequence_start'])}",
+            f"trade:{target_symbol.upper()}:{int(item['prior_sequence_start'])}",
+            f"bookTicker:{leader_symbol.upper()}:{int(item['leader_book_sequence_end'])}",
+            f"bookTicker:{target_symbol.upper()}:{int(item['target_book_sequence_end'])}",
         )
         feature_hash = feature_set_hash(
             leader_symbol=leader_symbol,
