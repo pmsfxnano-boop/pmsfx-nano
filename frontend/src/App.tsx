@@ -25,6 +25,8 @@ const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 const RESOLUTIONS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
 function num(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  if (typeof value === "boolean") return null;
   const x = Number(value);
   return Number.isFinite(x) ? x : null;
 }
@@ -515,11 +517,13 @@ function Opportunity({ evidence }: { evidence: EvidenceResponse | null }) {
   const exitStart = clock?.exit_window_start_at || projection.exitStartsAt;
   const exitEnd = clock?.exit_window_end_at || projection.exitEndsAt;
   const active = projection.validated && projection.phase !== "CLOSED";
-  const status = projection.phase === "LOCKED" ? "GATED" : projection.phase;
-  const ring = projection.phase === "LOCKED"
+  const status = projection.validated
+    ? (projection.phase === "LOCKED" ? "GATED" : projection.phase)
+    : "GATED";
+  const ring = !projection.validated
     ? "conic-gradient(var(--cyan) 0 4%, #202b30 4% 100%)"
     : projection.phase === "CLOSED"
-      ? "conic-gradient(var(--red) 0 100%, #202b30 100%)"
+      ? "conic-gradient(var(--red) 0 100%, #202b30 100% 100%)"
       : `conic-gradient(var(--green) 0 ${progressAngle}%, #20333a ${progressAngle}% 100%)`;
 
   return (
@@ -532,7 +536,7 @@ function Opportunity({ evidence }: { evidence: EvidenceResponse | null }) {
       <div className={`clock ${active ? "active" : "locked"}`} style={{ background: ring }}>
         <div className="clock-inner">
           <span>STATE</span>
-          <strong>{projection.label}</strong>
+          <strong>{projection.validated ? projection.label : "GATED"}</strong>
           <small>{projection.canDisplayCountdown ? remaining : (clock?.mode || "FAIL-CLOSED")}</small>
         </div>
       </div>
@@ -546,9 +550,9 @@ function Opportunity({ evidence }: { evidence: EvidenceResponse | null }) {
               ? `Edge decaying · ${remaining}`
               : projection.phase === "EXIT_WINDOW" && projection.canDisplayCountdown
                 ? `Exit window · ${remaining}`
-                : projection.phase === "CLOSED"
-                  ? "Opportunity window closed"
-                  : "Waiting for validated opportunity"}
+                : projection.phase === "CLOSED" && projection.validated
+                  ? "Validated opportunity window closed"
+                  : "Opportunity gate locked"}
         </h3>
         <p>
           {projection.validated
@@ -852,7 +856,8 @@ function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null })
   const recentP = num(shadow?.recent_mean_probability);
   const horizons = evidence?.study?.forecast_horizons_ms || [100, 250, 500, 1000, 2000, 5000];
   const byHorizon = shadow?.by_horizon || {};
-  const ready = String(shadow?.state || "WARMING").toUpperCase() === "READY";
+  const scoredReady = scored > 0;
+  const ready = count > 0 && scoredReady;
   return (
     <section className="v-card v-alpha-shadow">
       <div className="v-card-head">
@@ -860,10 +865,10 @@ function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null })
           <span className="v-label">ALPHA SHADOW ENGINE</span>
           <div className="v-alpha-title">
             <strong>MICROSTRUCTURE</strong>
-            <span>shadow-only</span>
+            <span>shadow-only · not promotion-ready</span>
           </div>
         </div>
-        <span className={`v-live-chip ${ready ? "active" : "locked"}`}><i />{ready ? "MODEL READY" : "WARMING"}</span>
+        <span className={`v-live-chip ${ready ? "active" : count > 0 ? "active" : "locked"}`}><i />{ready ? "SCORING" : count > 0 ? "LIVE SHADOW" : "WARMING"}</span>
       </div>
 
       <div className="v-alpha-kpis">
@@ -911,7 +916,7 @@ function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null })
       <div className="v-alpha-contract">
         <span>FORMAL GATE</span>
         <b>7D PIT / OOS · COST · STRESS · DSR/PBO</b>
-        <em>NO EXECUTION</em>
+        <em>NO EXECUTION · NO PROMOTION</em>
       </div>
     </section>
   );
