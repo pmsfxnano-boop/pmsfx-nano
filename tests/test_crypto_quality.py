@@ -85,6 +85,23 @@ def test_quality_gate_rejects_future_events_and_required_gaps() -> None:
     assert "REQUIRED_SOURCE_GAPS" in report.reasons
 
 
+def test_quality_gate_normalizes_replay_order_before_latency_checks() -> None:
+    rows = make_rows("BTCUSDT")
+    descending = list(reversed(rows))
+    report = evaluate_replay_quality(
+        descending,
+        replay_fingerprint="fp-descending",
+        config=DataQualityConfig(
+            min_rows_per_symbol=100,
+            min_duration_seconds=3600,
+            max_receive_time_reversals=0,
+        ),
+        reference_time=BASE + timedelta(hours=2),
+    )
+    assert report.status == "PASS"
+    assert report.receive_time_reversal_count == 0
+
+
 def test_quality_gate_detects_receive_time_reversal() -> None:
     rows = make_rows("BTCUSDT")
     rows[50]["received_time"] = (
