@@ -119,13 +119,13 @@ def test_research_protocol_declares_candidate_family() -> None:
     assert PREREGISTERED_CRYPTO_PROTOCOL.candidate_ridge_alphas == (0.1, 1.0, 10.0)
     assert PREREGISTERED_CRYPTO_PROTOCOL.cscv_groups == 6
 
-def test_v3_quality_gate_accounts_for_durable_trade_sampling() -> None:
+def test_v6_quality_gate_accounts_for_dense_trade_sampling() -> None:
     config = PREREGISTERED_CRYPTO_PROTOCOL.quality_config()
-    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "4"
-    assert PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate == 0.05
+    assert PREREGISTERED_CRYPTO_PROTOCOL.version == "6"
+    assert PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate == 0.01
     assert PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds == 5.0
-    assert PREREGISTERED_CRYPTO_PROTOCOL.persistence_contract_version == "deterministic_sample_v2_compact"
-    assert config["required_event_type_min_rows"]["trade"] == 5000
+    assert PREREGISTERED_CRYPTO_PROTOCOL.persistence_contract_version == "typed_dense_v1"
+    assert config["required_event_type_min_rows"]["trade"] == 1000
 
 
 def test_replay_requires_explicit_scope_for_study_evidence(tmp_path) -> None:
@@ -167,14 +167,16 @@ def test_provider_protocol_registry_keeps_binance_and_kraken_isolated() -> None:
     from gorila_crypto.protocol import (
         BINANCE_CRYPTO_PROTOCOL,
         BINANCE_CRYPTO_PROTOCOL_V4,
+        BINANCE_CRYPTO_PROTOCOL_V6,
         KRAKEN_CRYPTO_PROTOCOL,
         protocol_for,
     )
 
-    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL_V4
+    assert protocol_for("binance") is BINANCE_CRYPTO_PROTOCOL_V6
     assert protocol_for("kraken") is KRAKEN_CRYPTO_PROTOCOL
     assert BINANCE_CRYPTO_PROTOCOL.study_id != KRAKEN_CRYPTO_PROTOCOL.study_id
     assert BINANCE_CRYPTO_PROTOCOL.protocol_hash != KRAKEN_CRYPTO_PROTOCOL.protocol_hash
+    assert BINANCE_CRYPTO_PROTOCOL_V6.protocol_hash != BINANCE_CRYPTO_PROTOCOL_V4.protocol_hash
     assert BINANCE_CRYPTO_PROTOCOL.symbols == ("BTCUSDT", "ETHUSDT", "SOLUSDT")
     assert KRAKEN_CRYPTO_PROTOCOL.symbols == ("BTC/USD", "ETH/USD", "SOL/USD")
     assert BINANCE_CRYPTO_PROTOCOL.normalized_event_types == ("trade", "bookTicker")

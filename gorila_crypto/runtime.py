@@ -393,7 +393,7 @@ class ProspectiveCryptoIngestor:
         """Deterministic, PIT-neutral sampling of durable trade observations."""
         if event.event_type != "trade":
             return True
-        if not isinstance(self.store, QuantCryptoStore) or self.protocol.version not in {"3", "4"}:
+        if not isinstance(self.store, QuantCryptoStore) or self.protocol.version not in {"3", "4", "5", "6"}:
             return True
         trade_id = event.sequence_start
         if trade_id is None:
@@ -762,7 +762,7 @@ class ProspectiveCryptoIngestor:
                     if event.event_type == "trade"
                     else (
                         "BOOKTICKER_5S_SNAPSHOT"
-                        if self.protocol.version == "4"
+                        if self.protocol.version in {"4", "5", "6"}
                         else "BOOKTICKER_1S_SNAPSHOT"
                     )
                 ),

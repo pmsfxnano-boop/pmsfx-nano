@@ -130,6 +130,13 @@ class CryptoStudyProtocol:
                     raise ValueError("Binance v5 bookTicker persistence interval is immutable at 5s")
                 if self.persistence_contract_version != "typed_compact_v1":
                     raise ValueError("Binance v5 persistence contract is immutable")
+            if self.version == "6":
+                if self.trade_persistence_sample_rate != 0.01:
+                    raise ValueError("Binance v6 trade persistence sampling is immutable at 1%")
+                if self.bookticker_persistence_interval_seconds != 5.0:
+                    raise ValueError("Binance v6 bookTicker persistence interval is immutable at 5s")
+                if self.persistence_contract_version != "typed_dense_v1":
+                    raise ValueError("Binance v6 persistence contract is immutable")
         else:
             if self.venue != "kraken_spot":
                 raise ValueError("Kraken provider requires Kraken Spot venue")
@@ -179,7 +186,7 @@ class CryptoStudyProtocol:
         self.validate()
         event_types = self.normalized_event_types or self.streams
         persisted_trade_min = self.min_trade_rows_per_symbol
-        if self.provider == "binance" and self.version in {"3", "4", "5"}:
+        if self.provider == "binance" and self.version in {"3", "4", "5", "6"}:
             persisted_trade_min = max(
                 1,
                 math.ceil(
@@ -261,6 +268,23 @@ BINANCE_CRYPTO_PROTOCOL_V5 = CryptoStudyProtocol(
 )
 BINANCE_CRYPTO_PROTOCOL_V5.validate()
 
+# v6 keeps the same empirical universe and 5s quote persistence, but moves
+# the durable replay ledger to dense numeric columns and a 1% deterministic
+# trade sample so the full seven-day cohort fits the 1 GB Postgres envelope.
+BINANCE_CRYPTO_PROTOCOL_V6 = CryptoStudyProtocol(
+    study_id="crypto-binance-spot-prospective-v6",
+    version="6",
+    provider="binance",
+    venue="binance_spot",
+    symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+    streams=("trade", "bookTicker"),
+    normalized_event_types=("trade", "bookTicker"),
+    trade_persistence_sample_rate=0.01,
+    bookticker_persistence_interval_seconds=5.0,
+    persistence_contract_version="typed_dense_v1",
+)
+BINANCE_CRYPTO_PROTOCOL_V6.validate()
+
 KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
     study_id="crypto-kraken-spot-prospective-v1",
     version="1",
@@ -273,7 +297,7 @@ KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
 KRAKEN_CRYPTO_PROTOCOL.validate()
 
 CRYPTO_PROTOCOLS: Mapping[str, CryptoStudyProtocol] = {
-    "binance": BINANCE_CRYPTO_PROTOCOL_V5,
+    "binance": BINANCE_CRYPTO_PROTOCOL_V6,
     "kraken": KRAKEN_CRYPTO_PROTOCOL,
 }
 
@@ -285,4 +309,4 @@ def protocol_for(provider: str) -> CryptoStudyProtocol:
         raise ValueError(f"no preregistered crypto protocol for provider={provider!r}") from exc
 
 
-PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V5
+PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V6
