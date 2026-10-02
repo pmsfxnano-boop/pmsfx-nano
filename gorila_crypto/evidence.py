@@ -1106,7 +1106,11 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                     "hot_plane_lossless": True,
                 },
                 "alpha_feature_set": FEATURE_SET_VERSION,
-                "alpha_model_version": "2",
+                "alpha_model_version": (
+                    str((online_shadow.get("latest") or {}).get("model_version"))
+                    if (online_shadow.get("latest") or {}).get("model_version")
+                    else "NOT_FITTED"
+                ),
                 "promotion_latency_guard": {
                     "median_max_ratio": 0.50,
                     "p95_max_ratio": 0.75,
