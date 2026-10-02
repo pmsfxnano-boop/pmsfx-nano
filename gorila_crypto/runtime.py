@@ -378,6 +378,19 @@ class ProspectiveCryptoIngestor:
                     except Exception as exc:
                         self._persistence_error = f"{type(exc).__name__}: {exc}"
                         MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+                        print(
+                            "GORILA_DURABLE_WRITE_ERROR "
+                            + json.dumps(
+                                {
+                                    "error": self._persistence_error,
+                                    "rows": len(rows),
+                                    "capture_session_id": self.session_id,
+                                },
+                                sort_keys=True,
+                                default=str,
+                            ),
+                            flush=True,
+                        )
                         self._spool_failed_rows(rows)
                         backoff = min(10.0, backoff * 2.0)
                         if not self._persistence_stop.is_set():
