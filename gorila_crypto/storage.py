@@ -50,22 +50,6 @@ CREATE TABLE IF NOT EXISTS crypto_events (
 CREATE INDEX IF NOT EXISTS idx_crypto_events_symbol_time
     ON crypto_events(symbol, event_time, ledger_seq);
 
--- Research-critical scope index for the compact v4 prospective ledger. The
--- research runner scopes every replay by study/session/symbol/event/time; this
--- partial expression index keeps those PIT scans bounded without rebuilding
--- broad legacy access paths.
-CREATE INDEX IF NOT EXISTS idx_crypto_events_v4_scope_time
-    ON crypto_events(
-        (metadata::jsonb->>'crypto_study_id'),
-        (metadata::jsonb->>'capture_session_id'),
-        symbol,
-        event_type,
-        event_time,
-        received_time,
-        ledger_seq
-    )
-    WHERE (metadata::jsonb->>'crypto_study_id')='crypto-binance-spot-prospective-v4';
-
 CREATE TABLE IF NOT EXISTS crypto_connection_events (
     connection_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -495,6 +479,17 @@ class CryptoStore:
                             "SELECT pg_advisory_xact_lock(hashtext('gorila_crypto_schema_v1'))"
                         )
                         cur.execute(SCHEMA)
+                        cur.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_crypto_events_v4_scope_time
+                            ON crypto_events(
+                                (metadata::jsonb->>'crypto_study_id'),
+                                (metadata::jsonb->>'capture_session_id'),
+                                symbol,event_type,event_time,received_time,ledger_seq
+                            )
+                            WHERE (metadata::jsonb->>'crypto_study_id')='crypto-binance-spot-prospective-v4'
+                            """
+                        )
                         # Storage footprint migration: these secondary indexes
                         # duplicate access paths that are not required by the
                         # live market path or bounded chart/read contracts.
