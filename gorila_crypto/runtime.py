@@ -13,8 +13,10 @@ import hashlib
 import queue
 import threading
 import time
+import math
+from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from gorila_core.market_freshness import assess_observation
@@ -25,6 +27,7 @@ from .market_cache import MARKET_CACHE
 from .config import settings
 from .evidence_spool import EvidenceSpool
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .forecast import FEATURE_SET_VERSION, build_microstructure_feature_vector, feature_set_hash
 from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
 
@@ -162,6 +165,21 @@ class ProspectiveCryptoIngestor:
         self._bookticker_persist_interval = float(
             self.protocol.bookticker_persistence_interval_seconds
         )
+        # Compact, non-blocking alpha evidence derived from the live hot plane.
+        self._alpha_recent_5s: dict[str, deque[NormalizedMarketEvent]] = {}
+        self._alpha_anchor_1s: dict[str, NormalizedMarketEvent | None] = {}
+        self._alpha_anchor_candidates: dict[str, deque[NormalizedMarketEvent]] = {}
+        self._alpha_latest_book: dict[str, NormalizedMarketEvent] = {}
+        self._alpha_last_trigger_monotonic: dict[str, float] = {}
+        self._alpha_trigger_times: dict[str, deque[float]] = {}
+        self._alpha_min_refractory_seconds = max(1.0, float(self.protocol.refractory_seconds))
+        self._alpha_max_triggers_per_minute = 8
+        self._alpha_pending_snapshots: list[dict[str, Any]] = []
+        self._alpha_pending_started_monotonic: float | None = None
+        self._alpha_snapshot_queue: queue.Queue[list[dict[str, Any]]] = queue.Queue(maxsize=64)
+        self._alpha_snapshots_created = 0
+        self._alpha_snapshots_persisted = 0
+        self._alpha_snapshots_dropped = 0
 
         self.config.validate()
 
