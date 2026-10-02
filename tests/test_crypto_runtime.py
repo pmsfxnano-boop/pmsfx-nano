@@ -381,3 +381,11 @@ def test_runtime_default_batching_is_throughput_safe() -> None:
     config = IngestRuntimeConfig()
     assert config.event_batch_size >= 1000
     assert config.event_batch_flush_interval_seconds >= 0.50
+
+
+def test_alpha_feature_construction_is_not_on_market_ingest_hot_path() -> None:
+    import inspect
+    import gorila_crypto.runtime as runtime_module
+
+    source = inspect.getsource(runtime_module.ProspectiveCryptoIngestor._ingest)
+    assert "_maybe_emit_alpha_snapshots" not in source

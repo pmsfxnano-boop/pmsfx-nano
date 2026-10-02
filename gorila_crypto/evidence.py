@@ -74,6 +74,13 @@ def _query(conn, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]
     return [dict(zip(cols, row)) for row in rows]
 
 
+def _shadow_fingerprint(session_id: str) -> str:
+    """Build the current-session online-shadow identity from the active protocol."""
+    return hashlib.sha256(
+        f"shadow|{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{session_id}|{FEATURE_SET_VERSION}".encode("utf-8")
+    ).hexdigest()
+
+
 def _current_research_fingerprint(
     conn,
     session_id: str | None,
@@ -597,9 +604,7 @@ def _online_shadow_diagnostics(
             "regime_slices": {},
         }
 
-    shadow_fingerprint = hashlib.sha256(
-        f"shadow|{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{session_id}|{FEATURE_SET_VERSION}".encode("utf-8")
-    ).hexdigest()
+    shadow_fingerprint = _shadow_fingerprint(session_id)
 
     rows = _query(
         conn,
@@ -1106,7 +1111,11 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                     "hot_plane_lossless": True,
                 },
                 "alpha_feature_set": FEATURE_SET_VERSION,
-                "alpha_model_version": "2",
+                "alpha_model_version": (
+                    str((online_shadow.get("latest") or {}).get("model_version"))
+                    if (online_shadow.get("latest") or {}).get("model_version")
+                    else "NOT_FITTED"
+                ),
                 "promotion_latency_guard": {
                     "median_max_ratio": 0.50,
                     "p95_max_ratio": 0.75,
