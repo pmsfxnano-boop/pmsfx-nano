@@ -43,6 +43,13 @@ from .validation import (
 SOURCE = "gorila.crypto.online_shadow_alpha"
 MODEL_ID = "crypto-online-microstructure-ridge-shadow-v1"
 MAX_PENDING_LOOKBACK_SECONDS = 30.0
+# Shadow-only economic dead zone. Returns whose absolute move does not
+# overcome the preregistered base round-trip friction are neutral for online
+# model training; the formal v6 PIT/OOS label contract remains unchanged.
+SHADOW_NEUTRAL_BPS = (
+    float(PREREGISTERED_CRYPTO_PROTOCOL.base_cost_bps)
+    + float(PREREGISTERED_CRYPTO_PROTOCOL.base_slippage_bps)
+)
 HORIZON_CYCLE_MS = PREREGISTERED_CRYPTO_PROTOCOL.forecast_horizons_ms
 
 
@@ -420,6 +427,7 @@ class OnlineShadowAlpha:
                     JOIN crypto_forecast_outcomes o ON o.forecast_id=s.forecast_id
                     WHERE o.status='RESOLVED'
                       AND o.realized_target IS NOT NULL
+                      AND COALESCE((o.metadata::jsonb->>'shadow_neutral')::boolean, FALSE) = FALSE
                       AND o.observed_at::timestamptz <= %s::timestamptz
                       AND s.feature_set_hash IS NOT NULL
                       AND s.model_id=%s
@@ -667,7 +675,9 @@ class OnlineShadowAlpha:
                                         (_dt(future["event_time"]) - decision_event).total_seconds() * 1000.0
                                     )
                                 ),
-                                "shadow_execution_proxy_bps": (
+                                "shadow_neutral": bool(abs(signed) < SHADOW_NEUTRAL_BPS),
+                            "shadow_deadzone_bps": float(SHADOW_NEUTRAL_BPS),
+                            "shadow_execution_proxy_bps": (
                                     float(PREREGISTERED_CRYPTO_PROTOCOL.base_cost_bps)
                                     + float(PREREGISTERED_CRYPTO_PROTOCOL.base_slippage_bps)
                                     + 0.5 * abs(float(features.get("target_spread_bps") or 0.0))
