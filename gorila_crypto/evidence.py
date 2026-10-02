@@ -434,6 +434,20 @@ def _online_shadow(conn, *, shadow_fingerprint: str | None) -> dict[str, Any]:
         """,
         (shadow_fingerprint,),
     )[0]
+    latest = _query(
+        conn,
+        """
+        SELECT forecast_id,created_at,status,model_id,model_version,
+               symbol,target_symbol,horizon_ms,target_kind,semantics,
+               probability_response_positive,decision_event_time,
+               decision_received_time,feature_set_hash
+        FROM crypto_forecast_shadow
+        WHERE replay_fingerprint=%s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (shadow_fingerprint,),
+    )
     total = int(counts["n"] or 0)
     outcomes_count = int(outcomes["n"] or 0)
     return {
@@ -455,6 +469,15 @@ def _online_shadow(conn, *, shadow_fingerprint: str | None) -> dict[str, Any]:
             float(recent["mean_probability"])
             if recent["mean_probability"] is not None
             else None
+        ),
+        "latest": (
+            {
+                **latest[0],
+                "created_at": _iso(latest[0]["created_at"]),
+                "decision_event_time": _iso(latest[0]["decision_event_time"]),
+                "decision_received_time": _iso(latest[0]["decision_received_time"]),
+            }
+            if latest else None
         ),
     }
 
@@ -889,12 +912,20 @@ def _observed_regime() -> dict[str, Any]:
 
 def _opportunity_clock(
     *,
+    now: datetime,
     cohort: dict[str, Any],
     quality: dict[str, Any],
     validation: dict[str, Any],
     forecast: dict[str, Any],
     opportunity: dict[str, Any],
+    online_shadow: dict[str, Any],
 ) -> dict[str, Any]:
+    """Expose a fail-closed, time-bounded opportunity state from validated evidence.
+
+    The temporal phase is a deterministic presentation of the latest current-session
+    forecast horizon. It is not a new predictive model: validation and current-session
+    forecast evidence remain mandatory before activation.
+    """
     blockers: list[str] = []
     if not cohort.get("mature"):
         blockers.append("PROSPECTIVE_COHORT_NOT_MATURE")
@@ -907,17 +938,106 @@ def _opportunity_clock(
     if opportunity.get("count", 0) <= 0:
         blockers.append("NO_OPPORTUNITY_SHADOW")
 
-    active = not blockers
-    return {
-        "state": "ACTIVE" if active else "LOCKED",
-        "validated": bool(active),
-        "mode": "VALIDATED" if active else "SHADOW",
-        "horizon_ms": validation.get("latest", {}).get("horizon_ms") if active and validation.get("latest") else None,
-        "remaining_seconds": None,
-        "blockers": blockers,
-        "rule": "Opportunity Clock can activate only when cohort + current Quality PASS + PIT/OOS promotion eligibility + forecast shadow + opportunity shadow are all present.",
-    }
+    latest = online_shadow.get("latest") or {}
+    decision_at = _dt(latest.get("decision_received_time"))
+    horizon_ms = int(latest.get("horizon_ms") or 0)
+    probability = (
+        float(latest["probability_response_positive"])
+        if latest.get("probability_response_positive") is not None
+        else None
+    )
 
+    if not decision_at or horizon_ms <= 0:
+        blockers.append("NO_CURRENT_FORECAST_WINDOW")
+    elif (now - decision_at).total_seconds() < 0:
+        blockers.append("FORECAST_TIME_AHEAD_OF_SERVER")
+    elif (now - decision_at).total_seconds() * 1000.0 >= horizon_ms:
+        blockers.append("CURRENT_FORECAST_WINDOW_EXPIRED")
+
+    active = not blockers
+    if not active:
+        return {
+            "state": "LOCKED",
+            "validated": False,
+            "mode": "SHADOW" if blockers else "VALIDATED",
+            "horizon_ms": horizon_ms or validation.get("latest", {}).get("horizon_ms"),
+            "remaining_seconds": None,
+            "phase": "CLOSED" if "CURRENT_FORECAST_WINDOW_EXPIRED" in blockers else "LOCKED",
+            "window_started_at": _iso(decision_at),
+            "window_ends_at": (
+                _iso(decision_at.timestamp() + horizon_ms / 1000.0)
+                if decision_at and horizon_ms > 0
+                else None
+            ),
+            "entry_window_end_at": None,
+            "exit_window_start_at": None,
+            "exit_window_end_at": None,
+            "edge": None,
+            "confidence": None,
+            "probability": probability,
+            "decay_state": "LOCKED",
+            "leader_symbol": latest.get("symbol"),
+            "target_symbol": latest.get("target_symbol"),
+            "symbol": latest.get("target_symbol") or latest.get("symbol"),
+            "blockers": blockers,
+            "rule": (
+                "Opportunity Clock activates only when cohort + current Quality PASS + "
+                "PIT/OOS promotion eligibility + shadow opportunity + current-session "
+                "forecast window are all valid. The client only interpolates server time."
+            ),
+        }
+
+    age_seconds = max(0.0, (now - decision_at).total_seconds())
+    horizon_seconds = horizon_ms / 1000.0
+    remaining_seconds = max(0.0, horizon_seconds - age_seconds)
+
+    # Temporal phases are explicitly a presentation policy over the validated
+    # forecast horizon. They do not alter the statistical model or promotion gate.
+    entry_fraction = 0.50
+    exit_fraction = 0.75
+    entry_end = decision_at.timestamp() + horizon_seconds * entry_fraction
+    exit_start = decision_at.timestamp() + horizon_seconds * exit_fraction
+    window_end = decision_at.timestamp() + horizon_seconds
+
+    if age_seconds < horizon_seconds * entry_fraction:
+        phase = "ENTRY_WINDOW"
+        decay_state = "EARLY_WINDOW"
+    elif age_seconds < horizon_seconds * exit_fraction:
+        phase = "DECAYING"
+        decay_state = "EDGE_DECAYING"
+    else:
+        phase = "EXIT_WINDOW"
+        decay_state = "LATE_WINDOW"
+
+    conviction = max(probability or 0.5, 1.0 - (probability or 0.5))
+    edge = abs((probability or 0.5) - 0.5) * 2.0
+
+    return {
+        "state": "ACTIVE",
+        "validated": True,
+        "mode": "VALIDATED",
+        "horizon_ms": horizon_ms,
+        "remaining_seconds": remaining_seconds,
+        "phase": phase,
+        "window_started_at": _iso(decision_at),
+        "window_ends_at": datetime.fromtimestamp(window_end, timezone.utc).isoformat(),
+        "entry_window_end_at": datetime.fromtimestamp(entry_end, timezone.utc).isoformat(),
+        "exit_window_start_at": datetime.fromtimestamp(exit_start, timezone.utc).isoformat(),
+        "exit_window_end_at": datetime.fromtimestamp(window_end, timezone.utc).isoformat(),
+        "edge": edge,
+        "confidence": conviction * 100.0,
+        "probability": probability,
+        "decay_state": decay_state,
+        "leader_symbol": latest.get("symbol"),
+        "target_symbol": latest.get("target_symbol"),
+        "symbol": latest.get("target_symbol") or latest.get("symbol"),
+        "blockers": [],
+        "rule": (
+            "Validated forecast horizon with deterministic temporal phases: "
+            "ENTRY <50%, DECAYING 50–75%, EXIT 75–100%. "
+            "These phases describe time-to-horizon; they are not an independent sell signal."
+        ),
+    }
 
 def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
     """Build the frontend evidence contract with a bounded read-model cache to protect Postgres."""
@@ -961,11 +1081,13 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
 
         regime = _observed_regime()
         clock = _opportunity_clock(
+            now=now,
             cohort=cohort,
             quality=quality,
             validation=validation,
             forecast=forecast,
             opportunity=opportunity,
+            online_shadow=online_shadow,
         )
 
         payload = {

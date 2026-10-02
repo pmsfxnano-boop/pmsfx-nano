@@ -15,7 +15,10 @@ from gorila_crypto.evidence import _opportunity_clock
 
 
 def test_opportunity_clock_stays_locked_without_all_validation_gates() -> None:
+    from datetime import datetime, timezone
+
     payload = _opportunity_clock(
+        now=datetime(2026, 10, 2, 0, 0, tzinfo=timezone.utc),
         cohort={"mature": True},
         quality={"state": "PASS"},
         validation={
@@ -25,6 +28,7 @@ def test_opportunity_clock_stays_locked_without_all_validation_gates() -> None:
         },
         forecast={"count": 0},
         opportunity={"count": 0},
+        online_shadow={"state": "EMPTY", "latest": None},
     )
     assert payload["state"] == "LOCKED"
     assert payload["validated"] is False
@@ -34,7 +38,11 @@ def test_opportunity_clock_stays_locked_without_all_validation_gates() -> None:
 
 
 def test_opportunity_clock_can_activate_only_after_all_gates() -> None:
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 2, 0, 0, tzinfo=timezone.utc)
     payload = _opportunity_clock(
+        now=now,
         cohort={"mature": True},
         quality={"state": "PASS"},
         validation={
@@ -44,11 +52,31 @@ def test_opportunity_clock_can_activate_only_after_all_gates() -> None:
         },
         forecast={"count": 12},
         opportunity={"count": 4},
+        online_shadow={
+            "state": "READY",
+            "latest": {
+                "status": "SHADOW",
+                "symbol": "BTCUSDT",
+                "target_symbol": "ETHUSDT",
+                "horizon_ms": 1000,
+                "probability_response_positive": 0.75,
+                "decision_received_time": "2026-10-02T00:00:00+00:00",
+            },
+        },
     )
     assert payload["state"] == "ACTIVE"
     assert payload["validated"] is True
     assert payload["mode"] == "VALIDATED"
     assert payload["horizon_ms"] == 1000
+    assert payload["phase"] == "ENTRY_WINDOW"
+    assert payload["remaining_seconds"] == 1.0
+    assert payload["entry_window_end_at"] == "2026-10-02T00:00:00.500000+00:00"
+    assert payload["exit_window_start_at"] == "2026-10-02T00:00:00.750000+00:00"
+    assert payload["exit_window_end_at"] == "2026-10-02T00:00:01+00:00"
+    assert payload["confidence"] == 75.0
+    assert payload["edge"] == 0.5
+    assert payload["leader_symbol"] == "BTCUSDT"
+    assert payload["target_symbol"] == "ETHUSDT"
     assert payload["blockers"] == []
 
 
