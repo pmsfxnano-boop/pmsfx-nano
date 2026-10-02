@@ -304,4 +304,36 @@ class MarketReadCache:
             }
 
 
+    def research_snapshot(
+        self,
+        *,
+        symbols: Iterable[str],
+        trade_limit: int = 2000,
+    ) -> dict[str, Any]:
+        """Bounded research-plane snapshot; never used by the hot HTTP contract."""
+        safe_limit = max(128, min(int(trade_limit), self.max_events_per_symbol))
+        requested = tuple(dict.fromkeys(str(s).upper() for s in symbols if str(s).strip()))
+        with self._lock:
+            trades: list[MarketCacheEvent] = []
+            for symbol in requested:
+                items = [
+                    item
+                    for item in self._events.get(symbol, ())
+                    if item.event_type == "trade"
+                ]
+                trades.extend(items[-safe_limit:])
+            trades.sort(key=lambda item: item.stream_seq)
+            latest_books = {
+                symbol: self._latest_book[symbol]
+                for symbol in requested
+                if symbol in self._latest_book
+            }
+            return {
+                "events": [item.__dict__ for item in trades],
+                "latest_books": {
+                    symbol: book.__dict__ for symbol, book in latest_books.items()
+                },
+            }
+
+
 MARKET_CACHE = MarketReadCache()
