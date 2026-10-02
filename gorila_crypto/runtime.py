@@ -349,62 +349,83 @@ class ProspectiveCryptoIngestor:
     def _persistence_worker(self) -> None:
         """Durable writer isolated from the market event loop."""
         backoff = 0.25
-        while not self._persistence_stop.is_set() or not self._persistence_queue.empty():
+        while (
+            not self._persistence_stop.is_set()
+            or not self._persistence_queue.empty()
+            or not self._alpha_snapshot_queue.empty()
+        ):
             self._flush_source_health()
             if not self._persistence_stop.is_set() and self.session_id is not None:
                 if self._drain_one_spool_batch():
                     backoff = 0.25
                     continue
 
+            processed = False
             try:
-                rows = self._persistence_queue.get(timeout=0.5)
+                rows = self._persistence_queue.get(timeout=0.25)
             except queue.Empty:
-                continue
+                rows = None
 
-            # During cold start the market plane can become live before the
-            # durable session bootstrap finishes. Preserve those rows in the
-            # local evidence spool instead of treating the normal startup
-            # fence as a durability error.
-            if isinstance(self.store, QuantCryptoStore) and self.session_id is None:
-                self._spool_failed_rows(rows)
-                continue
+            if rows is not None:
+                processed = True
+                if isinstance(self.store, QuantCryptoStore) and self.session_id is None:
+                    self._spool_failed_rows(rows)
+                else:
+                    try:
+                        results = self._write_durable_rows(rows)
+                        self._record_persist_success(rows, results)
+                        backoff = 0.25
+                    except Exception as exc:
+                        self._persistence_error = f"{type(exc).__name__}: {exc}"
+                        MARKET_CACHE.record_persistence_degradation(self._persistence_error)
+                        self._spool_failed_rows(rows)
+                        backoff = min(10.0, backoff * 2.0)
+                        if not self._persistence_stop.is_set():
+                            time.sleep(backoff)
 
             try:
-                results = self._write_durable_rows(rows)
-                self._record_persist_success(rows, results)
-                backoff = 0.25
-            except Exception as exc:
-                self._persistence_error = f"{type(exc).__name__}: {exc}"
-                MARKET_CACHE.record_persistence_degradation(
-                    self._persistence_error
-                )
-                print(
-                    "GORILA_DURABLE_WRITE_ERROR "
-                    + json.dumps(
-                        {
-                            "error": self._persistence_error,
-                            "rows": len(rows),
-                            "capture_session_id": self.session_id,
-                        },
-                        sort_keys=True,
-                        default=str,
-                    ),
-                    flush=True,
-                )
-                self._spool_failed_rows(rows)
-                backoff = min(10.0, backoff * 2.0)
-                if self._persistence_stop.is_set():
-                    continue
-                time.sleep(backoff)
+                alpha_rows = self._alpha_snapshot_queue.get_nowait()
+            except queue.Empty:
+                alpha_rows = None
 
-        # A shutdown/deploy must leave queued evidence in the spool rather
-        # than silently discarding it.
+            if alpha_rows is not None:
+                processed = True
+                if isinstance(self.store, QuantCryptoStore) and self.session_id is None:
+                    self._alpha_snapshots_dropped += len(alpha_rows)
+                elif isinstance(self.store, QuantCryptoStore):
+                    try:
+                        inserted = self.store.append_alpha_feature_snapshots(alpha_rows)
+                        self._alpha_snapshots_persisted += int(inserted)
+                    except Exception as exc:
+                        self._persistence_error = f"alpha_snapshot:{type(exc).__name__}: {exc}"
+                        self._alpha_snapshots_dropped += len(alpha_rows)
+                else:
+                    self._alpha_snapshots_dropped += len(alpha_rows)
+
+            if not processed:
+                continue
+
         while True:
             try:
                 rows = self._persistence_queue.get_nowait()
             except queue.Empty:
                 break
             self._spool_failed_rows(rows)
+
+        while True:
+            try:
+                alpha_rows = self._alpha_snapshot_queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(self.store, QuantCryptoStore):
+                try:
+                    inserted = self.store.append_alpha_feature_snapshots(alpha_rows)
+                    self._alpha_snapshots_persisted += int(inserted)
+                except Exception:
+                    self._alpha_snapshots_dropped += len(alpha_rows)
+            else:
+                self._alpha_snapshots_dropped += len(alpha_rows)
+
         self._flush_source_health(force=True)
 
     def _trade_sample_eligible(self, event: NormalizedMarketEvent) -> bool:
@@ -940,6 +961,18 @@ class ProspectiveCryptoIngestor:
             if self._alpha_pending_started_monotonic is None:
                 self._alpha_pending_started_monotonic = time.monotonic()
 
+    def _flush_pending_alpha_snapshots(self) -> None:
+        if not self._alpha_pending_snapshots:
+            self._alpha_pending_started_monotonic = None
+            return
+        rows = self._alpha_pending_snapshots
+        self._alpha_pending_snapshots = []
+        self._alpha_pending_started_monotonic = None
+        try:
+            self._alpha_snapshot_queue.put(rows, timeout=0.01)
+        except queue.Full:
+            self._alpha_snapshots_dropped += len(rows)
+
     def _flush_pending_events(self) -> None:
         if not self._pending_event_rows:
             self._pending_event_started_monotonic = None
@@ -1005,6 +1038,8 @@ class ProspectiveCryptoIngestor:
             MARKET_CACHE.append_observed([event_kwargs])
         else:
             self.last_event = event
+        if self.session_id is not None and event.event_type in {"trade", "bookTicker"}:
+            self._maybe_emit_alpha_snapshots(event)
 
         gap = self.sequence.observe(event)
         if gap is not None:
@@ -1397,6 +1432,17 @@ class ProspectiveCryptoIngestor:
             self._health_pending.clear()
         self._pending_event_rows.clear()
         self._pending_event_started_monotonic = None
+        self._alpha_recent_5s.clear()
+        self._alpha_anchor_1s.clear()
+        self._alpha_anchor_candidates.clear()
+        self._alpha_latest_book.clear()
+        self._alpha_last_trigger_monotonic.clear()
+        self._alpha_trigger_times.clear()
+        self._alpha_pending_snapshots.clear()
+        self._alpha_pending_started_monotonic = None
+        self._alpha_snapshots_created = 0
+        self._alpha_snapshots_persisted = 0
+        self._alpha_snapshots_dropped = 0
         self._last_bookticker_persist_monotonic.clear()
         self._persistence_error = None
         self._persistence_dropped_events = 0
@@ -1437,6 +1483,16 @@ class ProspectiveCryptoIngestor:
             ):
                 self._ingest(event)
                 now_monotonic = time.monotonic()
+                alpha_pending_age = (
+                    now_monotonic - self._alpha_pending_started_monotonic
+                    if self._alpha_pending_started_monotonic is not None
+                    else 0.0
+                )
+                if (
+                    len(self._alpha_pending_snapshots) >= 16
+                    or alpha_pending_age >= self.config.event_batch_flush_interval_seconds
+                ):
+                    self._flush_pending_alpha_snapshots()
                 pending_age = (
                     now_monotonic - self._pending_event_started_monotonic
                     if self._pending_event_started_monotonic is not None
@@ -1461,6 +1517,7 @@ class ProspectiveCryptoIngestor:
             self._record_connection("ERROR", {"error": self.last_error})
         finally:
             self._flush_pending_events()
+            self._flush_pending_alpha_snapshots()
             self._bootstrap_stop.set()
             if self._bootstrap_thread is not None:
                 self._bootstrap_thread.join(timeout=3.0)
@@ -1476,6 +1533,10 @@ class ProspectiveCryptoIngestor:
                 "persistence_error": self._persistence_error,
                 "persistence_dropped_events": self._persistence_dropped_events,
                 "persistence_queue_batches": self._persistence_queue.qsize(),
+                "alpha_snapshot_queue_batches": self._alpha_snapshot_queue.qsize(),
+                "alpha_snapshots_created": self._alpha_snapshots_created,
+                "alpha_snapshots_persisted": self._alpha_snapshots_persisted,
+                "alpha_snapshots_dropped": self._alpha_snapshots_dropped,
                 "last_event_time": (
                     self.last_event.event_time.isoformat()
                     if self.last_event is not None
