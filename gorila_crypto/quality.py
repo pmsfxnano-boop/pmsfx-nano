@@ -131,7 +131,7 @@ def evaluate_replay_quality(
         cutoff = cutoff.replace(tzinfo=timezone.utc)
     cutoff = cutoff.astimezone(timezone.utc)
 
-    ordered = list(rows)
+    ordered = sorted(list(rows), key=lambda row: int(row.get("ledger_seq") or 0))
     by_symbol: dict[str, list[Mapping[str, Any]]] = {}
     invalid_timestamp_count = 0
     future_event_count = 0
