@@ -121,6 +121,19 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 .clock-inner strong{display:block;font-size:32px;color:#f0c35f;margin:10px 0 2px}
 .clock.active .clock-inner strong{color:var(--green)}
 .clock-inner small{color:#adc0c7;font-size:10px;letter-spacing:.1em}
+.clock.closed{background:conic-gradient(var(--red) 0 100%,#242b2c 100%)}
+.opportunity-panel{overflow:hidden}
+.opportunity-window-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}
+.window-card{border:1px solid #1b2a33;border-radius:13px;padding:14px;background:#091116;min-width:0}
+.window-card small{display:block;color:#5f737f;font-size:8px;letter-spacing:.14em}
+.window-card b{display:block;font-size:13px;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.window-card span{display:block;color:#647a85;font-size:8px;margin-top:5px}
+.window-card.good{border-color:#23483a}.window-card.good b{color:#9be8c9}
+.window-card.warn{border-color:#4a3b21}.window-card.warn b{color:#f0cf87}
+.clock-meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.clock-meta{border-top:1px solid #172731;padding-top:11px}
+.clock-meta small{display:block;color:#5f7480;font-size:8px;letter-spacing:.12em}
+.clock-meta b{display:block;margin-top:5px;font-size:10px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .gate-copy{text-align:center;max-width:760px;margin:0 auto}
 .gate-copy h3{margin:12px 0 8px;font-size:19px;letter-spacing:.05em;text-transform:uppercase}
 .gate-copy p{color:#8ca0ab;line-height:1.6;font-size:12px;margin:0}
@@ -188,6 +201,8 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .state-strip{grid-template-columns:1fr 1fr}
   .state-strip div:nth-child(2){border-right:0}
   .state-strip div:nth-last-child(-n+2){border-bottom:0}
+  .opportunity-window-grid{grid-template-columns:1fr 1fr}
+  .clock-meta-grid{grid-template-columns:1fr 1fr}
   .gate-grid{grid-template-columns:1fr 1fr}
   .research-grid,.quality-grid,.durability-grid{grid-template-columns:1fr 1fr}
   .protocol{grid-template-columns:1fr 1fr}
@@ -202,7 +217,8 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .symbol-card{min-width:258px}
   .tape-head,.tape-row{grid-template-columns:1.1fr .75fr 1fr .8fr}
   .tape-head span:last-child,.tape-row span:last-child{display:none}
-  .research-grid,.quality-grid,.durability-grid,.gate-grid{grid-template-columns:1fr}
+  .research-grid,.quality-grid,.durability-grid,.gate-grid,.opportunity-window-grid{grid-template-columns:1fr}
+  .clock-meta-grid{grid-template-columns:1fr 1fr}
   .brandline{font-size:9px}
   .section-head{align-items:flex-start}
   .section-head h2{font-size:20px}
