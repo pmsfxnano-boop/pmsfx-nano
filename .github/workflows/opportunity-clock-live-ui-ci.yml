@@ -2,7 +2,6 @@ name: opportunity-clock-live-ui-ci
 
 on:
   pull_request:
-    branches: [gorila-argentum-terminal-live-v2]
 
 jobs:
   frontend:
