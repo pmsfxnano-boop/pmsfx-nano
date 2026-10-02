@@ -30,7 +30,6 @@ from .market_cache import MARKET_CACHE
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quant_store import QuantCryptoStore
 from .validation import (
-    EconomicPolicySpec,
     ForecastDatasetRow,
     ForecastLabel,
     WalkForwardConfig,
@@ -210,9 +209,9 @@ class OnlineShadowAlpha:
         self._last_train = 0.0
         self._horizon_index = 0
         self._last_leader_event: dict[tuple[str, str], str] = {}
-        self._model = None
-        self._model_spec_hash: str | None = None
-        self._training_rows_used = 0
+        self._models: dict[int, Any] = {}
+        self._model_spec_hashes: dict[int, str] = {}
+        self._training_rows_used: dict[int, int] = {}
         self._last_training_time: datetime | None = None
         self._session_id: str | None = None
         self._shadow_fingerprint = ""
@@ -413,7 +412,7 @@ class OnlineShadowAlpha:
         candidates.sort(key=lambda item: (item["absolute_score"], item["decision_received"]), reverse=True)
         return candidates[0]
 
-    def _training_dataset(self, cutoff: datetime) -> list[ForecastDatasetRow]:
+    def _training_dataset(self, cutoff: datetime, horizon_ms: int) -> list[ForecastDatasetRow]:
         conn = self.store.connect()
         try:
             with conn.cursor() as cur:
@@ -429,12 +428,16 @@ class OnlineShadowAlpha:
                       AND o.observed_at::timestamptz <= %s::timestamptz
                       AND s.feature_set_hash IS NOT NULL
                       AND s.model_id=%s
+                      AND s.replay_fingerprint=%s
+                      AND s.horizon_ms=%s
                     ORDER BY s.decision_received_time DESC
                     LIMIT %s
                     """,
                     (
                         cutoff.isoformat(),
                         MODEL_ID,
+                        self._shadow_fingerprint,
+                        int(horizon_ms),
                         self.training_rows,
                     ),
                 )
@@ -485,32 +488,34 @@ class OnlineShadowAlpha:
         self._last_train = time.monotonic()
         if not self._resolve_session():
             return
-        dataset = self._training_dataset(now)
-        if len(dataset) < self.min_training_rows:
-            return
-        labels = [row.label.realized_target for row in dataset]
-        if len(set(labels)) < 2:
-            return
-        config = WalkForwardConfig(
-            min_train_rows=1,
-            test_rows=1,
-            step_rows=1,
-            ridge_alpha=1.0,
-            max_iterations=60,
-            convergence_tol=1e-7,
-        )
-        model = fit_ridge_logistic(
-            dataset,
-            tuple(range(len(dataset))),
-            MICROSTRUCTURE_FEATURES,
-            config,
-            model_id=MODEL_ID,
-            version="online-v1",
-        )
-        self._model = model
-        self._model_spec_hash = model.spec_hash
-        self._training_rows_used = len(dataset)
-        self._last_training_time = now
+        for horizon_ms in HORIZON_CYCLE_MS:
+            dataset = self._training_dataset(now, int(horizon_ms))
+            if len(dataset) < self.min_training_rows:
+                continue
+            labels = [row.label.realized_target for row in dataset]
+            if len(set(labels)) < 2:
+                continue
+            config = WalkForwardConfig(
+                min_train_rows=1,
+                test_rows=1,
+                step_rows=1,
+                ridge_alpha=1.0,
+                max_iterations=60,
+                convergence_tol=1e-7,
+            )
+            model = fit_ridge_logistic(
+                dataset,
+                tuple(range(len(dataset))),
+                MICROSTRUCTURE_FEATURES,
+                config,
+                model_id=f"{MODEL_ID}-h{horizon_ms}",
+                version="online-v1",
+            )
+            self._models[int(horizon_ms)] = model
+            self._model_spec_hashes[int(horizon_ms)] = model.spec_hash
+            self._training_rows_used[int(horizon_ms)] = len(dataset)
+        if self._models:
+            self._last_training_time = now
 
     def _persist_forecast(
         self,
@@ -519,13 +524,15 @@ class OnlineShadowAlpha:
         probability: float | None,
     ) -> str:
         forecast_id = str(uuid.uuid4())
+        model_spec_hash = self._model_spec_hashes.get(int(horizon_ms))
+        training_rows = self._training_rows_used.get(int(horizon_ms), 0)
         metadata = {
             "alpha_family": "microstructure",
             "feature_set_version": FEATURE_SET_VERSION,
             "selection_score": candidate["selection_score"],
             "absolute_selection_score": candidate["absolute_score"],
-            "model_spec_hash": self._model_spec_hash,
-            "training_rows": self._training_rows_used,
+            "model_spec_hash": model_spec_hash,
+            "training_rows": training_rows,
             "training_finished_at": self._last_training_time.isoformat() if self._last_training_time else None,
             "research_status": "SHADOW_ONLY",
         }
@@ -599,11 +606,15 @@ class OnlineShadowAlpha:
                     FROM crypto_forecast_shadow s
                     LEFT JOIN crypto_forecast_outcomes o ON o.forecast_id=s.forecast_id
                     WHERE o.forecast_id IS NULL
+                      AND s.replay_fingerprint=%s
                       AND s.created_at::timestamptz >= %s::timestamptz
                     ORDER BY s.created_at ASC
                     LIMIT 250
                     """,
-                    ((now - timedelta(seconds=MAX_PENDING_LOOKBACK_SECONDS)).isoformat(),),
+                    (
+                        self._shadow_fingerprint,
+                        (now - timedelta(seconds=MAX_PENDING_LOOKBACK_SECONDS)).isoformat(),
+                    ),
                 )
                 pending = cur.fetchall()
 
@@ -696,11 +707,11 @@ class OnlineShadowAlpha:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "status": "READY" if self._model is not None else "WARMING",
+            "status": "READY" if self._models else "WARMING",
             "feature_set_version": FEATURE_SET_VERSION,
             "model_id": MODEL_ID,
-            "model_spec_hash": self._model_spec_hash,
-            "training_rows": self._training_rows_used,
+"model_spec_hash": self._model_spec_hashes.get(int(horizon_ms)),
+"training_rows": self._training_rows_used.get(int(horizon_ms), 0),
             "last_training_time": self._last_training_time.isoformat() if self._last_training_time else None,
             "shadow_session_id": self._session_id,
             "shadow_fingerprint": self._shadow_fingerprint,
@@ -717,7 +728,7 @@ class OnlineShadowAlpha:
         if candidate is None:
             return
         probability = None
-        if self._model is not None:
+        if int(horizon) in self._models:
             snapshot = DetectionFeatureSnapshot(
                 feature_set_version=FEATURE_SET_VERSION,
                 decision_event_time=candidate["decision_event"],
@@ -729,7 +740,7 @@ class OnlineShadowAlpha:
                 source_event_ids=tuple(candidate["source_ids"]),
                 feature_set_hash="online",
             )
-            probability = predict_probability(self._model, snapshot)
+            probability = predict_probability(self._models[int(horizon)], snapshot)
         horizon = int(HORIZON_CYCLE_MS[self._horizon_index % len(HORIZON_CYCLE_MS)])
         self._horizon_index += 1
         self._persist_forecast(candidate, horizon, probability)
