@@ -6,6 +6,7 @@ the legacy CryptoStore schema contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -295,6 +296,7 @@ class QuantCryptoStore(CryptoStore):
             try:
                 with conn.cursor() as cur:
                     cur.execute("TRUNCATE TABLE crypto_events RESTART IDENTITY")
+                    cur.execute("TRUNCATE TABLE crypto_events_v5 RESTART IDENTITY")
                     cur.execute("TRUNCATE TABLE crypto_data_gaps")
                     cur.execute(
                         """
@@ -378,6 +380,51 @@ class QuantCryptoStore(CryptoStore):
                 deleted_rows += batch
                 if batch == 0:
                     break
+        finally:
+            conn.close()
+
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                if keep_session_id:
+                    cur.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT e.ctid
+                            FROM crypto_events_v5 e
+                            WHERE e.capture_session_id <> %s::uuid
+                              AND e.capture_session_id IN (
+                                  SELECT s.session_id::uuid
+                                  FROM crypto_capture_sessions s
+                                  WHERE s.status NOT IN ('STARTING','RUNNING')
+                              )
+                            LIMIT 5000
+                        )
+                        DELETE FROM crypto_events_v5 e
+                        USING doomed d
+                        WHERE e.ctid = d.ctid
+                        """,
+                        (keep_session_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        WITH doomed AS (
+                            SELECT e.ctid
+                            FROM crypto_events_v5 e
+                            WHERE e.capture_session_id IN (
+                                SELECT s.session_id::uuid
+                                FROM crypto_capture_sessions s
+                                WHERE s.status NOT IN ('STARTING','RUNNING')
+                            )
+                            LIMIT 5000
+                        )
+                        DELETE FROM crypto_events_v5 e
+                        USING doomed d
+                        WHERE e.ctid = d.ctid
+                        """
+                    )
+            conn.commit()
         finally:
             conn.close()
 
@@ -1286,6 +1333,45 @@ class QuantCryptoStore(CryptoStore):
 
     def scoped_stats(self, *, study_id: str, capture_session_id: str | None = None) -> dict[str, Any]:
         self.init()
+        if self._is_v5_study(study_id):
+            clauses = ["study_id=%s"] if self._pg else ["study_id=?"]
+            params: list[Any] = [study_id]
+            if capture_session_id is not None:
+                clauses.append("capture_session_id=%s" if self._pg else "capture_session_id=?")
+                params.append(capture_session_id)
+            where = " AND ".join(clauses)
+            query = (
+                "SELECT symbol,event_type,count(*) AS rows,"
+                "min(event_time) AS first_event,max(event_time) AS last_event "
+                f"FROM crypto_events_v5 WHERE {where} "
+                "GROUP BY symbol,event_type ORDER BY symbol,event_type"
+            )
+            conn = self.connect()
+            try:
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(query, params); rows = cur.fetchall()
+                else:
+                    rows = conn.execute(query, params).fetchall()
+            finally:
+                conn.close()
+            grouped = [
+                {
+                    "symbol": str(row[0]),
+                    "event_type": str(row[1]),
+                    "rows": int(row[2]),
+                    "first_event": str(row[3]),
+                    "last_event": str(row[4]),
+                }
+                for row in rows
+            ]
+            return {
+                "study_id": study_id,
+                "capture_session_id": capture_session_id,
+                "backend": self.backend,
+                "event_counts": grouped,
+                "total_rows": sum(item["rows"] for item in grouped),
+            }
         params: list[Any] = [study_id]
         placeholder = "%s" if self._pg else "?"
         clauses = ["e.metadata::jsonb->>'crypto_study_id'=%s"] if self._pg else [
