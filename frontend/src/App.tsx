@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   fetchConfig,
   fetchEvidence,
@@ -13,6 +13,7 @@ import {
   type MarketEvent,
   type SymbolMarket,
 } from "./api";
+import { projectOpportunityClock } from "./opportunityClock";
 
 type Tab = "terminal" | "opportunity" | "research" | "quality";
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
@@ -284,38 +285,153 @@ function TimelineNode({ label, value, detail, tone }: { label: string; value: st
   );
 }
 
+function formatDuration(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  const rounded = Math.max(0, Math.ceil(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
 function Opportunity({ evidence }: { evidence: EvidenceResponse | null }) {
   const clock = evidence?.opportunity_clock;
-  const active = clock?.state === "ACTIVE";
-  const progress = num(evidence?.cohort?.progress_pct) ?? 0;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!clock?.validated) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [clock?.validated, clock?.state]);
+
+  const projection = useMemo(
+    () => projectOpportunityClock(clock, evidence?.generated_at, nowMs),
+    [clock, evidence?.generated_at, nowMs],
+  );
+
+  const progressPercent = Math.round(projection.progress * 100);
+  const clockBackground = projection.phase === "LOCKED"
+    ? "conic-gradient(var(--amber) 0 4%, #242b2c 4% 100%)"
+    : projection.phase === "CLOSED"
+      ? "conic-gradient(var(--red) 0 100%, #242b2c 100%)"
+      : `conic-gradient(var(--green) 0 ${progressPercent}%, var(--cyan) ${progressPercent}% 100%)`;
+
+  const activeCountdown = formatDuration(projection.remainingSeconds);
+  const entryEnd = clock?.entry_window_end_at || projection.entryEndsAt;
+  const exitStart = clock?.exit_window_start_at || projection.exitStartsAt;
+  const exitEnd = clock?.exit_window_end_at || projection.exitEndsAt;
+  const edge = num(clock?.edge);
+  const confidence = num(clock?.confidence);
+
+  const gateState = Boolean(clock?.validated && clock.state === "ACTIVE");
+  const phaseStatus = projection.phase === "LOCKED"
+    ? "GATED"
+    : projection.phase === "CLOSED"
+      ? "CLOSED"
+      : projection.phase;
+
+  const clockStyle: CSSProperties = { background: clockBackground };
+
   return (
     <section className="panel opportunity-panel">
       <div className="section-head">
-        <div><div className="eyebrow"><Icon name="clock" /> OPPORTUNITY CLOCK</div><h2>Activation gate</h2></div>
+        <div><div className="eyebrow"><Icon name="clock" /> OPPORTUNITY CLOCK</div><h2>Time-of-edge monitor</h2></div>
         <span className="tag">{clock?.mode || "SHADOW"}</span>
       </div>
-      <div className={`clock ${active ? "active" : "locked"}`}>
+
+      <div className={`clock ${gateState ? "active" : projection.phase === "CLOSED" ? "closed" : "locked"}`} style={clockStyle}>
         <div className="clock-inner">
-          <span>GATE</span>
-          <strong>{clock?.state || "LOCKED"}</strong>
-          <small>{active ? "VALIDATED" : "PIT / OOS"}</small>
+          <span>STATE</span>
+          <strong>{projection.label}</strong>
+          <small>{gateState ? activeCountdown : clock?.mode || "FAIL-CLOSED"}</small>
         </div>
       </div>
+
       <div className="gate-copy">
-        <StatusPill status={active ? "ACTIVE" : "GATED"} />
-        <h3>{active ? "Evidence contract passed" : "Waiting for evidence"}</h3>
-        <p>{clock?.rule || "The clock stays fail-closed until the prospective cohort, current Quality Gate, PIT/OOS and shadow evidence all pass."}</p>
+        <StatusPill status={phaseStatus} />
+        <h3>
+          {projection.phase === "ENTRY_WINDOW" && projection.canDisplayCountdown
+            ? `${activeCountdown} remaining to window end`
+            : projection.phase === "EXIT_WINDOW"
+              ? `Exit window ${activeCountdown}`
+              : projection.phase === "DECAYING"
+                ? `Edge decaying · ${activeCountdown}`
+                : projection.phase === "CLOSED"
+                  ? "Opportunity window closed"
+                  : "Waiting for validated opportunity"}
+        </h3>
+        <p>
+          {gateState
+            ? "The server supplies the authoritative opportunity state and window. The client only interpolates the remaining time between evidence updates."
+            : clock?.rule || "The clock stays fail-closed until the prospective cohort, Quality Gate, PIT/OOS evidence and validated opportunity state pass."}
+        </p>
       </div>
+
+      <div className="opportunity-window-grid">
+        <WindowCard
+          label="ENTRY WINDOW"
+          value={entryEnd ? `OPEN UNTIL ${timeOnly(entryEnd)}` : projection.phase === "ENTRY_WINDOW" ? "OPEN" : "—"}
+          meta={projection.phase === "ENTRY_WINDOW" && projection.canDisplayCountdown ? `${activeCountdown} remaining` : "authoritative phase required"}
+          tone={projection.phase === "ENTRY_WINDOW" ? "good" : "neutral"}
+        />
+        <WindowCard
+          label="EXIT WINDOW"
+          value={projection.phase === "EXIT_WINDOW" ? (exitEnd ? `UNTIL ${timeOnly(exitEnd)}` : "ACTIVE") : exitStart ? `STARTS ${timeOnly(exitStart)}` : "STANDBY"}
+          meta={projection.phase === "EXIT_WINDOW" && projection.canDisplayCountdown ? `${activeCountdown} remaining` : "activated by server state"}
+          tone={projection.phase === "EXIT_WINDOW" ? "warn" : "neutral"}
+        />
+        <WindowCard
+          label="EDGE"
+          value={edge == null ? "—" : edge.toFixed(2)}
+          meta="quantified edge"
+          tone={edge != null ? "good" : "neutral"}
+        />
+        <WindowCard
+          label="CONFIDENCE"
+          value={confidence == null ? "—" : `${confidence.toFixed(1)}%`}
+          meta="validated probability"
+          tone={confidence != null ? "good" : "neutral"}
+        />
+      </div>
+
+      <div className="clock-meta-grid">
+        <ClockMeta label="DETECTED" value={timeOnly(clock?.window_started_at || evidence?.generated_at)} />
+        <ClockMeta label="WINDOW END" value={timeOnly(projection.windowEndsAt || entryEnd || exitEnd)} />
+        <ClockMeta label="LEADER" value={clock?.leader_symbol || "—"} />
+        <ClockMeta label="TARGET" value={clock?.target_symbol || clock?.symbol || "—"} />
+      </div>
+
       <div className="gate-grid">
-        <GateCard label="COHORT" value={String(evidence?.cohort?.status || "SYNC")} meta={`${progress.toFixed(1)}% of prospective window`} />
+        <GateCard label="COHORT" value={String(evidence?.cohort?.status || "SYNC")} meta={`${Number(evidence?.cohort?.progress_pct || 0).toFixed(1)}% of prospective window`} />
         <GateCard label="QUALITY" value={String(evidence?.quality_gate?.state || "SYNC")} meta={String(evidence?.quality_gate?.rows || 0) + " rows in latest report"} />
         <GateCard label="PIT / OOS" value={String(evidence?.pit_oos?.state || "SYNC")} meta={String(evidence?.pit_oos?.oos_rows || 0) + " OOS rows"} />
         <GateCard label="FORECAST" value={String(evidence?.forecast_shadow?.state || "SYNC")} meta={String(evidence?.forecast_shadow?.count || 0) + " shadow forecasts"} />
       </div>
+
       <div className="blockers">
         <span>BLOCKERS</span><b>{clock?.blockers?.length || 0}</b>
       </div>
     </section>
+  );
+}
+
+function WindowCard({ label, value, meta, tone }: { label: string; value: string; meta: string; tone: "good" | "warn" | "neutral" }) {
+  return (
+    <div className={`window-card ${tone}`}>
+      <small>{label}</small>
+      <b>{value}</b>
+      <span>{meta}</span>
+    </div>
+  );
+}
+
+function ClockMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="clock-meta">
+      <small>{label}</small>
+      <b>{value}</b>
+    </div>
   );
 }
 

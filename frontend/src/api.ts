@@ -110,6 +110,18 @@ export interface EvidenceResponse {
     remaining_seconds: number | null;
     blockers: string[];
     rule: string;
+    phase?: "LOCKED" | "ENTRY_WINDOW" | "DECAYING" | "EXIT_WINDOW" | "CLOSED" | string;
+    window_started_at?: string | null;
+    window_ends_at?: string | null;
+    entry_window_end_at?: string | null;
+    exit_window_start_at?: string | null;
+    exit_window_end_at?: string | null;
+    edge?: number | null;
+    confidence?: number | null;
+    decay_state?: string | null;
+    leader_symbol?: string | null;
+    target_symbol?: string | null;
+    symbol?: string | null;
   };
 }
 
