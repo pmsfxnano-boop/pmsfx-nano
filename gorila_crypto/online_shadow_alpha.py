@@ -213,6 +213,8 @@ class OnlineShadowAlpha:
         self._model_spec_hashes: dict[int, str] = {}
         self._training_rows_used: dict[int, int] = {}
         self._last_training_time: datetime | None = None
+        self._last_outcome_resolve = 0.0
+        self._last_session_resolve = 0.0
         self._session_id: str | None = None
         self._shadow_fingerprint = ""
 
@@ -233,6 +235,13 @@ class OnlineShadowAlpha:
             self.thread.join(timeout=5.0)
 
     def _resolve_session(self) -> bool:
+        if (
+            self._session_id is not None
+            and self._shadow_fingerprint
+            and time.monotonic() - self._last_session_resolve < 15.0
+        ):
+            return True
+        self._last_session_resolve = time.monotonic()
         self._session_id = self.store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
         if not self._session_id:
             return False
@@ -588,6 +597,9 @@ class OnlineShadowAlpha:
         return forecast_id
 
     def _resolve_outcomes(self, now: datetime) -> None:
+        if time.monotonic() - self._last_outcome_resolve < 1.0:
+            return
+        self._last_outcome_resolve = time.monotonic()
         if not self._resolve_session():
             return
         snap = MARKET_CACHE.research_snapshot(
