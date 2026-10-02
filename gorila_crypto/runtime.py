@@ -647,6 +647,299 @@ class ProspectiveCryptoIngestor:
                 error=self.last_error,
             )
 
+    @staticmethod
+    def _signed_trade(event: NormalizedMarketEvent) -> tuple[float, float]:
+        quantity = float(event.payload.get("q") or 0.0)
+        return (-1.0 if bool(event.payload.get("m")) else 1.0) * quantity, quantity
+
+    def _alpha_trim_and_anchor(
+        self,
+        event: NormalizedMarketEvent,
+    ) -> tuple[NormalizedMarketEvent | None, deque[NormalizedMarketEvent]]:
+        symbol = event.symbol.upper()
+        recent = self._alpha_recent_5s.setdefault(symbol, deque())
+        candidates = self._alpha_anchor_candidates.setdefault(symbol, deque())
+        recent.append(event)
+        candidates.append(event)
+        now_ts = event.event_time.timestamp()
+        while recent and now_ts - recent[0].event_time.timestamp() > 6.0:
+            recent.popleft()
+        anchor = self._alpha_anchor_1s.get(symbol)
+        cutoff = now_ts - 1.0
+        while candidates:
+            head = candidates[0]
+            if head.event_time.timestamp() <= cutoff and head.received_time <= event.received_time:
+                anchor = candidates.popleft()
+            else:
+                break
+        self._alpha_anchor_1s[symbol] = anchor
+        return anchor, recent
+
+    def _alpha_flow_metrics(
+        self,
+        symbol: str,
+        *,
+        now_event_time: datetime,
+        now_received_time: datetime,
+    ) -> dict[str, float]:
+        recent = self._alpha_recent_5s.get(symbol)
+        if not recent:
+            return {
+                "flow_imbalance_1s": 0.0,
+                "flow_imbalance_5s": 0.0,
+                "trade_intensity_1s": 0.0,
+                "trade_intensity_5s": 0.0,
+            }
+        now_ts = now_event_time.timestamp()
+        signed_1 = gross_1 = signed_5 = gross_5 = 0.0
+        n_1 = n_5 = 0
+        for item in reversed(recent):
+            if item.received_time > now_received_time:
+                continue
+            age = now_ts - item.event_time.timestamp()
+            if age < 0:
+                continue
+            if age > 5.0:
+                break
+            signed, gross = self._signed_trade(item)
+            signed_5 += signed
+            gross_5 += gross
+            n_5 += 1
+            if age <= 1.0:
+                signed_1 += signed
+                gross_1 += gross
+                n_1 += 1
+        return {
+            "flow_imbalance_1s": signed_1 / gross_1 if gross_1 > 0 else 0.0,
+            "flow_imbalance_5s": signed_5 / gross_5 if gross_5 > 0 else 0.0,
+            "trade_intensity_1s": math.log1p(n_1),
+            "trade_intensity_5s": math.log1p(n_5),
+        }
+
+    def _alpha_latest_trade(
+        self,
+        symbol: str,
+        *,
+        event_time: datetime,
+        received_time: datetime,
+    ) -> NormalizedMarketEvent | None:
+        recent = self._alpha_recent_5s.get(symbol)
+        if not recent:
+            return None
+        for item in reversed(recent):
+            if item.event_time <= event_time and item.received_time <= received_time:
+                return item
+        return None
+
+    def _alpha_reference_trade(
+        self,
+        symbol: str,
+        *,
+        event_time: datetime,
+        received_time: datetime,
+    ) -> NormalizedMarketEvent | None:
+        recent = self._alpha_recent_5s.get(symbol)
+        if not recent:
+            return None
+        cutoff = event_time - timedelta(seconds=1)
+        for item in reversed(recent):
+            if item.event_time <= cutoff and item.received_time <= received_time:
+                return item
+        return None
+
+    def _alpha_rate_allowed(self, symbol: str, now_monotonic: float) -> bool:
+        times = self._alpha_trigger_times.setdefault(symbol, deque())
+        while times and now_monotonic - times[0] > 60.0:
+            times.popleft()
+        if len(times) >= self._alpha_max_triggers_per_minute:
+            return False
+        last = self._alpha_last_trigger_monotonic.get(symbol, 0.0)
+        if last > 0.0 and now_monotonic - last < self._alpha_min_refractory_seconds:
+            return False
+        times.append(now_monotonic)
+        self._alpha_last_trigger_monotonic[symbol] = now_monotonic
+        return True
+
+    def _build_alpha_snapshot(
+        self,
+        *,
+        leader: NormalizedMarketEvent,
+        leader_anchor: NormalizedMarketEvent,
+        target_symbol: str,
+    ) -> dict[str, Any] | None:
+        leader_book = self._alpha_latest_book.get(leader.symbol.upper())
+        target_book = self._alpha_latest_book.get(target_symbol.upper())
+        target_latest = self._alpha_latest_trade(
+            target_symbol,
+            event_time=leader.event_time,
+            received_time=leader.received_time,
+        )
+        target_reference = self._alpha_reference_trade(
+            target_symbol,
+            event_time=leader.event_time,
+            received_time=leader.received_time,
+        )
+        if any(item is None for item in (leader_book, target_book, target_latest, target_reference)):
+            return None
+        assert leader_book is not None and target_book is not None
+        assert target_latest is not None and target_reference is not None
+        if (
+            leader_book.received_time > leader.received_time
+            or target_book.received_time > leader.received_time
+            or target_latest.received_time > leader.received_time
+            or target_reference.received_time > leader.received_time
+        ):
+            return None
+
+        leader_price = float(leader.payload.get("p") or 0.0)
+        leader_anchor_price = float(leader_anchor.payload.get("p") or 0.0)
+        target_latest_price = float(target_latest.payload.get("p") or 0.0)
+        target_reference_price = float(target_reference.payload.get("p") or 0.0)
+        if min(leader_price, leader_anchor_price, target_latest_price, target_reference_price) <= 0.0:
+            return None
+
+        lb = (
+            float(leader_book.payload.get("b") or 0.0),
+            float(leader_book.payload.get("a") or 0.0),
+            float(leader_book.payload.get("B") or 0.0),
+            float(leader_book.payload.get("A") or 0.0),
+        )
+        tb = (
+            float(target_book.payload.get("b") or 0.0),
+            float(target_book.payload.get("a") or 0.0),
+            float(target_book.payload.get("B") or 0.0),
+            float(target_book.payload.get("A") or 0.0),
+        )
+        if min(*lb, *tb) <= 0.0:
+            return None
+
+        leader_latency_ms = max(
+            0.0, (leader.received_time - leader.event_time).total_seconds() * 1000.0
+        )
+        target_information_age_ms = max(
+            0.0, (leader.received_time - target_latest.received_time).total_seconds() * 1000.0
+        )
+        target_market_age_ms = max(
+            0.0, (leader.event_time - target_latest.event_time).total_seconds() * 1000.0
+        )
+        leader_book_age_ms = max(
+            0.0, (leader.received_time - leader_book.received_time).total_seconds() * 1000.0
+        )
+        target_book_age_ms = max(
+            0.0, (leader.received_time - target_book.received_time).total_seconds() * 1000.0
+        )
+        leader_return_bps = 10_000.0 * math.log(leader_price / leader_anchor_price)
+        target_return_bps = 10_000.0 * math.log(target_latest_price / target_reference_price)
+        leader_flow = self._alpha_flow_metrics(
+            leader.symbol.upper(),
+            now_event_time=leader.event_time,
+            now_received_time=leader.received_time,
+        )
+        target_flow = self._alpha_flow_metrics(
+            target_symbol,
+            now_event_time=leader.event_time,
+            now_received_time=leader.received_time,
+        )
+
+        features = build_microstructure_feature_vector(
+            leader_return_bps=leader_return_bps,
+            leader_transport_latency_ms=leader_latency_ms,
+            target_return_bps_lookback=target_return_bps,
+            target_information_age_ms=target_information_age_ms,
+            target_market_age_ms=target_market_age_ms,
+            leader_flow_imbalance_1s=leader_flow["flow_imbalance_1s"],
+            leader_flow_imbalance_5s=leader_flow["flow_imbalance_5s"],
+            leader_trade_intensity_1s=leader_flow["trade_intensity_1s"],
+            leader_trade_intensity_5s=leader_flow["trade_intensity_5s"],
+            target_flow_imbalance_1s=target_flow["flow_imbalance_1s"],
+            target_flow_imbalance_5s=target_flow["flow_imbalance_5s"],
+            target_trade_intensity_1s=target_flow["trade_intensity_1s"],
+            target_trade_intensity_5s=target_flow["trade_intensity_5s"],
+            leader_bid=lb[0], leader_ask=lb[1], leader_bid_qty=lb[2], leader_ask_qty=lb[3],
+            target_bid=tb[0], target_ask=tb[1], target_bid_qty=tb[2], target_ask_qty=tb[3],
+            leader_book_age_ms=leader_book_age_ms,
+            target_book_age_ms=target_book_age_ms,
+            bookticker_interval_seconds=float(self.protocol.bookticker_persistence_interval_seconds),
+        )
+        source_ids = (
+            f"trade:{leader.symbol.upper()}:{int(leader.sequence_start or 0)}",
+            f"trade:{leader_anchor.symbol.upper()}:{int(leader_anchor.sequence_start or 0)}",
+            f"trade:{target_symbol.upper()}:{int(target_latest.sequence_start or 0)}",
+            f"trade:{target_symbol.upper()}:{int(target_reference.sequence_start or 0)}",
+            f"bookTicker:{leader.symbol.upper()}:{int(leader_book.sequence_end or 0)}",
+            f"bookTicker:{target_symbol.upper()}:{int(target_book.sequence_end or 0)}",
+        )
+        leader_id = source_ids[0]
+        snapshot_id = hashlib.sha256(
+            "|".join(
+                (self.session_id or "", leader_id, target_symbol.upper(), FEATURE_SET_VERSION)
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        return {
+            "snapshot_id": snapshot_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "study_id": self.protocol.study_id,
+            "protocol_hash": self.protocol.protocol_hash,
+            "capture_session_id": self.session_id,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "leader_symbol": leader.symbol.upper(),
+            "target_symbol": target_symbol.upper(),
+            "leader_event_id": leader_id,
+            "leader_event_time": leader.event_time.isoformat(),
+            "leader_received_time": leader.received_time.isoformat(),
+            "source_event_ids": source_ids,
+            "feature_set_hash": feature_set_hash(
+                leader_symbol=leader.symbol,
+                target_symbol=target_symbol,
+                decision_event_time=leader.event_time,
+                decision_received_time=leader.received_time,
+                source_event_ids=source_ids,
+                feature_values=features,
+            ),
+            "features": features,
+            "trigger_threshold_bps": 5.0,
+            "status": "SHADOW",
+        }
+
+    def _maybe_emit_alpha_snapshots(self, event: NormalizedMarketEvent) -> None:
+        if event.event_type == "bookTicker":
+            self._alpha_latest_book[event.symbol.upper()] = event
+            return
+        if event.event_type != "trade" or self.session_id is None:
+            return
+        anchor, _ = self._alpha_trim_and_anchor(event)
+        if anchor is None:
+            return
+        try:
+            price = float(event.payload.get("p") or 0.0)
+            anchor_price = float(anchor.payload.get("p") or 0.0)
+            if price <= 0.0 or anchor_price <= 0.0:
+                return
+            leader_return_bps = 10_000.0 * math.log(price / anchor_price)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return
+        if abs(leader_return_bps) < 5.0:
+            return
+        if not self._alpha_rate_allowed(event.symbol.upper(), time.monotonic()):
+            return
+        created = 0
+        for target_symbol in self.protocol.symbols:
+            target_symbol = target_symbol.upper()
+            if target_symbol == event.symbol.upper():
+                continue
+            snapshot = self._build_alpha_snapshot(
+                leader=event,
+                leader_anchor=anchor,
+                target_symbol=target_symbol,
+            )
+            if snapshot is not None:
+                self._alpha_pending_snapshots.append(snapshot)
+                created += 1
+        if created:
+            self._alpha_snapshots_created += created
+            if self._alpha_pending_started_monotonic is None:
+                self._alpha_pending_started_monotonic = time.monotonic()
+
     def _flush_pending_events(self) -> None:
         if not self._pending_event_rows:
             self._pending_event_started_monotonic = None
