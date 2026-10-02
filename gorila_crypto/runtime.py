@@ -1051,9 +1051,11 @@ class ProspectiveCryptoIngestor:
             MARKET_CACHE.append_observed([event_kwargs])
         else:
             self.last_event = event
-        if self.session_id is not None and event.event_type in {"trade", "bookTicker"}:
-            self._maybe_emit_alpha_snapshots(event)
-
+        # Alpha discovery is deliberately off the market-ingest hot path.
+        # The dedicated OnlineShadowAlpha worker consumes the bounded hot-plane
+        # research snapshot asynchronously. Keeping feature construction out of
+        # this loop prevents high-rate BTC trade bursts from creating transport
+        # backlog and inflating signal-age latency.
         gap = self.sequence.observe(event)
         if gap is not None:
             expected, observed = gap
