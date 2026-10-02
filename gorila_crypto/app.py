@@ -33,8 +33,8 @@ from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
-from gorila_crypto.research_runner import run_crypto_research_once
-from gorila_crypto.online_shadow_alpha import OnlineShadowAlpha, run_research_preflight_once
+from gorila_crypto.research_runner import run_crypto_research_once, run_research_preflight_once
+from gorila_crypto.online_shadow_alpha import OnlineShadowAlpha
 
 
 _runtime: ProspectiveCryptoIngestor | None = None
