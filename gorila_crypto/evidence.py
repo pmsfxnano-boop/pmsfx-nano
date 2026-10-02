@@ -7,6 +7,7 @@ state contract to the frontend.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import threading
@@ -370,6 +371,93 @@ def _forecast_shadow(
     }
 
 
+
+def _online_shadow(conn, *, shadow_fingerprint: str | None) -> dict[str, Any]:
+    if not shadow_fingerprint:
+        return {
+            "state": "EMPTY",
+            "count": 0,
+            "outcomes_count": 0,
+            "resolved_rate": 0.0,
+            "scored_count": 0,
+            "warmup_count": 0,
+            "by_horizon": {},
+            "recent_mean_probability": None,
+        }
+
+    counts = _query(
+        conn,
+        """
+        SELECT COUNT(*) AS n,
+               COUNT(*) FILTER (WHERE status='SHADOW_SCORED') AS scored,
+               COUNT(*) FILTER (WHERE status='WARMUP') AS warmup
+        FROM crypto_forecast_shadow
+        WHERE replay_fingerprint=%s
+        """,
+        (shadow_fingerprint,),
+    )[0]
+    outcomes = _query(
+        conn,
+        """
+        SELECT COUNT(*) AS n
+        FROM crypto_forecast_outcomes o
+        JOIN crypto_forecast_shadow s ON s.forecast_id=o.forecast_id
+        WHERE s.replay_fingerprint=%s
+        """,
+        (shadow_fingerprint,),
+    )[0]
+    horizons = _query(
+        conn,
+        """
+        SELECT horizon_ms,COUNT(*) AS n,
+               COUNT(*) FILTER (WHERE status='SHADOW_SCORED') AS scored,
+               AVG(probability_response_positive) FILTER (WHERE probability_response_positive IS NOT NULL) AS mean_probability
+        FROM crypto_forecast_shadow
+        WHERE replay_fingerprint=%s
+        GROUP BY horizon_ms
+        ORDER BY horizon_ms
+        """,
+        (shadow_fingerprint,),
+    )
+    recent = _query(
+        conn,
+        """
+        SELECT AVG(probability_response_positive) AS mean_probability
+        FROM (
+            SELECT probability_response_positive
+            FROM crypto_forecast_shadow
+            WHERE replay_fingerprint=%s
+              AND probability_response_positive IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 100
+        ) q
+        """,
+        (shadow_fingerprint,),
+    )[0]
+    total = int(counts["n"] or 0)
+    outcomes_count = int(outcomes["n"] or 0)
+    return {
+        "state": "READY" if total else "WARMING",
+        "count": total,
+        "outcomes_count": outcomes_count,
+        "resolved_rate": float(outcomes_count / total) if total else 0.0,
+        "scored_count": int(counts["scored"] or 0),
+        "warmup_count": int(counts["warmup"] or 0),
+        "by_horizon": {
+            str(int(row["horizon_ms"])): {
+                "count": int(row["n"]),
+                "scored_count": int(row["scored"]),
+                "mean_probability": float(row["mean_probability"]) if row["mean_probability"] is not None else None,
+            }
+            for row in horizons
+        },
+        "recent_mean_probability": (
+            float(recent["mean_probability"])
+            if recent["mean_probability"] is not None
+            else None
+        ),
+    }
+
 def _lead_lag(
     conn,
     replay_fingerprint: str | None = None,
@@ -588,6 +676,15 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                 conn,
                 cohort.get("session_id"),
             )
+            shadow_fingerprint = None
+            if cohort.get("session_id"):
+                shadow_fingerprint = hashlib.sha256(
+                    f"shadow|{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{cohort.get('session_id')}|{FEATURE_SET_VERSION}".encode("utf-8")
+                ).hexdigest()
+            online_shadow = _online_shadow(
+                conn,
+                shadow_fingerprint=shadow_fingerprint,
+            )
             if replay_fingerprint is None and quality.get("current_session"):
                 replay_fingerprint = quality.get("replay_fingerprint")
             validation = _validation_gate(conn, replay_fingerprint)
@@ -634,6 +731,7 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             "research": research,
             "pit_oos": validation,
             "forecast_shadow": forecast,
+            "online_shadow": online_shadow,
             "lead_lag_shadow": lead_lag,
             "opportunity_shadow": opportunity,
             "regime": regime,

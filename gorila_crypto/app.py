@@ -34,6 +34,7 @@ from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from gorila_crypto.ledger import replay_fingerprint as compute_replay_fingerprint
 from gorila_crypto.research_runner import run_crypto_research_once, run_research_preflight_once
+from gorila_crypto.online_shadow_alpha import OnlineShadowAlpha
 
 
 _runtime: ProspectiveCryptoIngestor | None = None
@@ -42,6 +43,7 @@ _quality_thread: threading.Thread | None = None
 _research_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
 _maintenance_thread: threading.Thread | None = None
+_shadow_alpha: OnlineShadowAlpha | None = None
 _stop_event = threading.Event()
 _capture_block_reason: str | None = None
 
@@ -368,7 +370,7 @@ def _research_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _maintenance_thread, _capture_block_reason
+    global _runtime, _runtime_thread, _quality_thread, _research_thread, _heartbeat_thread, _maintenance_thread, _shadow_alpha, _capture_block_reason
     _stop_event.clear()
     _capture_block_reason = None
 
@@ -424,6 +426,24 @@ async def lifespan(app: FastAPI):
             )
             _maintenance_thread.start()
 
+            if settings.shadow_alpha_enabled:
+                try:
+                    _shadow_alpha = OnlineShadowAlpha(
+                        store,
+                        interval_seconds=settings.shadow_alpha_interval_seconds,
+                        min_training_rows=settings.shadow_alpha_min_training_rows,
+                        training_rows=settings.shadow_alpha_training_rows,
+                        training_interval_seconds=settings.shadow_alpha_training_interval_seconds,
+                    )
+                    _shadow_alpha.start()
+                except Exception as exc:
+                    _shadow_alpha = None
+                    print(
+                        "GORILA_CRYPTO_SHADOW_ALPHA_ERROR "
+                        + f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+
             if settings.quality_monitor_enabled:
                 _quality_thread = threading.Thread(
                     target=_quality_loop,
@@ -455,6 +475,8 @@ async def lifespan(app: FastAPI):
         _heartbeat_thread.join(timeout=5.0)
     if _maintenance_thread is not None:
         _maintenance_thread.join(timeout=5.0)
+    if _shadow_alpha is not None:
+        _shadow_alpha.stop()
 
 
 app = FastAPI(
@@ -505,6 +527,7 @@ def root() -> dict[str, Any]:
         "forecast_status": "BLOCKED_NO_VALIDATED_MODEL",
         "automatic_promotion": False,
         "execution": False,
+        "shadow_alpha": _shadow_alpha.snapshot() if _shadow_alpha is not None else {"status": "DISABLED"},
         "ledger_stats": stats,
     }
 
