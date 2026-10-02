@@ -605,6 +605,7 @@ def _online_shadow_diagnostics(
             metadata = _json(row["metadata"])
             signed = float(row["realized_signed_return_bps"] or 0.0)
             target = int(row["realized_target"])
+            shadow_neutral = bool(metadata.get("shadow_neutral", False))
             proxy_cost = float(
                 metadata.get("shadow_execution_proxy_bps")
                 or (
@@ -624,6 +625,7 @@ def _online_shadow_diagnostics(
                 "target_queue": float(features.get("target_queue_imbalance") or 0.0),
                 "target_spread": abs(float(features.get("target_spread_bps") or 0.0)),
                 "transport": float(features.get("leader_transport_latency_ms") or 0.0),
+                "neutral": shadow_neutral,
             })
         except Exception:
             continue
@@ -640,7 +642,9 @@ def _online_shadow_diagnostics(
             "mean_signed_return_bps": mean(item["signed"] for item in items),
             "mean_proxy_cost_bps": mean(item["proxy_cost"] for item in items),
             "mean_proxy_net_bps": mean(item["net_proxy"] for item in items),
-            "positive_proxy_net_fraction": sum(item["net_proxy"] > 0.0 for item in items) / n,
+            "positive_proxy_net_fraction": sum(
+                item["net_proxy"] > 0.0 for item in directional
+            ) / directional_n if directional_n else None,
             "transport_p50_ms": _percentile([item["transport"] for item in items], 50.0),
             "transport_p95_ms": _percentile([item["transport"] for item in items], 95.0),
         }
