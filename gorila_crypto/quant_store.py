@@ -1909,7 +1909,11 @@ class QuantCryptoStore(CryptoStore):
         if end_event_time is not None:
             clauses.append("event_time<=%s" if self._pg else "event_time<=?"); params.append(end_event_time)
         where=" AND ".join(clauses) if clauses else "1=1"
-        order_by={"ingest":"ledger_seq ASC","event_time":"event_time ASC,received_time ASC,ledger_seq ASC"}.get(order)
+        order_by={
+            "ingest":"ledger_seq ASC",
+            "ingest_desc":"ledger_seq DESC",
+            "event_time":"event_time ASC,received_time ASC,ledger_seq ASC",
+        }.get(order)
         if order_by is None: raise ValueError("invalid replay order")
         query=f"""
             SELECT ledger_seq,capture_session_id,symbol_code,event_type_code,event_time,received_time,
