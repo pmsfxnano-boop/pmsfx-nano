@@ -458,6 +458,93 @@ def _online_shadow(conn, *, shadow_fingerprint: str | None) -> dict[str, Any]:
         ),
     }
 
+def _alpha_feature_shadow(
+    conn,
+    session_id: str | None,
+) -> dict[str, Any]:
+    if not session_id:
+        return {
+            "state": "EMPTY",
+            "count": 0,
+            "latest_at": None,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "leaders": [],
+        }
+    try:
+        params = (session_id,)
+        count_row = _query(
+            conn,
+            "SELECT COUNT(*) AS n FROM crypto_alpha_feature_snapshots WHERE capture_session_id=%s",
+            params,
+        )[0]
+        latest = _query(
+            conn,
+            """
+            SELECT created_at,leader_symbol,target_symbol,leader_received_time,
+                   leader_event_time,feature_set_version,feature_set_hash,status
+            FROM crypto_alpha_feature_snapshots
+            WHERE capture_session_id=%s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            params,
+        )
+        leaders = _query(
+            conn,
+            """
+            SELECT leader_symbol,target_symbol,COUNT(*) AS n,
+                   AVG((features_json::jsonb->>'leader_return_bps')::double precision) AS mean_shock_bps,
+                   AVG((features_json::jsonb->>'leader_flow_imbalance_1s')::double precision) AS mean_flow_1s,
+                   AVG((features_json::jsonb->>'target_queue_imbalance')::double precision) AS mean_target_queue,
+                   AVG((features_json::jsonb->>'target_spread_bps')::double precision) AS mean_target_spread_bps,
+                   AVG((features_json::jsonb->>'leader_transport_latency_ms')::double precision) AS mean_transport_latency_ms
+            FROM crypto_alpha_feature_snapshots
+            WHERE capture_session_id=%s
+            GROUP BY leader_symbol,target_symbol
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            params,
+        )
+        return {
+            "state": "SHADOW_READY" if latest else "EMPTY",
+            "count": int(count_row["n"] or 0),
+            "latest_at": _iso(latest[0]["created_at"]) if latest else None,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "latest": (
+                {
+                    **latest[0],
+                    "created_at": _iso(latest[0]["created_at"]),
+                    "leader_event_time": _iso(latest[0]["leader_event_time"]),
+                    "leader_received_time": _iso(latest[0]["leader_received_time"]),
+                }
+                if latest else None
+            ),
+            "leaders": [
+                {
+                    "leader_symbol": str(row["leader_symbol"]),
+                    "target_symbol": str(row["target_symbol"]),
+                    "n": int(row["n"]),
+                    "mean_shock_bps": float(row["mean_shock_bps"]) if row["mean_shock_bps"] is not None else None,
+                    "mean_flow_1s": float(row["mean_flow_1s"]) if row["mean_flow_1s"] is not None else None,
+                    "mean_target_queue": float(row["mean_target_queue"]) if row["mean_target_queue"] is not None else None,
+                    "mean_target_spread_bps": float(row["mean_target_spread_bps"]) if row["mean_target_spread_bps"] is not None else None,
+                    "mean_transport_latency_ms": float(row["mean_transport_latency_ms"]) if row["mean_transport_latency_ms"] is not None else None,
+                }
+                for row in leaders
+            ],
+        }
+    except Exception as exc:
+        return {
+            "state": "UNAVAILABLE",
+            "count": 0,
+            "latest_at": None,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "leaders": [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _lead_lag(
     conn,
     replay_fingerprint: str | None = None,
@@ -691,6 +778,7 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             forecast = _forecast_shadow(conn, replay_fingerprint)
             lead_lag = _lead_lag(conn, replay_fingerprint)
             opportunity = _opportunity_shadow(conn, replay_fingerprint)
+            alpha_shadow = _alpha_feature_shadow(conn, cohort.get("session_id"))
         finally:
             conn.close()
 
@@ -734,6 +822,7 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             "online_shadow": online_shadow,
             "lead_lag_shadow": lead_lag,
             "opportunity_shadow": opportunity,
+            "alpha_feature_shadow": alpha_shadow,
             "regime": regime,
             "opportunity_clock": clock,
         }
