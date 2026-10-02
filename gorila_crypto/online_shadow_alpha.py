@@ -189,7 +189,8 @@ class OnlineShadowAlpha:
         store: QuantCryptoStore,
         *,
         interval_seconds: float = 1.0,
-        min_training_rows: int = 500,
+        min_training_rows: int = 250,
+        min_class_rows: int = 75,
         training_rows: int = 5000,
         training_interval_seconds: float = 30.0,
     ) -> None:
@@ -199,6 +200,7 @@ class OnlineShadowAlpha:
         # preregistered round-robin pair/horizon collection rule.
         self.interval_seconds = max(1.0, float(interval_seconds))
         self.min_training_rows = int(min_training_rows)
+        self.min_class_rows = int(min_class_rows)
         self.training_rows = int(training_rows)
         self.training_interval_seconds = float(training_interval_seconds)
         self.stop_event = threading.Event()
@@ -563,11 +565,21 @@ class OnlineShadowAlpha:
                 continue
 
             labels = [row.label.realized_target for row in dataset]
-            if len(set(labels)) < 2:
+            positive_rows = sum(1 for label in labels if int(label) == 1)
+            negative_rows = len(labels) - positive_rows
+            if (
+                len(set(labels)) < 2
+                or positive_rows < self.min_class_rows
+                or negative_rows < self.min_class_rows
+            ):
                 self._horizon_gates[int(horizon_ms)] = {
                     "state": "WARMING",
-                    "reason": "SINGLE_CLASS",
+                    "reason": "INSUFFICIENT_CLASS_BALANCE",
                     "directional_rows": len(dataset),
+                    "positive_rows": positive_rows,
+                    "negative_rows": negative_rows,
+                    "required_total_rows": self.min_training_rows,
+                    "required_rows_per_class": self.min_class_rows,
                 }
                 continue
 
@@ -822,6 +834,10 @@ class OnlineShadowAlpha:
             "shadow_session_id": self._session_id,
             "shadow_fingerprint": self._shadow_fingerprint,
             "selection_rule": "fixed_round_robin_cross_asset_pair_schedule",
+            "training_gate": {
+                "minimum_total_rows": self.min_training_rows,
+                "minimum_rows_per_class": self.min_class_rows,
+            },
             "promotion": "SHADOW_ONLY",
         }
 
