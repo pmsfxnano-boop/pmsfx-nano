@@ -763,7 +763,10 @@ def _dataset_rows(
           AND tf.gross_qty_5s > 0
         """
         params = (
-            *common_scope,
+            PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+            session_id,
+            leader_symbol,
+            *common_scope[2:],
             PREREGISTERED_CRYPTO_PROTOCOL.study_id,
             session_id,
             target_symbol,
