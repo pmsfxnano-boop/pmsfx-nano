@@ -208,6 +208,7 @@ class OnlineShadowAlpha:
         self._last_emit = 0.0
         self._last_train = 0.0
         self._horizon_index = 0
+        self._sample_index = 0
         self._last_leader_event: dict[tuple[str, str], str] = {}
         self._models: dict[int, Any] = {}
         self._model_spec_hashes: dict[int, str] = {}
@@ -258,6 +259,7 @@ class OnlineShadowAlpha:
         by_symbol = _event_map(snap["events"])
         books = {str(k).upper(): dict(v) for k, v in snap["latest_books"].items()}
         candidates: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc)
 
         for leader in PREREGISTERED_CRYPTO_PROTOCOL.symbols:
             leader_rows = by_symbol.get(leader, [])
@@ -266,6 +268,8 @@ class OnlineShadowAlpha:
                 continue
             decision_event = _dt(leader_trade["event_time"])
             decision_received = _dt(leader_trade["received_time"])
+            if (now - decision_received).total_seconds() > 2.0:
+                continue
             previous = _prior_before(
                 leader_rows,
                 decision_event=decision_event,
@@ -277,9 +281,6 @@ class OnlineShadowAlpha:
                 float(leader_trade["price"]),
                 float(previous["price"]),
             )
-            if abs(leader_return) < 5.0:
-                continue
-
             leader_flow = _flow_features(
                 leader_rows,
                 decision_event=decision_event,
@@ -416,10 +417,26 @@ class OnlineShadowAlpha:
 
         if not candidates:
             return None
-        # Scout the most coherent event, not the most recent event. The selected
-        # event is still a shadow observation and is excluded from formal OOS.
-        candidates.sort(key=lambda item: (item["absolute_score"], item["decision_received"]), reverse=True)
-        return candidates[0]
+
+        # Fixed round-robin pair sampling avoids selecting observations by their
+        # realized attractiveness. This is the shadow collection rule, not an OOS
+        # selection rule: formal promotion still replays the full preregistered ledger.
+        pair_schedule = tuple(
+            (leader, target)
+            for leader in PREREGISTERED_CRYPTO_PROTOCOL.symbols
+            for target in PREREGISTERED_CRYPTO_PROTOCOL.symbols
+            if leader != target
+        )
+        by_pair = {(item["leader"], item["target"]): item for item in candidates}
+        for offset in range(len(pair_schedule)):
+            pair = pair_schedule[(self._sample_index + offset) % len(pair_schedule)]
+            item = by_pair.get(pair)
+            if item is not None:
+                self._sample_index = (
+                    self._sample_index + offset + 1
+                ) % len(pair_schedule)
+                return item
+        return None
 
     def _training_dataset(self, cutoff: datetime, horizon_ms: int) -> list[ForecastDatasetRow]:
         conn = self.store.connect()
