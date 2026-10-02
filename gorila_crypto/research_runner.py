@@ -40,6 +40,11 @@ from .ledger import canonical_replay_row
 RESEARCH_STATUS_SOURCE = "gorila.crypto.research_runner"
 FEATURE_SET_VERSION = "crypto_microstructure_alpha_v2"
 DEFAULT_BATCH = 5000
+EVENTS_REPLAY_RELATION = (
+    "crypto_events_v5_replay"
+    if PREREGISTERED_CRYPTO_PROTOCOL.version == "5"
+    else "crypto_events"
+)
 
 
 class ResearchRunBlocked(RuntimeError):
@@ -164,7 +169,7 @@ def _stream_replay_rows(store, *, session_id: str, start: datetime, end: datetim
                    e.event_time,e.received_time,e.provider_time,e.source,
                    e.sequence_start,e.sequence_end,e.payload_hash,e.payload_json,
                    e.quality,e.metadata,e.recorded_at
-            FROM crypto_events e
+            FROM {EVENTS_REPLAY_RELATION} e
             WHERE {_scope_where()}
             ORDER BY e.ledger_seq ASC
         """
@@ -273,7 +278,7 @@ def _sql_quality_report(
                     EXTRACT(EPOCH FROM (
                         e.received_time::timestamptz - e.event_time::timestamptz
                     )) * 1000.0 AS latency_ms
-                FROM crypto_events e
+                FROM {EVENTS_REPLAY_RELATION} e
                 WHERE {_scope_where()}
             ),
             sampled_quantiles AS (
@@ -325,7 +330,7 @@ def _sql_quality_report(
             cur.execute(
                 f"""
                 SELECT e.event_type, COUNT(*) AS n
-                FROM crypto_events e
+                FROM {EVENTS_REPLAY_RELATION} e
                 WHERE {_scope_where()}
                 GROUP BY e.event_type
                 ORDER BY e.event_type
@@ -339,7 +344,7 @@ def _sql_quality_report(
             cur.execute(
                 f"""
                 SELECT e.event_type,e.quality,COUNT(*) AS n
-                FROM crypto_events e
+                FROM {EVENTS_REPLAY_RELATION} e
                 WHERE {_scope_where()}
                 GROUP BY e.event_type,e.quality
                 ORDER BY e.event_type,e.quality
@@ -360,7 +365,7 @@ def _sql_quality_report(
                                    COALESCE(e.metadata->>'ingest_epoch','0')
                                ORDER BY e.ledger_seq
                            ) AS previous_received
-                    FROM crypto_events e
+                    FROM {EVENTS_REPLAY_RELATION} e
                     WHERE {_scope_where()}
                       AND e.quality <> 'TRANSPORT_TIME_ONLY'
                 ) x
@@ -524,7 +529,7 @@ def _dataset_rows(
                    (e.payload_json::jsonb->>'p')::double precision AS price,
                    (e.payload_json::jsonb->>'q')::double precision AS quantity,
                    (e.payload_json::jsonb->>'m')::boolean AS buyer_maker
-            FROM crypto_events e
+            FROM {EVENTS_REPLAY_RELATION} e
             WHERE e.metadata->>'crypto_study_id' = %s
               AND e.metadata->>'capture_session_id' = %s
               AND e.source = 'binance.websocket.trade'
@@ -543,7 +548,7 @@ def _dataset_rows(
                    (e.payload_json::jsonb->>'p')::double precision AS price,
                    (e.payload_json::jsonb->>'q')::double precision AS quantity,
                    (e.payload_json::jsonb->>'m')::boolean AS buyer_maker
-            FROM crypto_events e
+            FROM {EVENTS_REPLAY_RELATION} e
             WHERE e.metadata->>'crypto_study_id' = %s
               AND e.metadata->>'capture_session_id' = %s
               AND e.source = 'binance.websocket.trade'
@@ -563,7 +568,7 @@ def _dataset_rows(
                    (e.payload_json::jsonb->>'B')::double precision AS bid_qty,
                    (e.payload_json::jsonb->>'a')::double precision AS ask,
                    (e.payload_json::jsonb->>'A')::double precision AS ask_qty
-            FROM crypto_events e
+            FROM {EVENTS_REPLAY_RELATION} e
             WHERE e.metadata->>'crypto_study_id' = %s
               AND e.metadata->>'capture_session_id' = %s
               AND e.source = 'binance.websocket.bookTicker'

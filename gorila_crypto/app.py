@@ -53,6 +53,12 @@ _HISTORY_CACHE: dict[
     tuple[float, dict[str, Any]],
 ] = {}
 
+_EVENTS_REPLAY_RELATION = (
+    "crypto_events_v5_replay"
+    if PREREGISTERED_CRYPTO_PROTOCOL.version == "5"
+    else "crypto_events"
+)
+
 
 
 def _new_store() -> CryptoStore:
@@ -119,9 +125,9 @@ def _heartbeat_loop() -> None:
                     cutoff = (now - timedelta(seconds=60)).isoformat()
                     with conn.cursor() as cur:
                         cur.execute(
-                            """
+                            f"""
                             SELECT symbol, COUNT(*) AS rows, MAX(received_time) AS last_received
-                            FROM crypto_events
+                            FROM {_EVENTS_REPLAY_RELATION}
                             WHERE received_time >= %s
                               AND source LIKE %s
                             GROUP BY symbol
@@ -707,7 +713,7 @@ def market_history(
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        """
+                        f"""
                         WITH buckets AS (
                             SELECT
                                 to_timestamp(
@@ -717,7 +723,7 @@ def market_history(
                                 ledger_seq,
                                 (payload_json::jsonb->>'p')::double precision AS price,
                                 (payload_json::jsonb->>'q')::double precision AS quantity
-                            FROM crypto_events
+                            FROM {_EVENTS_REPLAY_RELATION}
                             WHERE symbol=%s
                               AND event_type='trade'
                               AND event_time >= %s
@@ -893,12 +899,12 @@ def operational_e2e() -> dict[str, Any]:
             cutoff = (now - timedelta(seconds=60)).isoformat()
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         COALESCE(MAX(ledger_seq), 0),
                         COUNT(*),
                         MAX(received_time)
-                    FROM crypto_events
+                    FROM {_EVENTS_REPLAY_RELATION}
                     WHERE source LIKE %s
                       AND received_time >= %s
                     """,
