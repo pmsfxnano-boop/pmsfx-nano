@@ -834,6 +834,10 @@ class OnlineShadowAlpha:
             "shadow_session_id": self._session_id,
             "shadow_fingerprint": self._shadow_fingerprint,
             "selection_rule": "fixed_round_robin_cross_asset_pair_schedule",
+            "training_gate": {
+                "minimum_total_rows": self.min_training_rows,
+                "minimum_rows_per_class": self.min_class_rows,
+            },
             "promotion": "SHADOW_ONLY",
         }
 
