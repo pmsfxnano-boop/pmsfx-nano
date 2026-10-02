@@ -564,3 +564,42 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .v-command-metrics span{padding:8px}
   .v-command-metrics b{font-size:9px}
 }
+
+/* Alpha shadow telemetry */
+.v-alpha-shadow{border-color:rgba(105,215,233,.15)}
+.v-alpha-title{display:flex;align-items:baseline;gap:8px;margin-top:5px}
+.v-alpha-title strong{font-size:12px;letter-spacing:.08em;color:#d9f5f8}
+.v-alpha-title span{font-size:8px;color:#55707b;letter-spacing:.12em;text-transform:uppercase}
+.v-alpha-kpis{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid rgba(105,215,233,.07)}
+.v-alpha-kpis>div{padding:10px 11px;border-right:1px solid rgba(105,215,233,.07)}
+.v-alpha-kpis>div:last-child{border-right:0}
+.v-alpha-kpis span,.v-alpha-latency span{display:block;color:#4e6873;font-size:7px;letter-spacing:.12em}
+.v-alpha-kpis b{display:block;color:#e0f7fa;font-size:12px;margin-top:4px;font-variant-numeric:tabular-nums}
+.v-alpha-latency{display:grid;grid-template-columns:repeat(3,1fr);border-bottom:1px solid rgba(105,215,233,.07)}
+.v-alpha-latency>div{padding:9px 11px;border-right:1px solid rgba(105,215,233,.07)}
+.v-alpha-latency>div:last-child{border-right:0}
+.v-alpha-latency strong{display:block;color:#9edce4;font-size:9px;margin-top:4px;font-variant-numeric:tabular-nums}
+.v-alpha-horizons{padding:9px 11px 5px}
+.v-alpha-horizon{padding:6px 0 7px}
+.v-alpha-horizon-head{display:flex;justify-content:space-between;gap:8px}
+.v-alpha-horizon-head span{color:#607b86;font-size:8px;letter-spacing:.08em}
+.v-alpha-horizon-head b{color:#c7e7eb;font-size:8px}
+.v-alpha-track{height:4px;background:#17272e;border-radius:99px;overflow:hidden;margin-top:5px}
+.v-alpha-track span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--cyan),var(--green))}
+.v-alpha-horizon small{display:block;color:#4f6872;font-size:7px;margin-top:4px;text-align:right}
+.v-alpha-contract{
+  display:grid;grid-template-columns:1fr auto;gap:4px 10px;
+  padding:10px 11px;border-top:1px solid rgba(105,215,233,.07);
+  background:rgba(105,215,233,.025)
+}
+.v-alpha-contract span{color:#536e79;font-size:7px;letter-spacing:.12em}
+.v-alpha-contract b{font-size:8px;color:#8fb1b8;text-align:right;font-weight:700}
+.v-alpha-contract em{
+  grid-column:1/-1;font-style:normal;color:#72dcb6;font-size:7px;
+  letter-spacing:.13em;font-weight:900
+}
+@media(max-width:820px){
+  .v-alpha-kpis{grid-template-columns:repeat(2,1fr)}
+  .v-alpha-kpis>div:nth-child(2){border-right:0}
+  .v-alpha-kpis>div:nth-child(-n+2){border-bottom:1px solid rgba(105,215,233,.07)}
+}
