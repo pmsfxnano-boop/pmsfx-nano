@@ -264,7 +264,7 @@ def _quality_loop() -> None:
                     study_id=PREREGISTERED_CRYPTO_PROTOCOL.study_id,
                     capture_session_id=session_id,
                     source_prefix="binance.websocket.",
-                    order="ingest_desc",
+                    order="ingest",
                     limit=settings.quality_row_limit,
                     include_payload=False,
                 )
