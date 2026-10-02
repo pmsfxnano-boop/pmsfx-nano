@@ -93,6 +93,13 @@ export interface EvidenceResponse {
     prospect_days: number;
     min_trade_rows_per_symbol: number;
     forecast_horizons_ms: number[];
+    alpha_feature_set?: string;
+    alpha_model_version?: string;
+    promotion_latency_guard?: {
+      median_max_ratio?: number;
+      p95_max_ratio?: number;
+      scope?: string;
+    };
   };
   cohort: AnyMap;
   quality_gate: AnyMap;
