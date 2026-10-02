@@ -305,6 +305,32 @@ class QuantCryptoStore(CryptoStore):
                 );
                 CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
                     ON crypto_runtime_leases(heartbeat_at,status);
+                CREATE TABLE IF NOT EXISTS crypto_alpha_feature_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    study_id TEXT NOT NULL,
+                    protocol_hash TEXT NOT NULL,
+                    capture_session_id TEXT NOT NULL,
+                    feature_set_version TEXT NOT NULL,
+                    leader_symbol TEXT NOT NULL,
+                    target_symbol TEXT NOT NULL,
+                    leader_event_id TEXT NOT NULL,
+                    leader_event_time TEXT NOT NULL,
+                    leader_received_time TEXT NOT NULL,
+                    source_event_ids_json TEXT NOT NULL,
+                    feature_set_hash TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    trigger_threshold_bps REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'SHADOW'
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_alpha_snapshot_identity
+                    ON crypto_alpha_feature_snapshots(
+                        capture_session_id,leader_event_id,target_symbol,feature_set_version
+                    );
+                CREATE INDEX IF NOT EXISTS idx_crypto_alpha_snapshot_time
+                    ON crypto_alpha_feature_snapshots(
+                        capture_session_id,leader_received_time,leader_symbol,target_symbol
+                    );
                 CREATE TABLE IF NOT EXISTS crypto_events_v5 (
                     ledger_seq INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_id TEXT NOT NULL,
