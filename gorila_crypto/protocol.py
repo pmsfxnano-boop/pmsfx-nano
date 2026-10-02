@@ -110,7 +110,7 @@ class CryptoStudyProtocol:
                 raise ValueError("Binance study streams are immutable")
             if self.normalized_event_types not in {(), ("trade", "bookTicker")}:
                 raise ValueError("invalid Binance normalized event types")
-            if self.version in {"3", "4", "5", "6"}:
+            if self.version in {"3", "4", "5"}:
                 if self.trade_persistence_sample_rate != 0.05:
                     raise ValueError("Binance v3/v4/v5 trade persistence sampling is immutable at 5%")
             if self.version == "3":
