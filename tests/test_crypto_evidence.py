@@ -148,3 +148,15 @@ def test_current_research_fingerprint_is_scoped_to_active_session(monkeypatch) -
     assert evidence_module._current_research_fingerprint(object(), "session-current") == "fp-current"
     assert captured["params"] == ("session-current",)
     assert "capture_session_id=%s" in captured["sql"]
+
+
+def test_shadow_fingerprint_binds_active_protocol(monkeypatch) -> None:
+    import gorila_crypto.evidence as evidence_module
+    import gorila_crypto.protocol as protocol_module
+
+    session_id = "session-v6"
+    expected = evidence_module._shadow_fingerprint(session_id)
+    assert expected == __import__("hashlib").sha256(
+        f"shadow|{protocol_module.PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{session_id}|{evidence_module.FEATURE_SET_VERSION}".encode("utf-8")
+    )
+    assert "prospective-v2" not in f"shadow|{protocol_module.PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{session_id}|{evidence_module.FEATURE_SET_VERSION}"
