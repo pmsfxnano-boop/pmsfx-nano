@@ -7,6 +7,7 @@ state contract to the frontend.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import threading
