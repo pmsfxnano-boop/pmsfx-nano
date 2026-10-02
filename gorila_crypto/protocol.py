@@ -110,9 +110,9 @@ class CryptoStudyProtocol:
                 raise ValueError("Binance study streams are immutable")
             if self.normalized_event_types not in {(), ("trade", "bookTicker")}:
                 raise ValueError("invalid Binance normalized event types")
-            if self.version in {"3", "4"}:
+            if self.version in {"3", "4", "5"}:
                 if self.trade_persistence_sample_rate != 0.05:
-                    raise ValueError("Binance v3/v4 trade persistence sampling is immutable at 5%")
+                    raise ValueError("Binance v3/v4/v5 trade persistence sampling is immutable at 5%")
             if self.version == "3":
                 if self.bookticker_persistence_interval_seconds != 1.0:
                     raise ValueError("Binance v3 bookTicker persistence interval is immutable at 1s")
@@ -123,6 +123,13 @@ class CryptoStudyProtocol:
                     raise ValueError("Binance v4 bookTicker persistence interval is immutable at 5s")
                 if self.persistence_contract_version != "deterministic_sample_v2_compact":
                     raise ValueError("Binance v4 persistence contract is immutable")
+            if self.version == "5":
+                if self.trade_persistence_sample_rate != 0.05:
+                    raise ValueError("Binance v5 trade persistence sampling is immutable at 5%")
+                if self.bookticker_persistence_interval_seconds != 5.0:
+                    raise ValueError("Binance v5 bookTicker persistence interval is immutable at 5s")
+                if self.persistence_contract_version != "typed_compact_v1":
+                    raise ValueError("Binance v5 persistence contract is immutable")
         else:
             if self.venue != "kraken_spot":
                 raise ValueError("Kraken provider requires Kraken Spot venue")
@@ -172,7 +179,7 @@ class CryptoStudyProtocol:
         self.validate()
         event_types = self.normalized_event_types or self.streams
         persisted_trade_min = self.min_trade_rows_per_symbol
-        if self.provider == "binance" and self.version in {"3", "4"}:
+        if self.provider == "binance" and self.version in {"3", "4", "5"}:
             persisted_trade_min = max(
                 1,
                 math.ceil(
@@ -237,6 +244,23 @@ BINANCE_CRYPTO_PROTOCOL_V4 = CryptoStudyProtocol(
 )
 BINANCE_CRYPTO_PROTOCOL_V4.validate()
 
+# v5 keeps the v4 empirical universe and persistence rates unchanged, but moves
+# the durable replay ledger to typed columns. This is a storage-layer change,
+# not an alpha/data-selection change, and therefore gets a fresh prospective
+# cohort so its exact storage contract is bound from t=0.
+BINANCE_CRYPTO_PROTOCOL_V5 = CryptoStudyProtocol(
+    study_id="crypto-binance-spot-prospective-v5",
+    version="5",
+    provider="binance",
+    venue="binance_spot",
+    symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+    streams=("trade", "bookTicker"),
+    normalized_event_types=("trade", "bookTicker"),
+    bookticker_persistence_interval_seconds=5.0,
+    persistence_contract_version="typed_compact_v1",
+)
+BINANCE_CRYPTO_PROTOCOL_V5.validate()
+
 KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
     study_id="crypto-kraken-spot-prospective-v1",
     version="1",
@@ -249,7 +273,7 @@ KRAKEN_CRYPTO_PROTOCOL = CryptoStudyProtocol(
 KRAKEN_CRYPTO_PROTOCOL.validate()
 
 CRYPTO_PROTOCOLS: Mapping[str, CryptoStudyProtocol] = {
-    "binance": BINANCE_CRYPTO_PROTOCOL_V4,
+    "binance": BINANCE_CRYPTO_PROTOCOL_V5,
     "kraken": KRAKEN_CRYPTO_PROTOCOL,
 }
 
@@ -261,4 +285,4 @@ def protocol_for(provider: str) -> CryptoStudyProtocol:
         raise ValueError(f"no preregistered crypto protocol for provider={provider!r}") from exc
 
 
-PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V4
+PREREGISTERED_CRYPTO_PROTOCOL = BINANCE_CRYPTO_PROTOCOL_V5
