@@ -1188,6 +1188,10 @@ class ProspectiveCryptoIngestor:
             "durability_reason": durability_reason,
             "persistence_error": self._persistence_error,
             "persistence_queue_batches": self._persistence_queue.qsize(),
+            "alpha_snapshot_queue_batches": self._alpha_snapshot_queue.qsize(),
+            "alpha_snapshots_created": self._alpha_snapshots_created,
+            "alpha_snapshots_persisted": self._alpha_snapshots_persisted,
+            "alpha_snapshots_dropped": self._alpha_snapshots_dropped,
             "persistence_last_success_age_seconds": last_success_age,
             "persistence_dropped_events": (
                 self._persistence_dropped_events
