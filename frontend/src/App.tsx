@@ -738,6 +738,82 @@ function TerminalTelemetry({ item, trades }: { item: SymbolMarket | undefined; t
   );
 }
 
+
+function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null }) {
+  const shadow = evidence?.online_shadow;
+  const count = num(shadow?.count) ?? 0;
+  const outcomes = num(shadow?.outcomes_count) ?? 0;
+  const scored = num(shadow?.scored_count) ?? 0;
+  const warmup = num(shadow?.warmup_count) ?? 0;
+  const resolvedRate = num(shadow?.resolved_rate);
+  const recentP = num(shadow?.recent_mean_probability);
+  const horizons = evidence?.study?.forecast_horizons_ms || [100, 250, 500, 1000, 2000, 5000];
+  const byHorizon = shadow?.by_horizon || {};
+  const ready = String(shadow?.state || "WARMING").toUpperCase() === "READY";
+  return (
+    <section className="v-card v-alpha-shadow">
+      <div className="v-card-head">
+        <div>
+          <span className="v-label">ALPHA SHADOW ENGINE</span>
+          <div className="v-alpha-title">
+            <strong>MICROSTRUCTURE</strong>
+            <span>shadow-only</span>
+          </div>
+        </div>
+        <span className={`v-live-chip ${ready ? "active" : "locked"}`}><i />{ready ? "MODEL READY" : "WARMING"}</span>
+      </div>
+
+      <div className="v-alpha-kpis">
+        <div><span>FORECASTS</span><b>{fmtCompact(count)}</b></div>
+        <div><span>RESOLVED</span><b>{fmtCompact(outcomes)}</b></div>
+        <div><span>SCORED</span><b>{fmtCompact(scored)}</b></div>
+        <div><span>WARMUP</span><b>{fmtCompact(warmup)}</b></div>
+      </div>
+
+      <div className="v-alpha-latency">
+        <div>
+          <span>RESOLUTION</span>
+          <strong>{resolvedRate == null ? "—" : `${(resolvedRate * 100).toFixed(1)}%`}</strong>
+        </div>
+        <div>
+          <span>RECENT P</span>
+          <strong>{recentP == null ? "—" : recentP.toFixed(3)}</strong>
+        </div>
+        <div>
+          <span>FEATURE SET</span>
+          <strong>α-v2</strong>
+        </div>
+      </div>
+
+      <div className="v-alpha-horizons">
+        {horizons.map(h => {
+          const row = byHorizon[String(h)] || {};
+          const n = num(row.count) ?? 0;
+          const s = num(row.scored_count) ?? 0;
+          const p = num(row.mean_probability);
+          const fill = n ? Math.max(6, Math.min(100, (s / Math.max(n, 1)) * 100)) : 6;
+          return (
+            <div className="v-alpha-horizon" key={h}>
+              <div className="v-alpha-horizon-head">
+                <span>{h}ms</span>
+                <b>{s}/{n}</b>
+              </div>
+              <div className="v-alpha-track"><span style={{ width: `${fill}%` }} /></div>
+              <small>{p == null ? "WARMUP" : `P ${p.toFixed(3)}`}</small>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="v-alpha-contract">
+        <span>FORMAL GATE</span>
+        <b>7D PIT / OOS · COST · STRESS · DSR/PBO</b>
+        <em>NO EXECUTION</em>
+      </div>
+    </section>
+  );
+}
+
 function ExecutionState({ health, evidence, durabilityStatus }: {
   health: HealthResponse | null;
   evidence: EvidenceResponse | null;
@@ -867,6 +943,7 @@ function VanguardTerminal({
         <aside className="v-side">
           <OpportunityMini evidence={evidence} />
           <ExecutionState health={health} evidence={evidence} durabilityStatus={durabilityStatus} />
+          <AlphaShadowMonitor evidence={evidence} />
           <section className="v-card v-orderbook">
             <div className="v-card-head"><span className="v-label">TOP OF BOOK</span><span className="v-muted">Binance Spot</span></div>
             <div className="v-book-row sell"><span>ASK</span><b>{fmt(selectedMarket?.ask, selectedMarket?.ask != null && selectedMarket.ask < 10 ? 5 : 2)}</b><em>{fmt(selectedMarket?.ask_qty, 4)}</em></div>
