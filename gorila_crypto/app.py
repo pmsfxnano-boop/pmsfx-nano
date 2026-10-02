@@ -54,9 +54,9 @@ _HISTORY_CACHE: dict[
 ] = {}
 
 _EVENTS_REPLAY_RELATION = (
-    "crypto_events_v5_replay"
-    if PREREGISTERED_CRYPTO_PROTOCOL.version == "5"
-    else "crypto_events"
+    "crypto_events_v6_replay"
+    if PREREGISTERED_CRYPTO_PROTOCOL.version == "6"
+    else "crypto_events_v5_replay" if PREREGISTERED_CRYPTO_PROTOCOL.version == "5" else "crypto_events"
 )
 
 
