@@ -683,6 +683,40 @@ class OnlineShadowAlpha:
             conn.commit()
         finally:
             conn.close()
+
+        try:
+            snapshot_id = hashlib.sha256(
+                f"{self._session_id}|{candidate['leader_event_id']}|{candidate['target']}|{FEATURE_SET_VERSION}".encode("utf-8")
+            ).hexdigest()[:32]
+            self.store.append_alpha_feature_snapshots([{
+                "snapshot_id": snapshot_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                "protocol_hash": PREREGISTERED_CRYPTO_PROTOCOL.protocol_hash,
+                "capture_session_id": self._session_id,
+                "feature_set_version": FEATURE_SET_VERSION,
+                "leader_symbol": candidate["leader"],
+                "target_symbol": candidate["target"],
+                "leader_event_id": candidate["leader_event_id"],
+                "leader_event_time": candidate["decision_event"].isoformat(),
+                "leader_received_time": candidate["decision_received"].isoformat(),
+                "source_event_ids": tuple(candidate["source_ids"]),
+                "feature_set_hash": feature_hash,
+                "features": candidate["features"],
+                "trigger_threshold_bps": 5.0,
+                "status": "SHADOW",
+            }])
+        except Exception as exc:
+            try:
+                self.store.record_connection(
+                    source=SOURCE,
+                    status="ALPHA_FEATURE_SNAPSHOT_ERROR",
+                    reason=f"{type(exc).__name__}: {exc}",
+                    metadata={"feature_set_version": FEATURE_SET_VERSION},
+                )
+            except Exception:
+                pass
+
         self._last_leader_event[(candidate["leader"], candidate["target"])] = candidate["leader_event_id"]
         return forecast_id
 
