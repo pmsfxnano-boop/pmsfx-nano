@@ -232,9 +232,20 @@ class OnlineShadowAlpha:
         ):
             return True
         self._last_session_resolve = time.monotonic()
+        previous_session_id = self._session_id
         self._session_id = self.store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
         if not self._session_id:
             return False
+        if previous_session_id and previous_session_id != self._session_id:
+            # Never carry a fitted shadow model across capture sessions.
+            self._models.clear()
+            self._model_spec_hashes.clear()
+            self._training_rows_used.clear()
+            self._horizon_gates.clear()
+            self._last_training_time = None
+            self._last_leader_event.clear()
+            self._horizon_index = 0
+            self._sample_index = 0
         self._shadow_fingerprint = hashlib.sha256(
             f"shadow|{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{self._session_id}|{FEATURE_SET_VERSION}".encode("utf-8")
         ).hexdigest()
