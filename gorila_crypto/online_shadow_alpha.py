@@ -710,8 +710,8 @@ class OnlineShadowAlpha:
             "status": "READY" if self._models else "WARMING",
             "feature_set_version": FEATURE_SET_VERSION,
             "model_id": MODEL_ID,
-"model_spec_hash": self._model_spec_hashes.get(int(horizon_ms)),
-"training_rows": self._training_rows_used.get(int(horizon_ms), 0),
+            "model_spec_hashes": dict(self._model_spec_hashes),
+            "training_rows": dict(self._training_rows_used),
             "last_training_time": self._last_training_time.isoformat() if self._last_training_time else None,
             "shadow_session_id": self._session_id,
             "shadow_fingerprint": self._shadow_fingerprint,
@@ -727,8 +727,10 @@ class OnlineShadowAlpha:
         candidate = self._build_candidate()
         if candidate is None:
             return
+        horizon = int(HORIZON_CYCLE_MS[self._horizon_index % len(HORIZON_CYCLE_MS)])
+        self._horizon_index += 1
         probability = None
-        if int(horizon) in self._models:
+        if horizon in self._models:
             snapshot = DetectionFeatureSnapshot(
                 feature_set_version=FEATURE_SET_VERSION,
                 decision_event_time=candidate["decision_event"],
@@ -740,9 +742,7 @@ class OnlineShadowAlpha:
                 source_event_ids=tuple(candidate["source_ids"]),
                 feature_set_hash="online",
             )
-            probability = predict_probability(self._models[int(horizon)], snapshot)
-        horizon = int(HORIZON_CYCLE_MS[self._horizon_index % len(HORIZON_CYCLE_MS)])
-        self._horizon_index += 1
+            probability = predict_probability(self._models[horizon], snapshot)
         self._persist_forecast(candidate, horizon, probability)
         self._last_emit = time.monotonic()
 
