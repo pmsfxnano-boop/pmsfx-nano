@@ -25,6 +25,8 @@ from .forecast import (
     FORECAST_SEMANTICS,
     MICROSTRUCTURE_FEATURES,
     FEATURE_SET_VERSION,
+    build_microstructure_feature_vector,
+    feature_set_hash,
 )
 from .market_cache import MARKET_CACHE
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
@@ -164,28 +166,6 @@ def _book_features(
         "confidence": confidence,
     }
 
-
-def _feature_hash(
-    *,
-    leader: str,
-    target: str,
-    decision_event: datetime,
-    decision_received: datetime,
-    source_ids: tuple[str, ...],
-    features: dict[str, float],
-) -> str:
-    payload = {
-        "feature_set": FEATURE_SET_VERSION,
-        "leader": leader,
-        "target": target,
-        "decision_event": decision_event.isoformat(),
-        "decision_received": decision_received.isoformat(),
-        "source_ids": list(source_ids),
-        "features": dict(sorted(features.items())),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
 class OnlineShadowAlpha:
@@ -343,54 +323,43 @@ class OnlineShadowAlpha:
                     str(books[target]["event_key"]),
                 )
 
-                features = {
-                    "leader_return_bps": leader_return,
-                    "leader_abs_return_bps": abs(leader_return),
-                    "leader_direction": direction,
-                    "leader_transport_latency_ms": max(
+                features = build_microstructure_feature_vector(
+                    leader_return_bps=leader_return,
+                    leader_transport_latency_ms=max(
                         0.0,
                         (decision_received - decision_event).total_seconds() * 1000.0,
                     ),
-                    "target_return_bps_lookback": target_return,
-                    "target_abs_return_bps_lookback": abs(target_return),
-                    "target_information_age_ms": max(
+                    target_return_bps_lookback=target_return,
+                    target_information_age_ms=max(
                         0.0,
                         (decision_received - _dt(baseline["received_time"])).total_seconds() * 1000.0,
                     ),
-                    "target_market_age_ms": max(
+                    target_market_age_ms=max(
                         0.0,
                         (decision_event - _dt(baseline["event_time"])).total_seconds() * 1000.0,
                     ),
-                    "leader_flow_imbalance_1s": leader_flow["flow_imbalance_1s"],
-                    "leader_flow_imbalance_5s": leader_flow["flow_imbalance_5s"],
-                    "leader_trade_intensity_1s": leader_flow["trade_intensity_1s"],
-                    "leader_trade_intensity_5s": leader_flow["trade_intensity_5s"],
-                    "target_flow_imbalance_1s": target_flow["flow_imbalance_1s"],
-                    "target_flow_imbalance_5s": target_flow["flow_imbalance_5s"],
-                    "target_trade_intensity_1s": target_flow["trade_intensity_1s"],
-                    "target_trade_intensity_5s": target_flow["trade_intensity_5s"],
-                    "leader_queue_imbalance": leader_book["queue_imbalance"],
-                    "leader_spread_bps": leader_book["spread_bps"],
-                    "leader_microprice_gap_bps": leader_book["microprice_gap_bps"],
-                    "target_queue_imbalance": target_book["queue_imbalance"],
-                    "target_spread_bps": target_book["spread_bps"],
-                    "target_microprice_gap_bps": target_book["microprice_gap_bps"],
-                    "leader_flow_x_shock": leader_return * leader_flow["flow_imbalance_1s"],
-                    "relative_flow_pressure": leader_flow["flow_imbalance_1s"] - target_flow["flow_imbalance_1s"],
-                    "leader_flow_persistence": leader_flow["flow_imbalance_1s"] - leader_flow["flow_imbalance_5s"],
-                    "target_flow_persistence": target_flow["flow_imbalance_1s"] - target_flow["flow_imbalance_5s"],
-                    "leader_flow_x_queue": leader_flow["flow_imbalance_1s"] * leader_book["queue_imbalance"],
-                    "target_flow_x_queue": target_flow["flow_imbalance_1s"] * target_book["queue_imbalance"],
-                    "target_adverse_selection_pressure": target_flow["flow_imbalance_1s"] * target_book["microprice_gap_bps"],
-                    "cross_asset_dislocation_bps": leader_return - target_return,
-                    "leader_book_age_ms": leader_book["age_ms"],
-                    "target_book_age_ms": target_book["age_ms"],
-                    "book_age_gap_ms": leader_book["age_ms"] - target_book["age_ms"],
-                    "leader_book_confidence": leader_book["confidence"],
-                    "target_book_confidence": target_book["confidence"],
-                    "leader_flow_x_book_confidence": leader_flow["flow_imbalance_1s"] * leader_book["confidence"],
-                    "target_flow_x_book_confidence": target_flow["flow_imbalance_1s"] * target_book["confidence"],
-                }
+                    leader_flow_imbalance_1s=leader_flow["flow_imbalance_1s"],
+                    leader_flow_imbalance_5s=leader_flow["flow_imbalance_5s"],
+                    leader_trade_intensity_1s=leader_flow["trade_intensity_1s"],
+                    leader_trade_intensity_5s=leader_flow["trade_intensity_5s"],
+                    target_flow_imbalance_1s=target_flow["flow_imbalance_1s"],
+                    target_flow_imbalance_5s=target_flow["flow_imbalance_5s"],
+                    target_trade_intensity_1s=target_flow["trade_intensity_1s"],
+                    target_trade_intensity_5s=target_flow["trade_intensity_5s"],
+                    leader_bid=float(books[leader]["bid"]),
+                    leader_ask=float(books[leader]["ask"]),
+                    leader_bid_qty=float(books[leader].get("bid_qty") or 0.0),
+                    leader_ask_qty=float(books[leader].get("ask_qty") or 0.0),
+                    target_bid=float(books[target]["bid"]),
+                    target_ask=float(books[target]["ask"]),
+                    target_bid_qty=float(books[target].get("bid_qty") or 0.0),
+                    target_ask_qty=float(books[target].get("ask_qty") or 0.0),
+                    leader_book_age_ms=leader_book["age_ms"],
+                    target_book_age_ms=target_book["age_ms"],
+                    bookticker_interval_seconds=float(
+                        PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds
+                    ),
+                )
                 if set(features) != set(MICROSTRUCTURE_FEATURES):
                     continue
 
@@ -594,13 +563,13 @@ class OnlineShadowAlpha:
                         FORECAST_SEMANTICS,
                         probability,
                         "SHADOW_SCORED" if probability is not None else "WARMUP",
-                        _feature_hash(
-                            leader=candidate["leader"],
-                            target=candidate["target"],
-                            decision_event=candidate["decision_event"],
-                            decision_received=candidate["decision_received"],
-                            source_ids=tuple(candidate["source_ids"]),
-                            features=candidate["features"],
+                        feature_set_hash(
+                            leader_symbol=candidate["leader"],
+                            target_symbol=candidate["target"],
+                            decision_event_time=candidate["decision_event"],
+                            decision_received_time=candidate["decision_received"],
+                            source_event_ids=tuple(candidate["source_ids"]),
+                            feature_values=candidate["features"],
                         ),
                         json.dumps(candidate["features"], sort_keys=True, separators=(",", ":")),
                         json.dumps(candidate["source_ids"], separators=(",", ":")),
@@ -697,6 +666,20 @@ class OnlineShadowAlpha:
                                     round(
                                         (_dt(future["event_time"]) - decision_event).total_seconds() * 1000.0
                                     )
+                                ),
+                                "shadow_execution_proxy_bps": (
+                                    float(PREREGISTERED_CRYPTO_PROTOCOL.base_cost_bps)
+                                    + float(PREREGISTERED_CRYPTO_PROTOCOL.base_slippage_bps)
+                                    + 0.5 * abs(float(features.get("target_spread_bps") or 0.0))
+                                ),
+                                "target_queue_imbalance_at_decision": float(
+                                    features.get("target_queue_imbalance") or 0.0
+                                ),
+                                "target_book_confidence_at_decision": float(
+                                    features.get("target_book_confidence") or 0.0
+                                ),
+                                "leader_transport_latency_ms": float(
+                                    features.get("leader_transport_latency_ms") or 0.0
                                 ),
                             },
                         },
