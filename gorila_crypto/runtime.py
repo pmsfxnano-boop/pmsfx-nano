@@ -780,6 +780,46 @@ class ProspectiveCryptoIngestor:
         self._alpha_last_trigger_monotonic[symbol] = now_monotonic
         return True
 
+    def _maybe_emit_alpha_snapshots(self, event: NormalizedMarketEvent) -> None:
+        if event.event_type == "bookTicker":
+            self._alpha_latest_book[event.symbol.upper()] = event
+            return
+        if event.event_type != "trade" or self.session_id is None:
+            return
+
+        anchor, _ = self._alpha_trim_and_anchor(event)
+        if anchor is None:
+            return
+        try:
+            price = float(event.payload.get("p") or 0.0)
+            anchor_price = float(anchor.payload.get("p") or 0.0)
+            if price <= 0.0 or anchor_price <= 0.0:
+                return
+            leader_return_bps = 10_000.0 * math.log(price / anchor_price)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return
+
+        if abs(leader_return_bps) < 5.0:
+            return
+        if not self._alpha_rate_allowed(event.symbol.upper(), time.monotonic()):
+            return
+
+        for target_symbol in self.protocol.symbols:
+            target_symbol = target_symbol.upper()
+            if target_symbol == event.symbol.upper():
+                continue
+            snapshot = self._build_alpha_snapshot(
+                leader=event,
+                leader_anchor=anchor,
+                target_symbol=target_symbol,
+            )
+            if snapshot is None:
+                continue
+            self._alpha_pending_snapshots.append(snapshot)
+
+        if self._alpha_pending_snapshots and self._alpha_pending_started_monotonic is None:
+            self._alpha_pending_started_monotonic = time.monotonic()
+
     def _build_alpha_snapshot(
         self,
         *,
@@ -1176,6 +1216,10 @@ class ProspectiveCryptoIngestor:
             "durability_reason": durability_reason,
             "persistence_error": self._persistence_error,
             "persistence_queue_batches": self._persistence_queue.qsize(),
+            "alpha_snapshot_queue_batches": self._alpha_snapshot_queue.qsize(),
+            "alpha_snapshots_created": self._alpha_snapshots_created,
+            "alpha_snapshots_persisted": self._alpha_snapshots_persisted,
+            "alpha_snapshots_dropped": self._alpha_snapshots_dropped,
             "persistence_last_success_age_seconds": last_success_age,
             "persistence_dropped_events": (
                 self._persistence_dropped_events
