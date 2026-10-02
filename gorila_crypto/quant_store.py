@@ -916,19 +916,17 @@ class QuantCryptoStore(CryptoStore):
             found: dict[tuple[str, str, int], tuple[int, str, bytes]] = {}
             if self._pg:
                 with conn.cursor() as cur:
+                    row_placeholder = "(" + ",".join(["%s"] * 22) + ")"
                     sql = """
                         INSERT INTO crypto_events_v5(
                             event_id,study_id,capture_session_id,symbol,event_type,
                             event_time,received_time,provider_time,source,
                             sequence_start,sequence_end,payload_hash,quality,ingest_epoch,
                             price,quantity,buyer_maker,bid,bid_qty,ask,ask_qty,recorded_at
-                        ) VALUES (
-                            %s,%s,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                            %s,%s,%s,%s,%s,%s,%s
-                        )
+                        ) VALUES {VALUES_CLAUSE}
                         ON CONFLICT(symbol,event_type,sequence_start) DO NOTHING
                         RETURNING symbol,event_type,sequence_start,ledger_seq,event_id,payload_hash
-                    """
+                    """.replace("{VALUES_CLAUSE}", ",".join([row_placeholder] * len(prepared)))
                     flat = []
                     for row in prepared:
                         flat.extend([
