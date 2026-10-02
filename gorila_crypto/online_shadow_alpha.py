@@ -50,6 +50,7 @@ SHADOW_NEUTRAL_BPS = (
     float(PREREGISTERED_CRYPTO_PROTOCOL.base_cost_bps)
     + float(PREREGISTERED_CRYPTO_PROTOCOL.base_slippage_bps)
 )
+SHADOW_MAX_P95_LATENCY_RATIO = 0.75
 HORIZON_CYCLE_MS = PREREGISTERED_CRYPTO_PROTOCOL.forecast_horizons_ms
 
 
@@ -200,6 +201,7 @@ class OnlineShadowAlpha:
         self._models: dict[int, Any] = {}
         self._model_spec_hashes: dict[int, str] = {}
         self._training_rows_used: dict[int, int] = {}
+        self._horizon_gates: dict[int, dict[str, Any]] = {}
         self._last_training_time: datetime | None = None
         self._last_outcome_resolve = 0.0
         self._last_session_resolve = 0.0
@@ -485,23 +487,75 @@ class OnlineShadowAlpha:
                 continue
         return output
 
+    @staticmethod
+    def _percentile(values: list[float], q: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(float(v) for v in values)
+        if len(ordered) == 1:
+            return ordered[0]
+        rank = (len(ordered) - 1) * max(0.0, min(100.0, q)) / 100.0
+        lo = int(math.floor(rank))
+        hi = int(math.ceil(rank))
+        if lo == hi:
+            return ordered[lo]
+        weight = rank - lo
+        return ordered[lo] * (1.0 - weight) + ordered[hi] * weight
+
     def _retrain_if_due(self, now: datetime) -> None:
         if time.monotonic() - self._last_train < self.training_interval_seconds:
             return
         self._last_train = time.monotonic()
         if not self._resolve_session():
             return
+
+        self._horizon_gates = {}
         for horizon_ms in HORIZON_CYCLE_MS:
             dataset = self._training_dataset(now, int(horizon_ms))
             if len(dataset) < self.min_training_rows:
+                self._horizon_gates[int(horizon_ms)] = {
+                    "state": "WARMING",
+                    "reason": "INSUFFICIENT_DIRECTIONAL_ROWS",
+                    "directional_rows": len(dataset),
+                    "required_rows": self.min_training_rows,
+                }
                 continue
+
+            latencies = [
+                float(row.snapshot.feature_values.get("leader_transport_latency_ms", 0.0))
+                for row in dataset
+            ]
+            p95_latency = self._percentile(latencies, 95.0)
+            max_latency = SHADOW_MAX_P95_LATENCY_RATIO * float(horizon_ms)
+            if p95_latency is not None and p95_latency > max_latency:
+                self._horizon_gates[int(horizon_ms)] = {
+                    "state": "BLOCKED",
+                    "reason": "SIGNAL_LATENCY_NOT_FEASIBLE",
+                    "directional_rows": len(dataset),
+                    "p95_transport_latency_ms": p95_latency,
+                    "max_p95_transport_latency_ms": max_latency,
+                    "max_p95_ratio": SHADOW_MAX_P95_LATENCY_RATIO,
+                }
+                self._models.pop(int(horizon_ms), None)
+                self._model_spec_hashes.pop(int(horizon_ms), None)
+                self._training_rows_used.pop(int(horizon_ms), None)
+                continue
+
             labels = [row.label.realized_target for row in dataset]
             if len(set(labels)) < 2:
+                self._horizon_gates[int(horizon_ms)] = {
+                    "state": "WARMING",
+                    "reason": "SINGLE_CLASS",
+                    "directional_rows": len(dataset),
+                }
                 continue
+
             config = WalkForwardConfig(
                 min_train_rows=1,
                 test_rows=1,
                 step_rows=1,
+                purge_ms=5_000,
+                embargo_ms=5_000,
                 ridge_alpha=1.0,
                 max_iterations=60,
                 convergence_tol=1e-7,
@@ -512,11 +566,19 @@ class OnlineShadowAlpha:
                 MICROSTRUCTURE_FEATURES,
                 config,
                 model_id=f"{MODEL_ID}-h{horizon_ms}",
-                version="online-v1",
+                version="online-v2",
             )
             self._models[int(horizon_ms)] = model
             self._model_spec_hashes[int(horizon_ms)] = model.spec_hash
             self._training_rows_used[int(horizon_ms)] = len(dataset)
+            self._horizon_gates[int(horizon_ms)] = {
+                "state": "READY",
+                "reason": "PIT_SHADOW_HORIZON_FEASIBLE",
+                "directional_rows": len(dataset),
+                "p95_transport_latency_ms": p95_latency,
+                "max_p95_transport_latency_ms": max_latency,
+                "max_p95_ratio": SHADOW_MAX_P95_LATENCY_RATIO,
+            }
         if self._models:
             self._last_training_time = now
 
@@ -734,9 +796,12 @@ class OnlineShadowAlpha:
             "model_id": MODEL_ID,
             "model_spec_hashes": dict(self._model_spec_hashes),
             "training_rows": dict(self._training_rows_used),
+            "horizon_gates": dict(self._horizon_gates),
             "last_training_time": self._last_training_time.isoformat() if self._last_training_time else None,
             "shadow_session_id": self._session_id,
             "shadow_fingerprint": self._shadow_fingerprint,
+            "selection_rule": "fixed_round_robin_cross_asset_pair_schedule",
+            "promotion": "SHADOW_ONLY",
         }
 
     def _loop_once(self) -> None:
