@@ -15,6 +15,10 @@ import {
   type SymbolMarket,
 } from "./api";
 import { createDirectBinanceFeed } from "./directBinance";
+import {
+  formatOpportunityDuration,
+  useOpportunityClock,
+} from "./opportunityClock";
 
 type Tab = "terminal" | "opportunity" | "research" | "quality";
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
@@ -503,36 +507,120 @@ function TimelineNode({ label, value, detail, tone }: { label: string; value: st
 
 function Opportunity({ evidence }: { evidence: EvidenceResponse | null }) {
   const clock = evidence?.opportunity_clock;
-  const active = clock?.state === "ACTIVE";
-  const progress = num(evidence?.cohort?.progress_pct) ?? 0;
+  const projection = useOpportunityClock(clock, evidence?.generated_at);
+  const progress = Math.round(projection.progress * 100);
+  const progressAngle = Math.max(2, progress);
+  const remaining = formatOpportunityDuration(projection.remainingSeconds);
+  const entryEnd = clock?.entry_window_end_at || projection.entryEndsAt;
+  const exitStart = clock?.exit_window_start_at || projection.exitStartsAt;
+  const exitEnd = clock?.exit_window_end_at || projection.exitEndsAt;
+  const active = projection.validated && projection.phase !== "CLOSED";
+  const status = projection.phase === "LOCKED" ? "GATED" : projection.phase;
+  const ring = projection.phase === "LOCKED"
+    ? "conic-gradient(var(--cyan) 0 4%, #202b30 4% 100%)"
+    : projection.phase === "CLOSED"
+      ? "conic-gradient(var(--red) 0 100%, #202b30 100%)"
+      : `conic-gradient(var(--green) 0 ${progressAngle}%, #20333a ${progressAngle}% 100%)`;
+
   return (
     <section className="panel opportunity-panel">
       <div className="section-head">
-        <div><div className="eyebrow"><Icon name="clock" /> OPPORTUNITY CLOCK</div><h2>Activation gate</h2></div>
+        <div><div className="eyebrow"><Icon name="clock" /> OPPORTUNITY CLOCK</div><h2>Time-of-edge monitor</h2></div>
         <span className="tag">{clock?.mode || "SHADOW"}</span>
       </div>
-      <div className={`clock ${active ? "active" : "locked"}`}>
+
+      <div className={`clock ${active ? "active" : "locked"}`} style={{ background: ring }}>
         <div className="clock-inner">
-          <span>GATE</span>
-          <strong>{clock?.state || "LOCKED"}</strong>
-          <small>{active ? "VALIDATED" : "PIT / OOS"}</small>
+          <span>STATE</span>
+          <strong>{projection.label}</strong>
+          <small>{projection.canDisplayCountdown ? remaining : (clock?.mode || "FAIL-CLOSED")}</small>
         </div>
       </div>
+
       <div className="gate-copy">
-        <StatusPill status={active ? "ACTIVE" : "GATED"} />
-        <h3>{active ? "Evidence contract passed" : "Waiting for evidence"}</h3>
-        <p>{clock?.rule || "The clock stays fail-closed until the prospective cohort, current Quality Gate, PIT/OOS and shadow evidence all pass."}</p>
+        <StatusPill status={status} />
+        <h3>
+          {projection.phase === "ENTRY_WINDOW" && projection.canDisplayCountdown
+            ? `${remaining} remaining in entry window`
+            : projection.phase === "DECAYING" && projection.canDisplayCountdown
+              ? `Edge decaying · ${remaining}`
+              : projection.phase === "EXIT_WINDOW" && projection.canDisplayCountdown
+                ? `Exit window · ${remaining}`
+                : projection.phase === "CLOSED"
+                  ? "Opportunity window closed"
+                  : "Waiting for validated opportunity"}
+        </h3>
+        <p>
+          {projection.validated
+            ? "The server supplies the authoritative state and horizon. The client only interpolates remaining time between evidence refreshes."
+            : clock?.rule || "The clock stays fail-closed until the quantitative evidence contract passes."}
+        </p>
       </div>
+
+      <div className="opportunity-window-grid">
+        <WindowCard
+          label="ENTRY WINDOW"
+          value={entryEnd ? `UNTIL ${timeOnly(entryEnd)}` : projection.phase === "ENTRY_WINDOW" ? "OPEN" : "—"}
+          meta={projection.phase === "ENTRY_WINDOW" && projection.canDisplayCountdown ? `${remaining} remaining` : "server-authoritative"}
+          tone={projection.phase === "ENTRY_WINDOW" ? "good" : "neutral"}
+        />
+        <WindowCard
+          label="EXIT WINDOW"
+          value={projection.phase === "EXIT_WINDOW" ? (exitEnd ? `UNTIL ${timeOnly(exitEnd)}` : "ACTIVE") : exitStart ? `STARTS ${timeOnly(exitStart)}` : "STANDBY"}
+          meta={projection.phase === "EXIT_WINDOW" && projection.canDisplayCountdown ? `${remaining} remaining` : "time-decay phase"}
+          tone={projection.phase === "EXIT_WINDOW" ? "warn" : "neutral"}
+        />
+        <WindowCard
+          label="PROBABILITY"
+          value={clock?.probability == null ? "—" : `${Number(clock.probability).toFixed(1)}%`}
+          meta="validated forecast"
+          tone={clock?.probability != null ? "good" : "neutral"}
+        />
+        <WindowCard
+          label="CONFIDENCE"
+          value={clock?.confidence == null ? "—" : `${Number(clock.confidence).toFixed(1)}%`}
+          meta="model conviction"
+          tone={clock?.confidence != null ? "good" : "neutral"}
+        />
+      </div>
+
+      <div className="clock-meta-grid">
+        <ClockMeta label="DETECTED" value={timeOnly(clock?.window_started_at || evidence?.generated_at)} />
+        <ClockMeta label="WINDOW END" value={timeOnly(projection.windowEndsAt || exitEnd || entryEnd)} />
+        <ClockMeta label="LEADER" value={clock?.leader_symbol || "—"} />
+        <ClockMeta label="TARGET" value={clock?.target_symbol || clock?.symbol || "—"} />
+      </div>
+
       <div className="gate-grid">
-        <GateCard label="COHORT" value={String(evidence?.cohort?.status || "SYNC")} meta={`${progress.toFixed(1)}% of prospective window`} />
+        <GateCard label="COHORT" value={String(evidence?.cohort?.status || "SYNC")} meta={`${Number(evidence?.cohort?.progress_pct || 0).toFixed(1)}% of prospective window`} />
         <GateCard label="QUALITY" value={String(evidence?.quality_gate?.state || "SYNC")} meta={String(evidence?.quality_gate?.rows || 0) + " rows in latest report"} />
         <GateCard label="PIT / OOS" value={String(evidence?.pit_oos?.state || "SYNC")} meta={String(evidence?.pit_oos?.oos_rows || 0) + " OOS rows"} />
-        <GateCard label="FORECAST" value={String(evidence?.forecast_shadow?.state || "SYNC")} meta={String(evidence?.forecast_shadow?.count || 0) + " shadow forecasts"} />
+        <GateCard label="FORECAST" value={String(evidence?.forecast_shadow?.count || 0)} meta="shadow forecast records" />
       </div>
+
       <div className="blockers">
         <span>BLOCKERS</span><b>{clock?.blockers?.length || 0}</b>
       </div>
     </section>
+  );
+}
+
+function WindowCard({ label, value, meta, tone }: { label: string; value: string; meta: string; tone: "good" | "warn" | "neutral" }) {
+  return (
+    <div className={`window-card ${tone}`}>
+      <small>{label}</small>
+      <b>{value}</b>
+      <span>{meta}</span>
+    </div>
+  );
+}
+
+function ClockMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="clock-meta">
+      <small>{label}</small>
+      <b>{value}</b>
+    </div>
   );
 }
 
@@ -674,15 +762,18 @@ function ResearchCard({ label, value, meta }: { label: string; value: string; me
 
 function OpportunityMini({ evidence }: { evidence: EvidenceResponse | null }) {
   const clock = evidence?.opportunity_clock;
-  const active = clock?.state === "ACTIVE";
-  const validated = Boolean(clock?.validated);
-  const progress = Math.max(0, Math.min(100, num(evidence?.cohort?.progress_pct) ?? 0));
+  const projection = useOpportunityClock(clock, evidence?.generated_at);
+  const progress = Math.max(0, Math.min(100, projection.progress * 100));
+  const active = projection.validated && projection.phase !== "CLOSED";
+  const remaining = formatOpportunityDuration(projection.remainingSeconds);
+
   return (
     <section className="v-card v-opportunity">
       <div className="v-card-head">
         <span className="v-label">OPPORTUNITY CLOCK</span>
-        <span className={`v-live-chip ${active ? "active" : "locked"}`}><i />{active ? "ACTIVE" : "LOCKED"}</span>
+        <span className={`v-live-chip ${active ? "active" : "locked"}`}><i />{projection.label}</span>
       </div>
+
       <div className="v-clock-orbit">
         <svg viewBox="0 0 180 180" aria-hidden="true">
           <circle className="orbit-track" cx="90" cy="90" r="70" />
@@ -692,18 +783,30 @@ function OpportunityMini({ evidence }: { evidence: EvidenceResponse | null }) {
             cy="90"
             r="70"
             pathLength="100"
-            strokeDasharray={`${active ? 100 : Math.max(2, progress)} 100`}
+            strokeDasharray={`${active ? Math.max(2, 100 - progress) : 2} 100`}
           />
           <circle className="orbit-core" cx="90" cy="90" r="50" />
         </svg>
         <div className="v-clock-center">
-          <span>GATE</span>
-          <strong>{clock?.state || "LOCKED"}</strong>
-          <small>{validated ? "VALIDATED" : "PIT / OOS"}</small>
+          <span>{projection.phase === "LOCKED" ? "GATE" : "TIME LEFT"}</span>
+          <strong>{projection.canDisplayCountdown ? remaining : projection.label}</strong>
+          <small>{clock?.mode || "SHADOW"}</small>
         </div>
       </div>
+
+      <div className="v-opportunity-window">
+        <div>
+          <span>ENTRY</span>
+          <b>{projection.phase === "ENTRY_WINDOW" ? remaining : "—"}</b>
+        </div>
+        <div>
+          <span>EXIT</span>
+          <b>{projection.phase === "EXIT_WINDOW" ? remaining : "—"}</b>
+        </div>
+      </div>
+
       <div className="v-opportunity-meta">
-        <div><span>COHORT</span><b>{progress.toFixed(1)}%</b></div>
+        <div><span>PHASE</span><b>{projection.label}</b></div>
         <div><span>HORIZON</span><b>{clock?.horizon_ms ? `${clock.horizon_ms}ms` : "—"}</b></div>
         <div><span>BLOCKERS</span><b>{clock?.blockers?.length ?? 0}</b></div>
       </div>

@@ -603,3 +603,29 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .v-alpha-kpis>div:nth-child(2){border-right:0}
   .v-alpha-kpis>div:nth-child(-n+2){border-bottom:1px solid rgba(105,215,233,.07)}
 }
+
+/* Opportunity Clock vanguard time-window surface */
+.opportunity-window-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}
+.window-card{border:1px solid #1b2a33;border-radius:13px;padding:13px;background:#091116;min-width:0}
+.window-card small{display:block;color:#5f737f;font-size:8px;letter-spacing:.14em}
+.window-card b{display:block;font-size:12px;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.window-card span{display:block;color:#647a85;font-size:8px;margin-top:4px}
+.window-card.good{border-color:rgba(99,224,173,.24)} .window-card.good b{color:var(--green)}
+.window-card.warn{border-color:rgba(240,198,110,.25)} .window-card.warn b{color:#f0c66e}
+.clock-meta-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.clock-meta{border-top:1px solid #172731;padding-top:11px;min-width:0}
+.clock-meta small{display:block;color:#5f7480;font-size:8px;letter-spacing:.12em}
+.clock-meta b{display:block;margin-top:5px;font-size:10px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.v-opportunity-window{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid rgba(105,215,233,.08);border-bottom:1px solid rgba(105,215,233,.08)}
+.v-opportunity-window>div{padding:9px 11px;border-right:1px solid rgba(105,215,233,.08)}
+.v-opportunity-window>div:last-child{border-right:0}
+.v-opportunity-window span{display:block;color:#4f666f;font-size:7px;letter-spacing:.12em}
+.v-opportunity-window b{display:block;color:#d3f5fa;font-size:11px;margin-top:4px;font-variant-numeric:tabular-nums}
+@media(max-width:760px){
+  .opportunity-window-grid{grid-template-columns:1fr 1fr}
+  .clock-meta-grid{grid-template-columns:1fr 1fr}
+}
+@media(max-width:520px){
+  .opportunity-window-grid{grid-template-columns:1fr}
+  .clock-meta-grid{grid-template-columns:1fr 1fr}
+}
