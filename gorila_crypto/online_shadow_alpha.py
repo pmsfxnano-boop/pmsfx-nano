@@ -43,6 +43,13 @@ from .validation import (
 SOURCE = "gorila.crypto.online_shadow_alpha"
 MODEL_ID = "crypto-online-microstructure-ridge-shadow-v1"
 MAX_PENDING_LOOKBACK_SECONDS = 30.0
+# Candidate observations must be genuinely fresh; otherwise the hot cache can
+# evict the post-horizon event before the resolver sees it.
+MAX_CANDIDATE_AGE_SECONDS = 0.5
+# Resolve from the lossless hot plane, not the sampled durable ledger. The
+# compact durable ledger is for formal replay; online shadow labels are compact
+# outcomes whose future observation is already causally in the past.
+OUTCOME_TRADE_LIMIT = 6000
 # Shadow-only economic dead zone. Returns whose absolute move does not
 # overcome the preregistered base round-trip friction are neutral for online
 # model training; the formal v6 PIT/OOS label contract remains unchanged.
@@ -271,7 +278,7 @@ class OnlineShadowAlpha:
                 continue
             decision_event = _dt(leader_trade["event_time"])
             decision_received = _dt(leader_trade["received_time"])
-            if (now - decision_received).total_seconds() > 2.0:
+            if (now - decision_received).total_seconds() > MAX_CANDIDATE_AGE_SECONDS:
                 continue
             previous = _prior_before(
                 leader_rows,
@@ -674,7 +681,7 @@ class OnlineShadowAlpha:
             return
         snap = MARKET_CACHE.research_snapshot(
             symbols=PREREGISTERED_CRYPTO_PROTOCOL.symbols,
-            trade_limit=2000,
+            trade_limit=OUTCOME_TRADE_LIMIT,
         )
         by_symbol = _event_map(snap["events"])
         conn = self.store.connect()
