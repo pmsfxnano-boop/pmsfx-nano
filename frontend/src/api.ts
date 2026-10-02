@@ -99,6 +99,20 @@ export interface EvidenceResponse {
   research: AnyMap;
   pit_oos: AnyMap;
   forecast_shadow: AnyMap;
+  online_shadow: {
+    state?: string;
+    count?: number;
+    outcomes_count?: number;
+    resolved_rate?: number;
+    scored_count?: number;
+    warmup_count?: number;
+    recent_mean_probability?: number | null;
+    by_horizon?: Record<string, {
+      count?: number;
+      scored_count?: number;
+      mean_probability?: number | null;
+    }>;
+  };
   lead_lag_shadow: AnyMap;
   opportunity_shadow: AnyMap;
   regime: AnyMap;
