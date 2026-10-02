@@ -125,7 +125,7 @@ def _heartbeat_loop() -> None:
                     cutoff = (now - timedelta(seconds=60)).isoformat()
                     with conn.cursor() as cur:
                         cur.execute(
-                            """
+                            f"""
                             SELECT symbol, COUNT(*) AS rows, MAX(received_time) AS last_received
                             FROM {_EVENTS_REPLAY_RELATION}
                             WHERE received_time >= %s
@@ -713,7 +713,7 @@ def market_history(
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        """
+                        f"""
                         WITH buckets AS (
                             SELECT
                                 to_timestamp(
@@ -899,7 +899,7 @@ def operational_e2e() -> dict[str, Any]:
             cutoff = (now - timedelta(seconds=60)).isoformat()
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         COALESCE(MAX(ledger_seq), 0),
                         COUNT(*),
