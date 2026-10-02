@@ -732,6 +732,9 @@ def market_history(
                 datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
             ).isoformat()
             store = _new_store()
+            session_id = store.active_capture_session(PREREGISTERED_CRYPTO_PROTOCOL.study_id)
+            if session_id is None:
+                raise RuntimeError("active_capture_session_required_for_history_fallback")
             conn = store.connect()
             try:
                 with conn.cursor() as cur:
@@ -749,6 +752,8 @@ def market_history(
                             FROM {_EVENTS_REPLAY_RELATION}
                             WHERE symbol=%s
                               AND event_type='trade'
+                              AND metadata::jsonb->>'crypto_study_id'=%s
+                              AND metadata::jsonb->>'capture_session_id'=%s
                               AND event_time >= %s
                         ),
                         grouped AS (
@@ -772,6 +777,8 @@ def market_history(
                             bucket_seconds,
                             bucket_seconds,
                             normalized,
+                            PREREGISTERED_CRYPTO_PROTOCOL.study_id,
+                            session_id,
                             start_time,
                             safe_limit,
                         ),
