@@ -581,7 +581,7 @@ def _online_shadow_diagnostics(
     rows = _query(
         conn,
         """
-        SELECT s.horizon_ms,s.features_json,
+        SELECT s.horizon_ms,s.decision_received_time,s.features_json,
                o.realized_signed_return_bps,o.realized_target,o.metadata
         FROM crypto_forecast_shadow s
         JOIN crypto_forecast_outcomes o ON o.forecast_id=s.forecast_id
@@ -606,6 +606,9 @@ def _online_shadow_diagnostics(
             signed = float(row["realized_signed_return_bps"] or 0.0)
             target = int(row["realized_target"])
             shadow_neutral = bool(metadata.get("shadow_neutral", False))
+            decision_received = _dt(row["decision_received_time"])
+            second = decision_received.second + decision_received.microsecond / 1_000_000.0
+            minute = decision_received.minute
             proxy_cost = float(
                 metadata.get("shadow_execution_proxy_bps")
                 or (
@@ -626,6 +629,9 @@ def _online_shadow_diagnostics(
                 "target_spread": abs(float(features.get("target_spread_bps") or 0.0)),
                 "transport": float(features.get("leader_transport_latency_ms") or 0.0),
                 "neutral": shadow_neutral,
+                "quarter_hour_open_5s": (minute % 15 == 0 and second < 5.0),
+                "five_minute_open_5s": (minute % 5 == 0 and second < 5.0),
+                "one_minute_open_2s": (second < 2.0),
             })
         except Exception:
             continue
@@ -636,9 +642,16 @@ def _online_shadow_diagnostics(
         n = len(items)
         if not n:
             continue
+        directional = [item for item in items if not item["neutral"]]
+        directional_n = len(directional)
         by_horizon[str(horizon)] = {
             "n": n,
-            "hit_rate": sum(item["target"] for item in items) / n,
+            "directional_n": directional_n,
+            "neutral_fraction": 1.0 - (directional_n / n),
+            "hit_rate": (
+                sum(item["target"] for item in directional) / directional_n
+                if directional_n else None
+            ),
             "mean_signed_return_bps": mean(item["signed"] for item in items),
             "mean_proxy_cost_bps": mean(item["proxy_cost"] for item in items),
             "mean_proxy_net_bps": mean(item["net_proxy"] for item in items),
@@ -679,6 +692,13 @@ def _online_shadow_diagnostics(
         item for item in parsed
         if median_spread is not None and item["target_spread"] > median_spread
     ]
+    quarter_open = [item for item in parsed if item["quarter_hour_open_5s"]]
+    five_min_open = [item for item in parsed if item["five_minute_open_5s"]]
+    one_min_open = [item for item in parsed if item["one_minute_open_2s"]]
+    clock_non_boundary = [
+        item for item in parsed
+        if not item["quarter_hour_open_5s"]
+    ]
 
     return {
         "state": "SHADOW_READY" if parsed else "WARMING",
@@ -692,6 +712,10 @@ def _online_shadow_diagnostics(
             "flow_dislocated": slice_stats(flow_dislocated),
             "spread_tight_half": slice_stats(spread_tight),
             "spread_wide_half": slice_stats(spread_wide),
+            "quarter_hour_open_5s": slice_stats(quarter_open),
+            "quarter_hour_non_boundary": slice_stats(clock_non_boundary),
+            "five_minute_open_5s": slice_stats(five_min_open),
+            "one_minute_open_2s": slice_stats(one_min_open),
         },
         "notes": "descriptive shadow diagnostics only; never used for model promotion or execution.",
     }
