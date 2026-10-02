@@ -15,7 +15,13 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .forecast import DetectionFeatureSnapshot, ForecastTargetSpec, MICROSTRUCTURE_FEATURES
+from .forecast import (
+    DetectionFeatureSnapshot,
+    ForecastTargetSpec,
+    MICROSTRUCTURE_FEATURES,
+    build_microstructure_feature_vector,
+    feature_set_hash,
+)
 from .lead_lag import LeadLagConfig
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .quality import (
@@ -820,71 +826,51 @@ def _dataset_rows(
         target_flow_1s = float(item["target_flow_imbalance_1s"])
         target_flow_5s = float(item["target_flow_imbalance_5s"])
 
-        features = {
-            "leader_return_bps": leader_return,
-            "leader_abs_return_bps": abs(leader_return),
-            "leader_direction": 1.0 if leader_return > 0 else -1.0,
-            "leader_transport_latency_ms": max(
+        leader_book_age_ms = max(
+            0.0,
+            (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds() * 1000.0,
+        )
+        target_book_age_ms = max(
+            0.0,
+            (item["leader_received_time"] - item["target_book_received_time"]).total_seconds() * 1000.0,
+        )
+        features = build_microstructure_feature_vector(
+            leader_return_bps=leader_return,
+            leader_transport_latency_ms=max(
                 0.0,
                 (item["leader_received_time"] - item["leader_event_time"]).total_seconds() * 1000.0,
             ),
-            "target_return_bps_lookback": target_return,
-            "target_abs_return_bps_lookback": abs(target_return),
-            "target_information_age_ms": max(
+            target_return_bps_lookback=target_return,
+            target_information_age_ms=max(
                 0.0,
                 (item["leader_received_time"] - item["baseline_received_time"]).total_seconds() * 1000.0,
             ),
-            "target_market_age_ms": max(
+            target_market_age_ms=max(
                 0.0,
                 (item["leader_event_time"] - item["baseline_event_time"]).total_seconds() * 1000.0,
             ),
-            "leader_flow_imbalance_1s": leader_flow_1s,
-            "leader_flow_imbalance_5s": leader_flow_5s,
-            "leader_trade_intensity_1s": float(item["leader_trade_intensity_1s"]),
-            "leader_trade_intensity_5s": float(item["leader_trade_intensity_5s"]),
-            "target_flow_imbalance_1s": target_flow_1s,
-            "target_flow_imbalance_5s": target_flow_5s,
-            "target_trade_intensity_1s": float(item["target_trade_intensity_1s"]),
-            "target_trade_intensity_5s": float(item["target_trade_intensity_5s"]),
-            **leader_book,
-            **target_book,
-            "leader_flow_x_shock": leader_return * leader_flow_1s,
-            "relative_flow_pressure": leader_flow_1s - target_flow_1s,
-            "leader_flow_persistence": leader_flow_1s - leader_flow_5s,
-            "target_flow_persistence": target_flow_1s - target_flow_5s,
-            "leader_flow_x_queue": leader_flow_1s * leader_book["leader_queue_imbalance"],
-            "target_flow_x_queue": target_flow_1s * target_book["target_queue_imbalance"],
-            "target_adverse_selection_pressure": target_flow_1s * target_book["target_microprice_gap_bps"],
-            "cross_asset_dislocation_bps": leader_return - target_return,
-            "leader_book_age_ms": max(
-                0.0,
-                (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds() * 1000.0,
+            leader_flow_imbalance_1s=leader_flow_1s,
+            leader_flow_imbalance_5s=leader_flow_5s,
+            leader_trade_intensity_1s=float(item["leader_trade_intensity_1s"]),
+            leader_trade_intensity_5s=float(item["leader_trade_intensity_5s"]),
+            target_flow_imbalance_1s=target_flow_1s,
+            target_flow_imbalance_5s=target_flow_5s,
+            target_trade_intensity_1s=float(item["target_trade_intensity_1s"]),
+            target_trade_intensity_5s=float(item["target_trade_intensity_5s"]),
+            leader_bid=float(item["leader_bid"]),
+            leader_ask=float(item["leader_ask"]),
+            leader_bid_qty=float(item["leader_bid_qty"]),
+            leader_ask_qty=float(item["leader_ask_qty"]),
+            target_bid=float(item["target_bid"]),
+            target_ask=float(item["target_ask"]),
+            target_bid_qty=float(item["target_bid_qty"]),
+            target_ask_qty=float(item["target_ask_qty"]),
+            leader_book_age_ms=leader_book_age_ms,
+            target_book_age_ms=target_book_age_ms,
+            bookticker_interval_seconds=float(
+                PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds
             ),
-            "target_book_age_ms": max(
-                0.0,
-                (item["leader_received_time"] - item["target_book_received_time"]).total_seconds() * 1000.0,
-            ),
-            "book_age_gap_ms": (
-                max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds() * 1000.0)
-                - max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds() * 1000.0)
-            ),
-            "leader_book_confidence": math.exp(
-                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds())
-                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
-            ),
-            "target_book_confidence": math.exp(
-                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds())
-                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
-            ),
-            "leader_flow_x_book_confidence": leader_flow_1s * math.exp(
-                -max(0.0, (item["leader_received_time"] - item["leader_book_received_time"]).total_seconds())
-                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
-            ),
-            "target_flow_x_book_confidence": target_flow_1s * math.exp(
-                -max(0.0, (item["leader_received_time"] - item["target_book_received_time"]).total_seconds())
-                / max(float(PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds), 1.0)
-            ),
-        }
+        )
 
         source_ids = (
             str(item["leader_event_id"]),
@@ -893,7 +879,7 @@ def _dataset_rows(
             str(item["leader_book_event_id"]),
             str(item["target_book_event_id"]),
         )
-        feature_hash = _feature_hash(
+        feature_hash = feature_set_hash(
             leader_symbol=leader_symbol,
             target_symbol=target_symbol,
             decision_event_time=item["leader_event_time"],
