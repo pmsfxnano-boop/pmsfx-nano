@@ -7,7 +7,6 @@ state contract to the frontend.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import threading
@@ -371,92 +370,94 @@ def _forecast_shadow(
     }
 
 
-
-def _online_shadow(conn, *, shadow_fingerprint: str | None) -> dict[str, Any]:
-    if not shadow_fingerprint:
+def _alpha_feature_shadow(
+    conn,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    if not session_id:
         return {
             "state": "EMPTY",
             "count": 0,
-            "outcomes_count": 0,
-            "resolved_rate": 0.0,
-            "scored_count": 0,
-            "warmup_count": 0,
-            "by_horizon": {},
-            "recent_mean_probability": None,
+            "latest_at": None,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "leaders": {},
+        }
+    try:
+        clauses = "WHERE capture_session_id=%s"
+        params = (session_id,)
+        count_row = _query(
+            conn,
+            f"SELECT COUNT(*) AS n FROM crypto_alpha_feature_snapshots {clauses}",
+            params,
+        )[0]
+        latest = _query(
+            conn,
+            f"""
+            SELECT created_at,leader_symbol,target_symbol,leader_received_time,
+                   leader_event_time,feature_set_version,feature_set_hash,status
+            FROM crypto_alpha_feature_snapshots
+            {clauses}
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            params,
+        )
+        leaders = _query(
+            conn,
+            f"""
+            SELECT leader_symbol,target_symbol,COUNT(*) AS n,
+                   AVG((features_json::jsonb->>'leader_return_bps')::double precision) AS mean_shock_bps,
+                   AVG((features_json::jsonb->>'leader_flow_imbalance_1s')::double precision) AS mean_flow_1s,
+                   AVG((features_json::jsonb->>'target_queue_imbalance')::double precision) AS mean_target_queue,
+                   AVG((features_json::jsonb->>'target_spread_bps')::double precision) AS mean_target_spread_bps,
+                   AVG((features_json::jsonb->>'leader_transport_latency_ms')::double precision) AS mean_transport_latency_ms
+            FROM crypto_alpha_feature_snapshots
+            {clauses}
+            GROUP BY leader_symbol,target_symbol
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            params,
+        )
+        return {
+            "state": "SHADOW_READY" if latest else "EMPTY",
+            "count": int(count_row["n"] or 0),
+            "latest": (
+                {
+                    **latest[0],
+                    "created_at": _iso(latest[0]["created_at"]),
+                    "leader_event_time": _iso(latest[0]["leader_event_time"]),
+                    "leader_received_time": _iso(latest[0]["leader_received_time"]),
+                }
+                if latest
+                else None
+            ),
+            "latest_at": _iso(latest[0]["created_at"]) if latest else None,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "leaders": [
+                {
+                    "leader_symbol": str(row["leader_symbol"]),
+                    "target_symbol": str(row["target_symbol"]),
+                    "n": int(row["n"]),
+                    "mean_shock_bps": float(row["mean_shock_bps"]) if row["mean_shock_bps"] is not None else None,
+                    "mean_flow_1s": float(row["mean_flow_1s"]) if row["mean_flow_1s"] is not None else None,
+                    "mean_target_queue": float(row["mean_target_queue"]) if row["mean_target_queue"] is not None else None,
+                    "mean_target_spread_bps": float(row["mean_target_spread_bps"]) if row["mean_target_spread_bps"] is not None else None,
+                    "mean_transport_latency_ms": float(row["mean_transport_latency_ms"]) if row["mean_transport_latency_ms"] is not None else None,
+                }
+                for row in leaders
+            ],
+        }
+    except Exception as exc:
+        return {
+            "state": "UNAVAILABLE",
+            "count": 0,
+            "latest_at": None,
+            "feature_set_version": FEATURE_SET_VERSION,
+            "leaders": [],
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
-    counts = _query(
-        conn,
-        """
-        SELECT COUNT(*) AS n,
-               COUNT(*) FILTER (WHERE status='SHADOW_SCORED') AS scored,
-               COUNT(*) FILTER (WHERE status='WARMUP') AS warmup
-        FROM crypto_forecast_shadow
-        WHERE replay_fingerprint=%s
-        """,
-        (shadow_fingerprint,),
-    )[0]
-    outcomes = _query(
-        conn,
-        """
-        SELECT COUNT(*) AS n
-        FROM crypto_forecast_outcomes o
-        JOIN crypto_forecast_shadow s ON s.forecast_id=o.forecast_id
-        WHERE s.replay_fingerprint=%s
-        """,
-        (shadow_fingerprint,),
-    )[0]
-    horizons = _query(
-        conn,
-        """
-        SELECT horizon_ms,COUNT(*) AS n,
-               COUNT(*) FILTER (WHERE status='SHADOW_SCORED') AS scored,
-               AVG(probability_response_positive) FILTER (WHERE probability_response_positive IS NOT NULL) AS mean_probability
-        FROM crypto_forecast_shadow
-        WHERE replay_fingerprint=%s
-        GROUP BY horizon_ms
-        ORDER BY horizon_ms
-        """,
-        (shadow_fingerprint,),
-    )
-    recent = _query(
-        conn,
-        """
-        SELECT AVG(probability_response_positive) AS mean_probability
-        FROM (
-            SELECT probability_response_positive
-            FROM crypto_forecast_shadow
-            WHERE replay_fingerprint=%s
-              AND probability_response_positive IS NOT NULL
-            ORDER BY created_at DESC
-            LIMIT 100
-        ) q
-        """,
-        (shadow_fingerprint,),
-    )[0]
-    total = int(counts["n"] or 0)
-    outcomes_count = int(outcomes["n"] or 0)
-    return {
-        "state": "READY" if total else "WARMING",
-        "count": total,
-        "outcomes_count": outcomes_count,
-        "resolved_rate": float(outcomes_count / total) if total else 0.0,
-        "scored_count": int(counts["scored"] or 0),
-        "warmup_count": int(counts["warmup"] or 0),
-        "by_horizon": {
-            str(int(row["horizon_ms"])): {
-                "count": int(row["n"]),
-                "scored_count": int(row["scored"]),
-                "mean_probability": float(row["mean_probability"]) if row["mean_probability"] is not None else None,
-            }
-            for row in horizons
-        },
-        "recent_mean_probability": (
-            float(recent["mean_probability"])
-            if recent["mean_probability"] is not None
-            else None
-        ),
-    }
 
 def _lead_lag(
     conn,
@@ -676,21 +677,13 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                 conn,
                 cohort.get("session_id"),
             )
-            shadow_fingerprint = None
-            if cohort.get("session_id"):
-                shadow_fingerprint = hashlib.sha256(
-                    f"shadow|{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{cohort.get('session_id')}|{FEATURE_SET_VERSION}".encode("utf-8")
-                ).hexdigest()
-            online_shadow = _online_shadow(
-                conn,
-                shadow_fingerprint=shadow_fingerprint,
-            )
             if replay_fingerprint is None and quality.get("current_session"):
                 replay_fingerprint = quality.get("replay_fingerprint")
             validation = _validation_gate(conn, replay_fingerprint)
             forecast = _forecast_shadow(conn, replay_fingerprint)
             lead_lag = _lead_lag(conn, replay_fingerprint)
             opportunity = _opportunity_shadow(conn, replay_fingerprint)
+            alpha_shadow = _alpha_feature_shadow(conn, cohort.get("session_id"))
         finally:
             conn.close()
 
@@ -731,9 +724,9 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             "research": research,
             "pit_oos": validation,
             "forecast_shadow": forecast,
-            "online_shadow": online_shadow,
             "lead_lag_shadow": lead_lag,
             "opportunity_shadow": opportunity,
+            "alpha_feature_shadow": alpha_shadow,
             "regime": regime,
             "opportunity_clock": clock,
         }
