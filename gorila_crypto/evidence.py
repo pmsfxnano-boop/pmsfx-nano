@@ -458,6 +458,21 @@ def _online_shadow(conn, *, shadow_fingerprint: str | None) -> dict[str, Any]:
         ),
     }
 
+def _percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * max(0.0, min(100.0, q)) / 100.0
+    lo = int(math.floor(rank))
+    hi = int(math.ceil(rank))
+    if lo == hi:
+        return ordered[lo]
+    weight = rank - lo
+    return ordered[lo] * (1.0 - weight) + ordered[hi] * weight
+
+
 def _alpha_feature_shadow(
     conn,
     session_id: str | None,
@@ -543,6 +558,139 @@ def _alpha_feature_shadow(
             "leaders": [],
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _online_shadow_diagnostics(
+    conn,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Shadow-only discovery diagnostics; never part of the promotion gate."""
+    if not session_id:
+        return {
+            "state": "EMPTY",
+            "forecasts": 0,
+            "outcomes": 0,
+            "by_horizon": {},
+            "regime_slices": {},
+        }
+
+    shadow_fingerprint = hashlib.sha256(
+        f"shadow|{PREREGISTERED_CRYPTO_PROTOCOL.study_id}|{session_id}|{FEATURE_SET_VERSION}".encode("utf-8")
+    ).hexdigest()
+
+    rows = _query(
+        conn,
+        """
+        SELECT s.horizon_ms,s.features_json,
+               o.realized_signed_return_bps,o.realized_target,o.metadata
+        FROM crypto_forecast_shadow s
+        JOIN crypto_forecast_outcomes o ON o.forecast_id=s.forecast_id
+        WHERE s.replay_fingerprint=%s
+          AND o.status='RESOLVED'
+        ORDER BY s.decision_received_time DESC
+        LIMIT 5000
+        """,
+        (shadow_fingerprint,),
+    )
+    forecast_count = _query(
+        conn,
+        "SELECT COUNT(*) AS n FROM crypto_forecast_shadow WHERE replay_fingerprint=%s",
+        (shadow_fingerprint,),
+    )
+
+    parsed: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            features = _json(row["features_json"])
+            metadata = _json(row["metadata"])
+            signed = float(row["realized_signed_return_bps"] or 0.0)
+            target = int(row["realized_target"])
+            proxy_cost = float(
+                metadata.get("shadow_execution_proxy_bps")
+                or (
+                    float(PREREGISTERED_CRYPTO_PROTOCOL.base_cost_bps)
+                    + float(PREREGISTERED_CRYPTO_PROTOCOL.base_slippage_bps)
+                    + 0.5 * abs(float(features.get("target_spread_bps") or 0.0))
+                )
+            )
+            parsed.append({
+                "horizon_ms": int(row["horizon_ms"]),
+                "signed": signed,
+                "target": target,
+                "proxy_cost": proxy_cost,
+                "net_proxy": signed - proxy_cost,
+                "leader_flow": float(features.get("leader_flow_imbalance_1s") or 0.0),
+                "target_flow": float(features.get("target_flow_imbalance_1s") or 0.0),
+                "target_queue": float(features.get("target_queue_imbalance") or 0.0),
+                "target_spread": abs(float(features.get("target_spread_bps") or 0.0)),
+                "transport": float(features.get("leader_transport_latency_ms") or 0.0),
+            })
+        except Exception:
+            continue
+
+    by_horizon: dict[str, Any] = {}
+    for horizon in sorted({item["horizon_ms"] for item in parsed}):
+        items = [item for item in parsed if item["horizon_ms"] == horizon]
+        n = len(items)
+        if not n:
+            continue
+        by_horizon[str(horizon)] = {
+            "n": n,
+            "hit_rate": sum(item["target"] for item in items) / n,
+            "mean_signed_return_bps": mean(item["signed"] for item in items),
+            "mean_proxy_cost_bps": mean(item["proxy_cost"] for item in items),
+            "mean_proxy_net_bps": mean(item["net_proxy"] for item in items),
+            "positive_proxy_net_fraction": sum(item["net_proxy"] > 0.0 for item in items) / n,
+            "transport_p50_ms": _percentile([item["transport"] for item in items], 50.0),
+            "transport_p95_ms": _percentile([item["transport"] for item in items], 95.0),
+        }
+
+    def slice_stats(items: list[dict[str, Any]]) -> dict[str, Any]:
+        if not items:
+            return {"n": 0}
+        return {
+            "n": len(items),
+            "hit_rate": sum(item["target"] for item in items) / len(items),
+            "mean_signed_return_bps": mean(item["signed"] for item in items),
+            "mean_proxy_net_bps": mean(item["net_proxy"] for item in items),
+        }
+
+    queue_pos = [item for item in parsed if item["target_queue"] > 0.0]
+    queue_nonpos = [item for item in parsed if item["target_queue"] <= 0.0]
+    flow_aligned = [
+        item for item in parsed
+        if item["leader_flow"] * item["target_flow"] > 0.0
+    ]
+    flow_dislocated = [
+        item for item in parsed
+        if item["leader_flow"] * item["target_flow"] <= 0.0
+    ]
+    spreads = sorted(item["target_spread"] for item in parsed)
+    median_spread = spreads[len(spreads) // 2] if spreads else None
+    spread_tight = [
+        item for item in parsed
+        if median_spread is not None and item["target_spread"] <= median_spread
+    ]
+    spread_wide = [
+        item for item in parsed
+        if median_spread is not None and item["target_spread"] > median_spread
+    ]
+
+    return {
+        "state": "SHADOW_READY" if parsed else "WARMING",
+        "forecasts": int(forecast_count[0]["n"] if forecast_count else 0),
+        "outcomes": len(parsed),
+        "by_horizon": by_horizon,
+        "regime_slices": {
+            "target_queue_positive": slice_stats(queue_pos),
+            "target_queue_nonpositive": slice_stats(queue_nonpos),
+            "flow_aligned": slice_stats(flow_aligned),
+            "flow_dislocated": slice_stats(flow_dislocated),
+            "spread_tight_half": slice_stats(spread_tight),
+            "spread_wide_half": slice_stats(spread_wide),
+        },
+        "notes": "descriptive shadow diagnostics only; never used for model promotion or execution.",
+    }
 
 
 def _lead_lag(
@@ -779,6 +927,7 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             lead_lag = _lead_lag(conn, replay_fingerprint)
             opportunity = _opportunity_shadow(conn, replay_fingerprint)
             alpha_shadow = _alpha_feature_shadow(conn, cohort.get("session_id"))
+            shadow_diagnostics = _online_shadow_diagnostics(conn, cohort.get("session_id"))
         finally:
             conn.close()
 
@@ -823,6 +972,7 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
             "lead_lag_shadow": lead_lag,
             "opportunity_shadow": opportunity,
             "alpha_feature_shadow": alpha_shadow,
+            "online_shadow_alpha": shadow_diagnostics,
             "regime": regime,
             "opportunity_clock": clock,
         }
