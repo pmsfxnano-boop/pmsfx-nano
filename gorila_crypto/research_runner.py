@@ -530,6 +530,7 @@ def _dataset_rows(
         WITH leader_base AS (
             SELECT e.ledger_seq,
                    e.event_id,
+                   e.sequence_start,
                    e.event_time::timestamptz AS et,
                    e.received_time::timestamptz AS rt,
                    (e.payload_json::jsonb->>'p')::double precision AS price,
@@ -568,6 +569,7 @@ def _dataset_rows(
         book_base AS (
             SELECT e.ledger_seq,
                    e.event_id,
+                   e.sequence_end,
                    e.symbol,
                    e.received_time::timestamptz AS rt,
                    (e.payload_json::jsonb->>'b')::double precision AS bid,
@@ -657,7 +659,7 @@ def _dataset_rows(
                LN(1.0 + tf.count_5s * trade_sample_weight) AS target_trade_intensity_5s
         FROM impulses i
         CROSS JOIN LATERAL (
-            SELECT e.event_id,e.et,e.rt,e.price
+            SELECT e.event_id,e.sequence_start,e.et,e.rt,e.price
             FROM target_base e
             WHERE e.et <= i.et
               AND e.rt <= i.rt
@@ -665,7 +667,7 @@ def _dataset_rows(
             LIMIT 1
         ) baseline
         CROSS JOIN LATERAL (
-            SELECT e.event_id,e.et,e.rt,e.price
+            SELECT e.event_id,e.sequence_start,e.et,e.rt,e.price
             FROM target_base e
             WHERE e.et <= i.et - interval '1 second'
               AND e.rt <= i.rt
@@ -673,7 +675,7 @@ def _dataset_rows(
             LIMIT 1
         ) prior_point
         CROSS JOIN LATERAL (
-            SELECT e.event_id,e.et,e.rt,e.price
+            SELECT e.event_id,e.sequence_start,e.et,e.rt,e.price
             FROM target_base e
             WHERE e.et >= GREATEST(
                       i.et + (%s || ' milliseconds')::interval,
