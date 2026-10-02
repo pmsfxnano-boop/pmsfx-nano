@@ -634,6 +634,14 @@ class OnlineShadowAlpha:
             "training_finished_at": self._last_training_time.isoformat() if self._last_training_time else None,
             "research_status": "SHADOW_ONLY",
         }
+        feature_hash = feature_set_hash(
+            leader_symbol=candidate["leader"],
+            target_symbol=candidate["target"],
+            decision_event_time=candidate["decision_event"],
+            decision_received_time=candidate["decision_received"],
+            source_event_ids=tuple(candidate["source_ids"]),
+            feature_values=candidate["features"],
+        )
         conn = self.store.connect()
         try:
             with conn.cursor() as cur:
@@ -666,14 +674,7 @@ class OnlineShadowAlpha:
                         FORECAST_SEMANTICS,
                         probability,
                         "SHADOW_SCORED" if probability is not None else "WARMUP",
-                        feature_set_hash(
-                            leader_symbol=candidate["leader"],
-                            target_symbol=candidate["target"],
-                            decision_event_time=candidate["decision_event"],
-                            decision_received_time=candidate["decision_received"],
-                            source_event_ids=tuple(candidate["source_ids"]),
-                            feature_values=candidate["features"],
-                        ),
+                        feature_hash,
                         json.dumps(candidate["features"], sort_keys=True, separators=(",", ":")),
                         json.dumps(candidate["source_ids"], separators=(",", ":")),
                         json.dumps(metadata, sort_keys=True),
