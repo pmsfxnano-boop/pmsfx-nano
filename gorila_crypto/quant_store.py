@@ -1642,6 +1642,34 @@ class QuantCryptoStore(CryptoStore):
 
     def scoped_stats(self, *, study_id: str, capture_session_id: str | None = None) -> dict[str, Any]:
         self.init()
+        if self._is_v6_study(study_id):
+            clauses = ["capture_session_id=%s"] if self._pg else ["capture_session_id=?"]
+            params: list[Any] = [capture_session_id] if capture_session_id is not None else []
+            if capture_session_id is None:
+                clauses = ["1=1"]
+            query = """
+                SELECT symbol_code,event_type_code,COUNT(*) AS rows,
+                       MIN(event_time) AS first_event,MAX(event_time) AS last_event
+                FROM crypto_events_v6
+                WHERE {WHERE}
+                GROUP BY symbol_code,event_type_code
+                ORDER BY symbol_code,event_type_code
+            """.format(WHERE=" AND ".join(clauses))
+            conn=self.connect()
+            try:
+                if self._pg:
+                    with conn.cursor() as cur:
+                        cur.execute(query,params); rows=cur.fetchall()
+                else:
+                    rows=conn.execute(query,params).fetchall()
+            finally:
+                conn.close()
+            symbols={1:"BTCUSDT",2:"ETHUSDT",3:"SOLUSDT"}
+            events={1:"trade",2:"bookTicker"}
+            grouped=[{"symbol":symbols[int(r[0])],"event_type":events[int(r[1])],"rows":int(r[2]),
+                      "first_event":str(r[3]),"last_event":str(r[4])} for r in rows]
+            return {"study_id":study_id,"capture_session_id":capture_session_id,"backend":self.backend,
+                    "event_counts":grouped,"total_rows":sum(x["rows"] for x in grouped)}
         if self._is_v5_study(study_id):
             clauses = ["study_id=%s"] if self._pg else ["study_id=?"]
             params: list[Any] = [study_id]
@@ -1840,6 +1868,100 @@ class QuantCryptoStore(CryptoStore):
             })
         return result
 
+    def _read_scoped_events_v6(
+        self,
+        *,
+        study_id: str,
+        capture_session_id: str | None = None,
+        symbol: str | None = None,
+        source: str | None = None,
+        start_received_time: str | None = None,
+        end_received_time: str | None = None,
+        start_event_time: str | None = None,
+        end_event_time: str | None = None,
+        order: str = "ingest",
+        limit: int = 100_000,
+        include_payload: bool = True,
+    ) -> list[dict[str, Any]]:
+        self.init()
+        if limit < 1: raise ValueError("limit must be positive")
+        symbols={"BTCUSDT":1,"ETHUSDT":2,"SOLUSDT":3}
+        events={1:"trade",2:"bookTicker"}
+        source_by_code={1:"binance.websocket.trade",2:"binance.websocket.bookTicker"}
+        symbol_code = symbols.get(symbol.upper()) if symbol else None
+        event_code = None
+        if source:
+            event_code = 1 if source.endswith(".trade") else 2 if source.endswith(".bookTicker") else -1
+        clauses=[]
+        params=[]
+        if capture_session_id is not None:
+            clauses.append("capture_session_id=%s" if self._pg else "capture_session_id=?"); params.append(capture_session_id)
+        if symbol_code is not None:
+            clauses.append("symbol_code=%s" if self._pg else "symbol_code=?"); params.append(symbol_code)
+        if event_code is not None:
+            clauses.append("event_type_code=%s" if self._pg else "event_type_code=?"); params.append(event_code)
+        if start_received_time is not None:
+            clauses.append("received_time>=%s" if self._pg else "received_time>=?"); params.append(start_received_time)
+        if end_received_time is not None:
+            clauses.append("received_time<=%s" if self._pg else "received_time<=?"); params.append(end_received_time)
+        if start_event_time is not None:
+            clauses.append("event_time>=%s" if self._pg else "event_time>=?"); params.append(start_event_time)
+        if end_event_time is not None:
+            clauses.append("event_time<=%s" if self._pg else "event_time<=?"); params.append(end_event_time)
+        where=" AND ".join(clauses) if clauses else "1=1"
+        order_by={"ingest":"ledger_seq ASC","event_time":"event_time ASC,received_time ASC,ledger_seq ASC"}.get(order)
+        if order_by is None: raise ValueError("invalid replay order")
+        query=f"""
+            SELECT ledger_seq,capture_session_id,symbol_code,event_type_code,event_time,received_time,
+                   sequence,payload_hash,quality_code,ingest_epoch,price,quantity,buyer_maker,
+                   bid,bid_qty,ask,ask_qty
+            FROM crypto_events_v6
+            WHERE {where}
+            ORDER BY {order_by}
+            LIMIT {int(limit)}
+        """
+        conn=self.connect()
+        try:
+            if self._pg:
+                with conn.cursor() as cur: cur.execute(query,params); rows=cur.fetchall()
+            else:
+                rows=conn.execute(query,params).fetchall()
+        finally:
+            conn.close()
+        import hashlib as _hashlib
+        result=[]
+        for row in rows:
+            (ledger_seq,row_session,symbol_c,event_c,event_time,received_time,sequence,payload_hash,
+             quality_c,ingest_epoch,price,quantity,buyer_maker,bid,bid_qty,ask,ask_qty)=list(row)
+            symbol={1:"BTCUSDT",2:"ETHUSDT",3:"SOLUSDT"}[int(symbol_c)]
+            event_type={1:"trade",2:"bookTicker"}[int(event_c)]
+            source=source_by_code[int(event_c)]
+            identity=f"v6|{symbol}|{event_type}|{int(sequence)}"
+            payload_hash_text=_hashlib.blake2b(bytes(payload_hash),digest_size=16).hexdigest()
+            # The stored payload hash is the original digest. Re-expose it as hex;
+            # the reconstructed payload is deterministic for replay.
+            if event_type=="trade":
+                payload={"e":"trade","s":symbol,"t":int(sequence),"p":str(price),"q":str(quantity),"m":bool(buyer_maker)}
+            else:
+                payload={"e":"bookTicker","s":symbol,"u":int(sequence),"b":str(bid),"B":str(bid_qty),"a":str(ask),"A":str(ask_qty)}
+            if not include_payload: payload=None
+            result.append({
+                "ledger_seq":int(ledger_seq),
+                "event_id":_hashlib.md5(identity.encode()).hexdigest(),
+                "event_key":_hashlib.md5((identity+"|key").encode()).hexdigest(),
+                "symbol":symbol,"event_type":event_type,
+                "event_time":str(event_time),"received_time":str(received_time),
+                "provider_time":None,"source":source,
+                "sequence_start":int(sequence),"sequence_end":int(sequence),
+                "payload_hash":bytes(payload_hash).hex(),
+                "payload":payload,
+                "quality":"OK" if int(quality_c)==0 else "TRANSPORT_TIME_ONLY",
+                "metadata":{"crypto_study_id":"crypto-binance-spot-prospective-v6",
+                            "capture_session_id":str(row_session),"ingest_epoch":int(ingest_epoch) if ingest_epoch is not None else None},
+                "recorded_at":str(received_time),
+            })
+        return result
+
     def read_scoped_events(
         self,
         *,
@@ -1857,6 +1979,13 @@ class QuantCryptoStore(CryptoStore):
         include_payload: bool = True,
     ) -> list[dict[str, Any]]:
         """Read exactly one study/session cohort using the immutable metadata scope."""
+        if self._is_v6_study(study_id):
+            return self._read_scoped_events_v6(
+                study_id=study_id,capture_session_id=capture_session_id,symbol=symbol,source=source,
+                start_received_time=start_received_time,end_received_time=end_received_time,
+                start_event_time=start_event_time,end_event_time=end_event_time,
+                order=order,limit=limit,include_payload=include_payload,
+            )
         if self._is_v5_study(study_id):
             return self._read_scoped_events_v5(
                 study_id=study_id,
