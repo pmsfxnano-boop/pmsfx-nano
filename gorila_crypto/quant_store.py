@@ -81,6 +81,32 @@ class QuantCryptoStore(CryptoStore):
                             );
                             CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
                                 ON crypto_runtime_leases(heartbeat_at,status);
+                            CREATE TABLE IF NOT EXISTS crypto_alpha_feature_snapshots (
+                                snapshot_id TEXT PRIMARY KEY,
+                                created_at TEXT NOT NULL,
+                                study_id TEXT NOT NULL,
+                                protocol_hash TEXT NOT NULL,
+                                capture_session_id TEXT NOT NULL,
+                                feature_set_version TEXT NOT NULL,
+                                leader_symbol TEXT NOT NULL,
+                                target_symbol TEXT NOT NULL,
+                                leader_event_id TEXT NOT NULL,
+                                leader_event_time TEXT NOT NULL,
+                                leader_received_time TEXT NOT NULL,
+                                source_event_ids_json TEXT NOT NULL,
+                                feature_set_hash TEXT NOT NULL,
+                                features_json TEXT NOT NULL,
+                                trigger_threshold_bps DOUBLE PRECISION NOT NULL,
+                                status TEXT NOT NULL DEFAULT 'SHADOW'
+                            );
+                            CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_alpha_snapshot_identity
+                                ON crypto_alpha_feature_snapshots(
+                                    capture_session_id,leader_event_id,target_symbol,feature_set_version
+                                );
+                            CREATE INDEX IF NOT EXISTS idx_crypto_alpha_snapshot_time
+                                ON crypto_alpha_feature_snapshots(
+                                    capture_session_id,leader_received_time,leader_symbol,target_symbol
+                                );
                             CREATE TABLE IF NOT EXISTS crypto_events_v5 (
                                 ledger_seq BIGSERIAL PRIMARY KEY,
                                 event_id UUID NOT NULL,
@@ -279,6 +305,32 @@ class QuantCryptoStore(CryptoStore):
                 );
                 CREATE INDEX IF NOT EXISTS idx_crypto_runtime_lease_heartbeat
                     ON crypto_runtime_leases(heartbeat_at,status);
+                CREATE TABLE IF NOT EXISTS crypto_alpha_feature_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    study_id TEXT NOT NULL,
+                    protocol_hash TEXT NOT NULL,
+                    capture_session_id TEXT NOT NULL,
+                    feature_set_version TEXT NOT NULL,
+                    leader_symbol TEXT NOT NULL,
+                    target_symbol TEXT NOT NULL,
+                    leader_event_id TEXT NOT NULL,
+                    leader_event_time TEXT NOT NULL,
+                    leader_received_time TEXT NOT NULL,
+                    source_event_ids_json TEXT NOT NULL,
+                    feature_set_hash TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    trigger_threshold_bps REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'SHADOW'
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_crypto_alpha_snapshot_identity
+                    ON crypto_alpha_feature_snapshots(
+                        capture_session_id,leader_event_id,target_symbol,feature_set_version
+                    );
+                CREATE INDEX IF NOT EXISTS idx_crypto_alpha_snapshot_time
+                    ON crypto_alpha_feature_snapshots(
+                        capture_session_id,leader_received_time,leader_symbol,target_symbol
+                    );
                 CREATE TABLE IF NOT EXISTS crypto_events_v5 (
                     ledger_seq INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_id TEXT NOT NULL,
@@ -629,6 +681,100 @@ class QuantCryptoStore(CryptoStore):
             finally:
                 vacuum.close()
         return {"deleted_rows": deleted}
+
+    def append_alpha_feature_snapshots(
+        self,
+        snapshots: list[Mapping[str, Any]],
+    ) -> int:
+        """Persist compact PIT feature snapshots without entering the raw event path."""
+        if not snapshots:
+            return 0
+        self.init()
+        rows = [dict(item) for item in snapshots]
+        conn = self.connect()
+        inserted = 0
+        try:
+            if self._pg:
+                with conn.cursor() as cur:
+                    values = []
+                    for row in rows:
+                        values.append(
+                            (
+                                str(row["snapshot_id"]),
+                                str(row["created_at"]),
+                                str(row["study_id"]),
+                                str(row["protocol_hash"]),
+                                str(row["capture_session_id"]),
+                                str(row["feature_set_version"]),
+                                str(row["leader_symbol"]),
+                                str(row["target_symbol"]),
+                                str(row["leader_event_id"]),
+                                str(row["leader_event_time"]),
+                                str(row["leader_received_time"]),
+                                json.dumps(list(row.get("source_event_ids") or ()), separators=(",", ":")),
+                                str(row["feature_set_hash"]),
+                                json.dumps(dict(row["features"]), sort_keys=True, separators=(",", ":")),
+                                float(row["trigger_threshold_bps"]),
+                                str(row.get("status") or "SHADOW"),
+                            )
+                        )
+                    cur.executemany(
+                        """
+                        INSERT INTO crypto_alpha_feature_snapshots(
+                            snapshot_id,created_at,study_id,protocol_hash,capture_session_id,
+                            feature_set_version,leader_symbol,target_symbol,leader_event_id,
+                            leader_event_time,leader_received_time,source_event_ids_json,
+                            feature_set_hash,features_json,trigger_threshold_bps,status
+                        )
+                        VALUES(
+                            %s,%s,%s,%s,%s,%s,%s,%s,
+                            %s,%s,%s,%s,%s,%s,%s,%s
+                        )
+                        ON CONFLICT(capture_session_id,leader_event_id,target_symbol,feature_set_version)
+                        DO NOTHING
+                        """,
+                        values,
+                    )
+                    inserted = int(cur.rowcount or 0)
+            else:
+                for row in rows:
+                    cur = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO crypto_alpha_feature_snapshots(
+                            snapshot_id,created_at,study_id,protocol_hash,capture_session_id,
+                            feature_set_version,leader_symbol,target_symbol,leader_event_id,
+                            leader_event_time,leader_received_time,source_event_ids_json,
+                            feature_set_hash,features_json,trigger_threshold_bps,status
+                        )
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            str(row["snapshot_id"]),
+                            str(row["created_at"]),
+                            str(row["study_id"]),
+                            str(row["protocol_hash"]),
+                            str(row["capture_session_id"]),
+                            str(row["feature_set_version"]),
+                            str(row["leader_symbol"]),
+                            str(row["target_symbol"]),
+                            str(row["leader_event_id"]),
+                            str(row["leader_event_time"]),
+                            str(row["leader_received_time"]),
+                            json.dumps(list(row.get("source_event_ids") or ()), separators=(",", ":")),
+                            str(row["feature_set_hash"]),
+                            json.dumps(dict(row["features"]), sort_keys=True, separators=(",", ":")),
+                            float(row["trigger_threshold_bps"]),
+                            str(row.get("status") or "SHADOW"),
+                        ),
+                    )
+                    inserted += int(cur.rowcount or 0)
+            conn.commit()
+            return inserted
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def register_study(self, protocol: CryptoStudyProtocol) -> str:
         protocol.validate()
