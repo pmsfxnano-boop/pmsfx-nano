@@ -681,7 +681,7 @@ class OnlineShadowAlpha:
             return
         snap = MARKET_CACHE.research_snapshot(
             symbols=PREREGISTERED_CRYPTO_PROTOCOL.symbols,
-            trade_limit=2000,
+            trade_limit=OUTCOME_TRADE_LIMIT,
         )
         by_symbol = _event_map(snap["events"])
         conn = self.store.connect()
