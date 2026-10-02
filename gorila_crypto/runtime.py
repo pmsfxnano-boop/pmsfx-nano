@@ -816,6 +816,7 @@ class ProspectiveCryptoIngestor:
             if snapshot is None:
                 continue
             self._alpha_pending_snapshots.append(snapshot)
+            self._alpha_snapshots_created += 1
 
         if self._alpha_pending_snapshots and self._alpha_pending_started_monotonic is None:
             self._alpha_pending_started_monotonic = time.monotonic()
