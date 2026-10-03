@@ -180,6 +180,8 @@ def combinatorial_pbo(
             i for g in test_group_set
             for i in range(g * block, (g + 1) * block)
         ]
+        if not train_indices:
+            continue
         train_scores = [
             sum(candidates[c][i] for i in train_indices) / len(train_indices)
             for c in range(n_candidates)
