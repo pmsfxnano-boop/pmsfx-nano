@@ -69,6 +69,14 @@ export type HistoryResponse = {
 
 export type EvidenceSnapshot = {
   generated_at: string;
+  release: {
+    code_sha: string;
+    protocol_hash: string;
+    release_hash: string;
+    persistence_contract_version: string;
+    execution_model_hash: string;
+    execution_model_validated: boolean;
+  };
   study: {
     study_id: string;
     version: string;
@@ -76,6 +84,21 @@ export type EvidenceSnapshot = {
     prospect_days: number;
     min_trade_rows_per_symbol: number;
     forecast_horizons_ms: number[];
+    capture_contract?: {
+      version: string;
+      trade_persistence_sample_rate: number;
+      bookticker_persistence_interval_seconds: number;
+      hot_plane_lossless: boolean;
+      research_plane_lossless: boolean;
+      research_truth_note: string;
+    };
+    research_truth?: Record<string, {
+      status: string;
+      exact_trade_coverage: boolean;
+      exact_book_coverage: boolean;
+      reasons: string[];
+      contract_hash: string;
+    }>;
   };
   cohort: {
     status: string;
