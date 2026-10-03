@@ -29,6 +29,7 @@ from gorila_crypto.quality import DataQualityConfig, evaluate_replay_quality, qu
 from gorila_crypto.runtime import ProspectiveCryptoIngestor, build_market_adapter
 from gorila_crypto.market_cache import MARKET_CACHE
 from gorila_crypto.evidence import build_evidence_snapshot
+from gorila_crypto.release import release_identity
 from gorila_crypto.storage import CryptoStore
 from gorila_crypto.quant_store import QuantCryptoStore
 from gorila_crypto.protocol import PREREGISTERED_CRYPTO_PROTOCOL
@@ -1147,6 +1148,12 @@ def prospective_status() -> dict[str, Any]:
         "automatic_promotion": False,
         "execution": False,
     }
+
+
+@app.get("/api/crypto/release")
+def release() -> dict[str, Any]:
+    """Return immutable code/protocol/economic lineage for the running service."""
+    return release_identity()
 
 
 @app.get("/api/crypto/config")

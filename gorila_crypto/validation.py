@@ -18,6 +18,7 @@ from typing import Iterable, Mapping, Sequence
 import numpy as np
 
 from .protocol import CryptoStudyProtocol, PREREGISTERED_CRYPTO_PROTOCOL
+from .execution import ExecutionCostModel, execution_cost_bps
 from .research_gates import combinatorial_pbo, deflated_sharpe_p_value, holm_bonferroni
 from .forecast import (
     DetectionFeatureSnapshot,
@@ -142,12 +143,14 @@ class EconomicPolicySpec:
     short_threshold: float = 0.45
     round_trip_cost_bps: float = 1.0
     round_trip_slippage_bps: float = 1.0
+    execution_model: ExecutionCostModel = ExecutionCostModel()
 
     def validate(self) -> None:
         if not 0.0 <= self.short_threshold < self.long_threshold <= 1.0:
             raise ValueError("short_threshold must be below long_threshold in [0,1]")
         if self.round_trip_cost_bps < 0 or self.round_trip_slippage_bps < 0:
             raise ValueError("costs/slippage must be non-negative")
+        self.execution_model.validate()
 
 
 @dataclass(frozen=True)
@@ -573,12 +576,26 @@ def economic_metrics(
         signed *= 1.0 - return_haircut
         gross_values.append(signed)
         traded += 1
-        cost = policy.round_trip_cost_bps * cost_multiplier
-        slippage = policy.round_trip_slippage_bps * slippage_multiplier
-        net_values.append(signed - cost - slippage)
+        modeled_cost = execution_cost_bps(row.snapshot.feature_values, policy.execution_model)
+        modeled_cost *= cost_multiplier
+        minimum_cost = (
+            policy.round_trip_cost_bps * cost_multiplier
+            + policy.round_trip_slippage_bps * slippage_multiplier
+        )
+        total_execution_cost = max(modeled_cost, minimum_cost)
+        net_values.append(signed - total_execution_cost)
 
+    total_execution_cost = sum(
+        max(
+            execution_cost_bps(row.snapshot.feature_values, policy.execution_model) * cost_multiplier,
+            policy.round_trip_cost_bps * cost_multiplier
+            + policy.round_trip_slippage_bps * slippage_multiplier,
+        )
+        for row, probability in zip(rows, probabilities)
+        if (probability >= policy.long_threshold or probability <= policy.short_threshold)
+    )
     total_cost = traded * policy.round_trip_cost_bps * cost_multiplier
-    total_slippage = traded * policy.round_trip_slippage_bps * slippage_multiplier
+    total_slippage = max(0.0, total_execution_cost - total_cost)
     return EconomicMetrics(
         n=len(rows),
         traded_fraction=float(traded / len(rows)),
@@ -1002,6 +1019,7 @@ def run_walk_forward_validation(
     explicit_friction_pass = (
         policy.round_trip_cost_bps + policy.round_trip_slippage_bps
     ) > 0.0
+    execution_model_pass = bool(policy.execution_model.validated_execution_model)
     # Multiplicity is corrected over hypotheses that were actually evaluated,
     # not by duplicating one aggregate p-value. Each symbol and horizon cell is
     # a distinct predeclared research hypothesis; Holm controls FWER under
@@ -1080,9 +1098,13 @@ def run_walk_forward_validation(
             gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
         )
 
+    dsr_trial_family = max(
+        protocol.declared_hypothesis_family_size,
+        protocol.declared_hypothesis_family_size * len(candidate_family),
+    )
     dsr = deflated_sharpe_p_value(
         strategy_net_series,
-        n_trials=protocol.declared_hypothesis_family_size,
+        n_trials=dsr_trial_family,
     )
     dsr_pass = (
         dsr.status == "ESTIMATED"
@@ -1095,6 +1117,7 @@ def run_walk_forward_validation(
             candidate_strategy_returns,
             groups=protocol.cscv_groups,
             test_groups=protocol.cscv_test_groups,
+            purge_groups=1,
         )
         if candidate_strategy_returns
         else None
@@ -1186,6 +1209,8 @@ def run_walk_forward_validation(
         research_reasons.append(
             "PBO_GATE_FAILED" if pbo_result is not None else "PBO_NOT_RUN"
         )
+    if not execution_model_pass:
+        research_reasons.append("EXECUTION_MODEL_NOT_VALIDATED")
     research_status = "PASS" if not research_reasons else "BLOCKED"
 
     placebo_pass = adjusted_placebo is not None and adjusted_placebo <= protocol.multiple_testing_alpha
@@ -1205,6 +1230,7 @@ def run_walk_forward_validation(
         and baseline_beat
         and economic_positive
         and explicit_friction_pass
+        and execution_model_pass
         and placebo_pass
         and stress_pass
         and research_status == "PASS"

@@ -30,6 +30,7 @@ from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .forecast import FEATURE_SET_VERSION, build_microstructure_feature_vector, feature_set_hash
 from .quant_store import QuantCryptoStore
 from .storage import CryptoStore, CRYPTO_DATABASE_URL
+from .release import release_identity
 
 
 class MarketAdapterProtocol(Protocol):
@@ -1380,7 +1381,11 @@ class ProspectiveCryptoIngestor:
                             os.getenv("RENDER_GIT_COMMIT")
                             or os.getenv("GORILA_CRYPTO_CODE_VERSION")
                         ),
-                        metadata={"stale_runs_reconciled": stale},
+                        metadata={
+                            "stale_runs_reconciled": stale,
+                            "release_hash": release_identity()["release_hash"],
+                            "protocol_hash": self.protocol.protocol_hash,
+                        },
                     )
                     if (
                         isinstance(self.store, QuantCryptoStore)
@@ -1403,6 +1408,8 @@ class ProspectiveCryptoIngestor:
                         "study_id": self.protocol.study_id,
                         "protocol_hash": effective_protocol_hash,
                         "capture_session_id": self.session_id,
+                        "release_hash": release_identity()["release_hash"],
+                        "code_sha": release_identity()["code_sha"],
                     },
                 )
                 self._persistence_error = None

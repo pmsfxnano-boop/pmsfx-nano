@@ -1,0 +1,66 @@
+name: Cryptonita operational gate
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main, gorila-crypto-binance-parallel]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check readiness
+        run: |
+          set -euo pipefail
+          BASE="https://gorila-crypto-cleanroom-binance-capture.onrender.com"
+          curl --fail --silent --show-error --max-time 20 "$BASE/api/crypto/readiness" > /tmp/readiness.json
+          cat /tmp/readiness.json
+
+      - name: Check bounded E2E contract
+        run: |
+          set -euo pipefail
+          BASE="https://gorila-crypto-cleanroom-binance-capture.onrender.com"
+          curl --fail --silent --show-error --max-time 30 "$BASE/api/crypto/operational/e2e" > /tmp/e2e.json
+          cat /tmp/e2e.json
+
+      - name: Check release lineage and research truth gate
+        run: |
+          set -euo pipefail
+          BASE="https://gorila-crypto-cleanroom-binance-capture.onrender.com"
+          curl --fail --silent --show-error --max-time 20 "$BASE/api/crypto/release" > /tmp/release.json
+          curl --fail --silent --show-error --max-time 20 "$BASE/api/crypto/evidence" > /tmp/evidence.json
+          python - <<'PY'
+          import json
+          release = json.load(open("/tmp/release.json", encoding="utf-8"))
+          evidence = json.load(open("/tmp/evidence.json", encoding="utf-8"))
+
+          if not release.get("code_sha") or release["code_sha"] == "unknown":
+              raise SystemExit("missing deployed code SHA")
+          if len(str(release.get("protocol_hash", ""))) != 64:
+              raise SystemExit("invalid protocol hash")
+          if len(str(release.get("release_hash", ""))) != 64:
+              raise SystemExit("invalid release hash")
+
+          study = evidence.get("study") or {}
+          capture = study.get("capture_contract") or {}
+          if capture.get("research_plane_lossless") is not False:
+              raise SystemExit("research truth must remain explicitly non-lossless until a lossless research ledger exists")
+
+          truth = study.get("research_truth") or {}
+          if not truth:
+              raise SystemExit("research truth contract is missing")
+          if not all(item.get("status") == "BLOCKED" for item in truth.values()):
+              raise SystemExit("sampled durable ledger must not be represented as exact OOS truth")
+
+          pit = evidence.get("pit_oos") or {}
+          if pit.get("promotion_eligible") is True:
+              raise SystemExit("promotion cannot be eligible while research truth is blocked")
+
+          print("Cryptonita release lineage and research-truth hard gate OK")
+          PY

@@ -138,6 +138,7 @@ def combinatorial_pbo(
     *,
     groups: int = 6,
     test_groups: int = 3,
+    purge_groups: int = 1,
 ) -> PBOResult:
     """Compute PBO from symmetric combinatorial purged groups.
 
@@ -157,6 +158,8 @@ def combinatorial_pbo(
         return PBOResult("INSUFFICIENT_DATA", None, 0)
     if groups < 4 or groups % 2 or test_groups != groups // 2:
         raise ValueError("groups must be even and test_groups must be half of groups")
+    if purge_groups < 0:
+        raise ValueError("purge_groups must be non-negative")
     block = n_obs // groups
     if block < 1:
         return PBOResult("INSUFFICIENT_DATA", None, 0)
@@ -167,13 +170,18 @@ def combinatorial_pbo(
     for test_group_set in splits:
         test_set = set(test_group_set)
         train_indices = [
-            i for g in range(groups) if g not in test_set
+            i
+            for g in range(groups)
+            if g not in test_set
+            and all(abs(g - test_group) > purge_groups for test_group in test_set)
             for i in range(g * block, (g + 1) * block)
         ]
         test_indices = [
             i for g in test_group_set
             for i in range(g * block, (g + 1) * block)
         ]
+        if not train_indices:
+            continue
         train_scores = [
             sum(candidates[c][i] for i in train_indices) / len(train_indices)
             for c in range(n_candidates)

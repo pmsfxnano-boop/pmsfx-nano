@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import quantiles
 from typing import Any, Iterable, Mapping
 
@@ -156,9 +156,10 @@ def evaluate_replay_quality(
         if not symbol or event_time is None or received_time is None:
             invalid_timestamp_count += 1
             continue
-        if event_time > cutoff:
+        future_cutoff = cutoff + timedelta(seconds=config.future_tolerance_seconds)
+        if event_time > future_cutoff:
             future_event_count += 1
-        if received_time > cutoff:
+        if received_time > future_cutoff:
             future_received_count += 1
         if received_time < event_time:
             negative_transport_latency_count += 1

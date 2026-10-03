@@ -8,7 +8,7 @@ databases:
     region: oregon
     ipAllowList:
       - source: 0.0.0.0/0
-        description: temporary-cross-region-bootstrap
+        description: explicit-bootstrap-only
 
 services:
   - type: web

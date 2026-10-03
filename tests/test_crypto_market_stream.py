@@ -132,6 +132,9 @@ class _HistoryConnection:
 class _HistoryStore:
     durable = True
 
+    def active_capture_session(self, study_id):
+        return "test-session"
+
     def connect(self):
         return _HistoryConnection()
 
