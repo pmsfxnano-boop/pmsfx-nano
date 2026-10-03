@@ -24,6 +24,7 @@ from .forecast import (
 )
 from .lead_lag import LeadLagConfig
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
+from .research_contract import research_truth_decision
 from .quality import (
     DataQualityConfig,
     DataQualityReport,
@@ -1107,6 +1108,26 @@ def run_research_preflight_once(store) -> dict[str, Any]:
             "window_seconds": max(0.0, (end - start).total_seconds()),
         }
 
+    truth = research_truth_decision(
+        PREREGISTERED_CRYPTO_PROTOCOL,
+        horizon_ms=5_000,
+    )
+    if truth.status != "PASS":
+        result = {
+            "status": "BLOCKED",
+            "reason": "RESEARCH_TRUTH_CONTRACT",
+            "horizon_ms": truth.requested_horizon_ms,
+            "contract_hash": truth.contract_hash,
+            "reasons": list(truth.reasons),
+        }
+        store.record_connection(
+            source="gorila.crypto.research_preflight",
+            status="BLOCKED",
+            reason="RESEARCH_TRUTH_CONTRACT",
+            metadata=result,
+        )
+        return result
+
     spec = ForecastTargetSpec(
         horizon_ms=5_000,
         alignment_tolerance_ms=PREREGISTERED_CRYPTO_PROTOCOL.horizon_alignment_tolerance_ms,
@@ -1211,7 +1232,7 @@ def run_crypto_research_once(store) -> dict[str, Any]:
         end=end,
     )
     manifest = {
-        "replay_version": "3-deterministic-sample",
+        "replay_version": "4-research-truth-gated",
         "ledger_schema_version": "crypto",
         "code_version": os.getenv("RENDER_GIT_COMMIT") or "unknown",
         "manifest_created_at": now.isoformat(),
@@ -1273,6 +1294,38 @@ def run_crypto_research_once(store) -> dict[str, Any]:
             "quality_reasons": list(report.reasons),
             "research_run_id": research_run_id,
         }
+        _finish_research_run(
+            store,
+            session_id=session_id,
+            replay_fingerprint=replay_fp,
+            status="BLOCKED",
+            result=result,
+        )
+        return result
+
+    truth_decisions = {
+        horizon: research_truth_decision(PREREGISTERED_CRYPTO_PROTOCOL, horizon_ms=horizon)
+        for horizon in PREREGISTERED_CRYPTO_PROTOCOL.forecast_horizons_ms
+    }
+    blocked_truth = [
+        decision for decision in truth_decisions.values()
+        if decision.status != "PASS"
+    ]
+    if blocked_truth:
+        result = {
+            "status": "BLOCKED",
+            "reason": "RESEARCH_TRUTH_CONTRACT",
+            "contract_hashes": [decision.contract_hash for decision in truth_decisions.values()],
+            "blocked_horizons_ms": [decision.requested_horizon_ms for decision in blocked_truth],
+            "reasons": sorted({reason for decision in blocked_truth for reason in decision.reasons}),
+            "capture_contract": PREREGISTERED_CRYPTO_PROTOCOL.persistence_contract_version,
+        }
+        store.record_connection(
+            source=RESEARCH_STATUS_SOURCE,
+            status="BLOCKED",
+            reason="RESEARCH_TRUTH_CONTRACT",
+            metadata=result,
+        )
         _finish_research_run(
             store,
             session_id=session_id,
