@@ -1098,9 +1098,13 @@ def run_walk_forward_validation(
             gross - policy.round_trip_cost_bps - policy.round_trip_slippage_bps
         )
 
+    dsr_trial_family = max(
+        protocol.declared_hypothesis_family_size,
+        protocol.declared_hypothesis_family_size * len(candidate_family),
+    )
     dsr = deflated_sharpe_p_value(
         strategy_net_series,
-        n_trials=protocol.declared_hypothesis_family_size,
+        n_trials=dsr_trial_family,
     )
     dsr_pass = (
         dsr.status == "ESTIMATED"
@@ -1113,6 +1117,7 @@ def run_walk_forward_validation(
             candidate_strategy_returns,
             groups=protocol.cscv_groups,
             test_groups=protocol.cscv_test_groups,
+            purge_groups=1,
         )
         if candidate_strategy_returns
         else None
