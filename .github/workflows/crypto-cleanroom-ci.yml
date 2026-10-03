@@ -2,9 +2,9 @@ name: crypto-cleanroom-ci
 
 on:
   push:
-    branches: [gorila-crypto-cleanroom, gorila-crypto-binance-parallel, gorila-crypto-quant-hardening]
+    branches: [main, gorila-crypto-cleanroom, gorila-crypto-binance-parallel, gorila-crypto-quant-hardening, cryptonita-vanguard-sane]
   pull_request:
-    branches: [gorila-crypto-cleanroom, gorila-crypto-binance-parallel]
+    branches: [main, gorila-crypto-cleanroom, gorila-crypto-binance-parallel]
 
 jobs:
   crypto-quality:
@@ -29,4 +29,9 @@ jobs:
 
       - name: Run Crypto cleanroom test suite
         run: |
-          pytest -q             tests/test_crypto_app.py             tests/test_crypto_forecast.py             tests/test_crypto_forecast_shadow.py             tests/test_crypto_lead_lag.py             tests/test_crypto_quality.py             tests/test_crypto_replay_manifest.py             tests/test_crypto_runtime.py             tests/test_crypto_validation.py             tests/test_crypto_event_replay.py             tests/test_crypto_storage_isolation.py             tests/test_binance_adapter.py             tests/test_kraken_adapter.py             tests/test_crypto_cleanroom_architecture.py             tests/test_crypto_quant_hardening.py             tests/test_crypto_market_stream.py
+          pytest -q             tests/test_crypto_app.py             tests/test_crypto_forecast.py             tests/test_crypto_forecast_shadow.py             tests/test_crypto_lead_lag.py             tests/test_crypto_quality.py             tests/test_crypto_replay_manifest.py             tests/test_crypto_runtime.py             tests/test_crypto_validation.py             tests/test_crypto_event_replay.py             tests/test_crypto_storage_isolation.py             tests/test_binance_adapter.py             tests/test_kraken_adapter.py             tests/test_crypto_cleanroom_architecture.py             tests/test_crypto_quant_hardening.py             tests/test_crypto_research_truth.py             tests/test_crypto_market_stream.py
+      - name: Build Cryptonita frontend
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
