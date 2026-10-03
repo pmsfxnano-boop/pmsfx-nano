@@ -109,8 +109,8 @@ function Brand() {
     <div className="brand">
       <div className="brand-g"><span>G</span><em /></div>
       <div className="brand-text">
-        <strong>GORILA</strong>
-        <small>ARGENTUM</small>
+        <strong>CRYPTONITA</strong>
+        <small>QUANT TERMINAL</small>
       </div>
     </div>
   );
@@ -905,8 +905,13 @@ export default function App() {
 
       <main className="shell">
         <div className="shell-meta">
-          <div><span>GORILA / ARGENTUM</span><b>QUANT TERMINAL</b></div>
+          <div><span>CRYPTONITA</span><b>QUANT TERMINAL</b></div>
           <span className="service-host">{serviceHost}</span>
+          <span className="service-host">
+            release {evidence?.release?.code_sha ? evidence.release.code_sha.slice(0, 12) : "unknown"}
+            {" · "}
+            research truth {Object.values(evidence?.study.research_truth || {}).every((item) => item.status === "PASS") ? "PASS" : "BLOCKED"}
+          </span>
         </div>
 
         <SymbolStrip snapshots={snapshots} selected={selected} onSelect={(next) => { setSelected(next); setView("terminal"); }} eventsBySymbol={events} />
@@ -954,7 +959,7 @@ export default function App() {
       </main>
 
       <footer className="footer-bar">
-        <span>LIVE MARKET · durable ledger · PIT/OOS gated</span>
+        <span>LIVE MARKET · durable ledger · PIT/OOS gated · research truth explicit</span>
         <span className="mono">cursor {cursor || "sync"}</span>
       </footer>
 
