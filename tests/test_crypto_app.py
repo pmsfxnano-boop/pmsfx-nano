@@ -133,6 +133,9 @@ def test_market_history_uses_shared_short_lived_cache(monkeypatch) -> None:
     class FakeStore:
         durable = True
 
+        def active_capture_session(self, study_id):
+            return "test-session"
+
         def __init__(self) -> None:
             self.conn = FakeConn()
             self.connect_calls = 0
