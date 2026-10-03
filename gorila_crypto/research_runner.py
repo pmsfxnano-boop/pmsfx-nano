@@ -551,6 +551,7 @@ def _dataset_rows(
         target_base AS (
             SELECT e.ledger_seq,
                    e.event_id,
+                   e.sequence_start,
                    e.event_time::timestamptz AS et,
                    e.received_time::timestamptz AS rt,
                    (e.payload_json::jsonb->>'p')::double precision AS price,
