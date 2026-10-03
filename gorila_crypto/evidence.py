@@ -19,6 +19,8 @@ from .market_cache import MARKET_CACHE
 from .protocol import PREREGISTERED_CRYPTO_PROTOCOL
 from .forecast import FEATURE_SET_VERSION
 from .quant_store import QuantCryptoStore
+from .release import release_identity
+from .research_contract import research_truth_decision
 
 _EVIDENCE_LOCK = threading.RLock()
 _EVIDENCE_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
@@ -1097,6 +1099,7 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
 
         payload = {
             "generated_at": now.isoformat(),
+            "release": release_identity(),
             "study": {
                 "study_id": PREREGISTERED_CRYPTO_PROTOCOL.study_id,
                 "version": PREREGISTERED_CRYPTO_PROTOCOL.version,
@@ -1109,6 +1112,19 @@ def build_evidence_snapshot(*, ttl_seconds: float = 15.0) -> dict[str, Any]:
                     "trade_persistence_sample_rate": PREREGISTERED_CRYPTO_PROTOCOL.trade_persistence_sample_rate,
                     "bookticker_persistence_interval_seconds": PREREGISTERED_CRYPTO_PROTOCOL.bookticker_persistence_interval_seconds,
                     "hot_plane_lossless": True,
+                    "research_plane_lossless": False,
+                    "research_truth_note": "Durable V6 ledger is sampled/compact; it is not equivalent to the lossless hot plane.",
+                },
+                "research_truth": {
+                    str(h): {
+                        "status": decision.status,
+                        "exact_trade_coverage": decision.exact_trade_coverage,
+                        "exact_book_coverage": decision.exact_book_coverage,
+                        "reasons": list(decision.reasons),
+                        "contract_hash": decision.contract_hash,
+                    }
+                    for h in PREREGISTERED_CRYPTO_PROTOCOL.forecast_horizons_ms
+                    for decision in [research_truth_decision(PREREGISTERED_CRYPTO_PROTOCOL, horizon_ms=int(h))]
                 },
                 "alpha_feature_set": FEATURE_SET_VERSION,
                 "alpha_model_version": (
