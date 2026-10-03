@@ -5,7 +5,7 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
   push:
-    branches: [main, gorila-crypto-binance-parallel, cryptonita-vanguard-sane]
+    branches: [main, gorila-crypto-binance-parallel]
 
 permissions:
   contents: read
