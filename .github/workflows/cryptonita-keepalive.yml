@@ -1,0 +1,19 @@
+name: Cryptonita autonomous keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Wake and probe crypto capture runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"
+          body="$(curl --fail --silent --show-error --max-time 20 "$url")"
+          echo "$body"
