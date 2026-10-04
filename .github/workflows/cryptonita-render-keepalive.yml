@@ -2,7 +2,7 @@ name: cryptonita-render-keepalive
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -10,9 +10,13 @@ permissions:
 
 jobs:
   keepalive:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
     steps:
       - name: Ping Cryptonita capture health
+        shell: bash
         run: |
-          curl --fail --silent --show-error --max-time 20             "https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"             -o /tmp/cryptonita-health.json
+          set -euo pipefail
+          url="https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"
+          curl             --fail --silent --show-error             --connect-timeout 15             --max-time 50             --retry 4             --retry-all-errors             --retry-delay 2             "$url"             -o /tmp/cryptonita-health.json
           cat /tmp/cryptonita-health.json
