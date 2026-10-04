@@ -81,6 +81,61 @@ function toneForStatus(status: string | undefined): "good" | "warn" | "bad" | "n
   return "neutral";
 }
 
+
+
+function buildLocalHistory(
+  symbol: string,
+  resolution: string,
+  trades: MarketEvent[],
+): HistoryResponse {
+  const secondsByResolution: Record<string, number> = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+  };
+  const bucket = secondsByResolution[resolution] || 300;
+  const source = trades
+    .filter(t => t.event_type === "trade" && num(t.price) != null)
+    .slice(-720)
+    .sort((a, b) => Date.parse(a.received_time) - Date.parse(b.received_time));
+
+  const byBucket = new Map<number, HistoryResponse["candles"][number]>();
+  for (const trade of source) {
+    const ms = Date.parse(trade.received_time);
+    const price = Number(trade.price);
+    const quantity = Number(trade.quantity || 0);
+    if (!Number.isFinite(ms) || !Number.isFinite(price)) continue;
+    const bucketTime = Math.floor(ms / (bucket * 1000)) * bucket * 1000;
+    const prev = byBucket.get(bucketTime);
+    if (!prev) {
+      byBucket.set(bucketTime, {
+        time: new Date(bucketTime).toISOString(),
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: Number.isFinite(quantity) ? quantity : 0,
+        trades: 1,
+      });
+    } else {
+      prev.high = Math.max(prev.high, price);
+      prev.low = Math.min(prev.low, price);
+      prev.close = price;
+      prev.volume += Number.isFinite(quantity) ? quantity : 0;
+      prev.trades += 1;
+    }
+  }
+
+  return {
+    symbol,
+    resolution,
+    candles: [...byBucket.values()].sort((a, b) => Date.parse(a.time) - Date.parse(b.time)),
+  };
+}
+
 function Icon({ name }: { name: "terminal" | "clock" | "research" | "quality" | "flow" | "pipeline" | "book" | "chart" | "grid" }) {
   const common = { width: 20, height: 20, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const paths: Record<string, ReactNode> = {
@@ -102,7 +157,7 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`status-pill ${tone}`}><i />{status}</span>;
 }
 
-function Brand({ live }: { live: boolean }) {
+function Brand({ live, source }: { live: boolean; source?: string }) {
   return (
     <div className="brand">
       <div className="brand-mark">C<span>+</span></div>
@@ -111,6 +166,7 @@ function Brand({ live }: { live: boolean }) {
         <small>QUANT TERMINAL</small>
       </div>
       <div className={`global-state ${live ? "live" : "warn"}`}><i />{live ? "LIVE" : "DEGRADED"}</div>
+      {source && <small className="brand-source">{source}</small>}
     </div>
   );
 }
@@ -510,6 +566,7 @@ function TimelineNode({ label, value, detail, tone }: { label: string; value: st
 function Opportunity({ evidence }: { evidence: EvidenceResponse | null }) {
   const clock = evidence?.opportunity_clock;
   const projection = useOpportunityClock(clock, evidence?.generated_at);
+  const blockers = clock?.blockers ?? (evidence ? [] : ["EVIDENCE_UNAVAILABLE"]);
   const progress = Math.round(projection.progress * 100);
   const progressAngle = Math.max(2, progress);
   const remaining = formatOpportunityDuration(projection.remainingSeconds);
@@ -775,7 +832,7 @@ function OpportunityMini({ evidence }: { evidence: EvidenceResponse | null }) {
     <section className="v-card v-opportunity">
       <div className="v-card-head">
         <span className="v-label">OPPORTUNITY CLOCK</span>
-        <span className={`v-live-chip ${active ? "active" : "locked"}`}><i />{projection.label}</span>
+        <span className={`v-live-chip ${active ? "active" : "locked"}`}><i />{evidence ? projection.label : "NO READ-MODEL"}</span>
       </div>
 
       <div className="v-clock-orbit">
@@ -815,7 +872,7 @@ function OpportunityMini({ evidence }: { evidence: EvidenceResponse | null }) {
         <div><span>BLOCKERS</span><b>{clock?.blockers?.length ?? 0}</b></div>
       </div>
       <div className="v-rule">
-        {clock?.rule || "The activation gate remains fail-closed until the evidence contract passes."}
+        {evidence ? (clock?.rule || "The activation gate remains fail-closed until the evidence contract passes.") : "Waiting for the server evidence read-model; market hot plane remains independent."}
       </div>
     </section>
   );
@@ -823,7 +880,7 @@ function OpportunityMini({ evidence }: { evidence: EvidenceResponse | null }) {
 
 function TerminalTelemetry({ item, trades }: { item: SymbolMarket | undefined; trades: MarketEvent[] }) {
   const buys = trades.filter(t => t.side === "BUY").length;
-  const buyShare = trades.length ? (buys / trades.length) * 100 : 50;
+  const buyShare = trades.length ? (buys / trades.length) * 100 : 0;
   const signed = trades.reduce((a, t) => a + (t.quantity || 0) * (t.side === "BUY" ? 1 : -1), 0);
   const gross = trades.reduce((a, t) => a + (t.quantity || 0), 0);
   const imbalance = gross ? (signed / gross) * 100 : 0;
@@ -834,10 +891,10 @@ function TerminalTelemetry({ item, trades }: { item: SymbolMarket | undefined; t
       <div className="v-telemetry-grid">
         <div><span>MID</span><b>{item?.bid != null && item.ask != null ? fmt((item.bid + item.ask) / 2, item.bid < 10 ? 5 : 2) : "—"}</b></div>
         <div><span>SPREAD</span><b>{item?.spread_bps == null ? "—" : `${item.spread_bps.toFixed(2)} bp`}</b></div>
-        <div><span>IMBALANCE</span><b className={imbalance >= 0 ? "v-up" : "v-down"}>{imbalance >= 0 ? "+" : ""}{imbalance.toFixed(1)}%</b></div>
+        <div><span>IMBALANCE</span><b className={trades.length ? (imbalance >= 0 ? "v-up" : "v-down") : "v-muted"}>{trades.length ? `${imbalance >= 0 ? "+" : ""}${imbalance.toFixed(1)}%` : "—"}</b></div>
         <div><span>FRESHNESS</span><b>{ageSeconds(freshness)}</b></div>
         <div><span>PRINTS</span><b>{fmtCompact(trades.length)}</b></div>
-        <div><span>FLOW SHARE</span><b>{buyShare.toFixed(1)}%</b></div>
+        <div><span>FLOW SHARE</span><b>{trades.length ? `${buyShare.toFixed(1)}%` : "—"}</b></div>
       </div>
       <div className="v-flow-bar"><span style={{ width: `${Math.max(6, Math.min(94, buyShare))}%` }} /></div>
       <div className="v-flow-axis"><span>SELL</span><span>FLOW</span><span>BUY</span></div>
@@ -848,16 +905,16 @@ function TerminalTelemetry({ item, trades }: { item: SymbolMarket | undefined; t
 
 function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null }) {
   const shadow = evidence?.online_shadow;
-  const count = num(shadow?.count) ?? 0;
-  const outcomes = num(shadow?.outcomes_count) ?? 0;
-  const scored = num(shadow?.scored_count) ?? 0;
-  const warmup = num(shadow?.warmup_count) ?? 0;
+  const count = evidence ? (num(shadow?.count) ?? 0) : null;
+  const outcomes = evidence ? (num(shadow?.outcomes_count) ?? 0) : null;
+  const scored = evidence ? (num(shadow?.scored_count) ?? 0) : null;
+  const warmup = evidence ? (num(shadow?.warmup_count) ?? 0) : null;
   const resolvedRate = num(shadow?.resolved_rate);
   const recentP = num(shadow?.recent_mean_probability);
   const horizons = evidence?.study?.forecast_horizons_ms || [100, 250, 500, 1000, 2000, 5000];
   const byHorizon = shadow?.by_horizon || {};
-  const scoredReady = scored > 0;
-  const ready = count > 0 && scoredReady;
+  const scoredReady = (scored ?? 0) > 0;
+  const ready = (count ?? 0) > 0 && scoredReady;
   return (
     <section className="v-card v-alpha-shadow">
       <div className="v-card-head">
@@ -868,24 +925,24 @@ function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null })
             <span>shadow-only · not promotion-ready</span>
           </div>
         </div>
-        <span className={`v-live-chip ${ready ? "active" : count > 0 ? "active" : "locked"}`}><i />{ready ? "SCORING" : count > 0 ? "LIVE SHADOW" : "WARMING"}</span>
+        <span className={`v-live-chip ${ready ? "active" : (count ?? 0) > 0 ? "active" : "locked"}`}><i />{!evidence ? "NO READ-MODEL" : ready ? "SCORING" : (count ?? 0) > 0 ? "LIVE SHADOW" : "WARMING"}</span>
       </div>
 
       <div className="v-alpha-kpis">
-        <div><span>FORECASTS</span><b>{fmtCompact(count)}</b></div>
-        <div><span>RESOLVED</span><b>{fmtCompact(outcomes)}</b></div>
-        <div><span>SCORED</span><b>{fmtCompact(scored)}</b></div>
-        <div><span>WARMUP</span><b>{fmtCompact(warmup)}</b></div>
+        <div><span>FORECASTS</span><b>{count == null ? "—" : fmtCompact(count)}</b></div>
+        <div><span>RESOLVED</span><b>{outcomes == null ? "—" : fmtCompact(outcomes)}</b></div>
+        <div><span>SCORED</span><b>{scored == null ? "—" : fmtCompact(scored)}</b></div>
+        <div><span>WARMUP</span><b>{warmup == null ? "—" : fmtCompact(warmup)}</b></div>
       </div>
 
       <div className="v-alpha-latency">
         <div>
           <span>RESOLUTION</span>
-          <strong>{resolvedRate == null ? "—" : `${(resolvedRate * 100).toFixed(1)}%`}</strong>
+          <strong>{!evidence || resolvedRate == null ? "—" : `${(resolvedRate * 100).toFixed(1)}%`}</strong>
         </div>
         <div>
           <span>RECENT P</span>
-          <strong>{recentP == null ? "—" : recentP.toFixed(3)}</strong>
+          <strong>{!evidence || recentP == null ? "—" : recentP.toFixed(3)}</strong>
         </div>
         <div>
           <span>FEATURE SET</span>
@@ -922,15 +979,16 @@ function AlphaShadowMonitor({ evidence }: { evidence: EvidenceResponse | null })
   );
 }
 
-function ExecutionState({ health, evidence, durabilityStatus }: {
+function ExecutionState({ health, evidence, durabilityStatus, marketStatus }: {
   health: HealthResponse | null;
   evidence: EvidenceResponse | null;
   durabilityStatus: string;
+  marketStatus: string;
 }) {
-  const quality = String(evidence?.quality_gate?.state || "WAITING");
-  const pit = String(evidence?.pit_oos?.state || "BLOCKED");
-  const clock = evidence?.opportunity_clock?.validated ? "ACTIVE" : "BLOCKED";
-  const market = health?.symbols_live ? "LIVE" : "DEGRADED";
+  const quality = String(evidence?.quality_gate?.state || (evidence ? "WAITING" : "NO READ-MODEL"));
+  const pit = String(evidence?.pit_oos?.state || (evidence ? "BLOCKED" : "NO READ-MODEL"));
+  const clock = evidence?.opportunity_clock?.validated ? "ACTIVE" : evidence ? "BLOCKED" : "NO READ-MODEL";
+  const market = marketStatus || (health?.symbols_live ? "LIVE" : "DEGRADED");
   const rows = [
     ["MARKET", market],
     ["LEDGER", durabilityStatus || "UNKNOWN"],
@@ -1020,9 +1078,9 @@ function VanguardTerminal({
       <div className="v-workspace">
         <section className="v-main">
           <PrimaryChart
-            history={history}
+            history={history?.candles?.length ? history : buildLocalHistory(selectedSymbol, resolution, selectedTrades)}
             liveEvents={selectedTrades}
-            symbol={selectedMarket?.symbol || selected}
+            symbol={selectedSymbol}
             resolution={resolution}
             onResolution={onResolution}
           />
@@ -1050,7 +1108,7 @@ function VanguardTerminal({
 
         <aside className="v-side">
           <OpportunityMini evidence={evidence} />
-          <ExecutionState health={health} evidence={evidence} durabilityStatus={durabilityStatus} />
+          <ExecutionState health={health} evidence={evidence} durabilityStatus={durabilityStatus} marketStatus={marketStatus} />
           <AlphaShadowMonitor evidence={evidence} />
           <section className="v-card v-orderbook">
             <div className="v-card-head"><span className="v-label">TOP OF BOOK</span><span className="v-muted">Binance Spot</span></div>
@@ -1086,10 +1144,13 @@ function App() {
 
   // Independent visual hot plane: when the API/read-model is unavailable or stale,
   // the terminal keeps receiving public Binance market data directly in the browser.
+  const [directConnection, setDirectConnection] = useState<"CONNECTING" | "LIVE" | "STALE" | "OFFLINE">("CONNECTING");
+
   useEffect(() => {
     directFeedRef.current = createDirectBinanceFeed((snapshot) => {
       setDirectSymbols(snapshot.symbols);
       setDirectEvents(snapshot.events);
+      setDirectConnection(snapshot.connection);
     });
     return () => {
       directFeedRef.current?.();
@@ -1104,14 +1165,14 @@ function App() {
       if (disposed || inFlight.current) return;
       inFlight.current = true;
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 5000);
+      const timeout = window.setTimeout(() => controller.abort(), 12000);
       try {
         const response = await fetchMarketStream(cursorRef.current, 360, controller.signal);
         if (disposed) return;
         setMarketStatus(response.market_status || response.status || "DEGRADED");
         setDurabilityStatus(response.durability_status || "UNKNOWN");
         setLastDurable(response.last_durable_stream_seq || 0);
-        setSymbols(response.symbols || []);
+        if (response.symbols?.length) setSymbols(response.symbols);
 
         setEvents(prev => {
           const incoming = response.events || [];
@@ -1119,21 +1180,24 @@ function App() {
           [...prev, ...incoming].forEach(event => map.set(event.event_key, event));
           return [...map.values()]
             .sort((a, b) => a.stream_seq - b.stream_seq)
-            .slice(-360);
+            .slice(-720);
         });
         cursorRef.current = response.next_cursor || cursorRef.current;
         setError(null);
       } catch (err) {
-        if (!disposed) setError(err instanceof Error ? err.message : "market stream unavailable");
+        if (!disposed) setError(err instanceof Error ? err.message : "market read-model unavailable; hot plane may continue");
       } finally {
         window.clearTimeout(timeout);
         inFlight.current = false;
         if (!disposed) timer = window.setTimeout(poll, 5000);
       }
     };
+    const onVisible = () => { if (document.visibilityState === "visible") void poll(); };
+    document.addEventListener("visibilitychange", onVisible);
     void poll();
     return () => {
       disposed = true;
+      document.removeEventListener("visibilitychange", onVisible);
       window.clearTimeout(timer);
     };
   }, []);
@@ -1172,7 +1236,7 @@ function App() {
         const payload = await fetchEvidence(controller.signal);
         if (!disposed) setEvidence(payload);
       } catch {
-        if (!disposed) setEvidence(null);
+        // Preserve the last good evidence snapshot through transient backend sleeps.
       }
     };
     void loadEvidence();
@@ -1192,7 +1256,7 @@ function App() {
         const payload = await fetchHistory(selected, resolution, 240, controller.signal);
         if (!disposed) setHistory(payload);
       } catch {
-        if (!disposed) setHistory(null);
+        // Preserve durable history; chart components also derive a local hot-plane view.
       }
     };
     void load();
@@ -1204,19 +1268,36 @@ function App() {
     };
   }, [selected, resolution]);
 
-  const directLive = directSymbols.some(item => item.status === "LIVE");
-  const displaySymbols = directLive ? directSymbols : symbols;
-  const displayEvents = directLive ? directEvents : events;
-  const displayMarketStatus = directLive ? "LIVE" : marketStatus;
+  const displaySymbols = useMemo(() => DEFAULT_SYMBOLS.map(symbol => {
+    const apiItem = symbols.find(item => item.symbol === symbol);
+    const directItem = directSymbols.find(item => item.symbol === symbol);
+    if (directItem && directItem.status !== "NO_DATA") return { ...apiItem, ...directItem } as SymbolMarket;
+    return apiItem || directItem;
+  }).filter(Boolean) as SymbolMarket[], [symbols, directSymbols]);
+
+  const displayEvents = useMemo(() => {
+    const map = new Map<string, MarketEvent>();
+    [...events, ...directEvents].forEach(event => map.set(event.event_key, event));
+    return [...map.values()].sort((a,b) => a.stream_seq - b.stream_seq).slice(-720);
+  }, [events, directEvents]);
+
   const selectedMarket = useMemo(
-    () => displaySymbols.find(s => s.symbol === selected) || displaySymbols[0],
+    () => displaySymbols.find(s => s.symbol === selected)
+      || displaySymbols.find(s => s.status === "LIVE")
+      || displaySymbols[0],
     [displaySymbols, selected],
   );
+  const selectedSymbol = selectedMarket?.symbol || selected;
   const selectedTrades = useMemo(
-    () => displayEvents.filter(event => event.symbol === (selectedMarket?.symbol || selected) && event.event_type === "trade"),
-    [displayEvents, selectedMarket?.symbol, selected],
+    () => displayEvents.filter(event => event.symbol === selectedSymbol && event.event_type === "trade"),
+    [displayEvents, selectedSymbol],
   );
-  const live = displayMarketStatus === "LIVE" && selectedMarket?.status === "LIVE";
+  const selectedIsLive = selectedMarket?.status === "LIVE";
+  const displayMarketStatus = selectedIsLive
+    ? "LIVE"
+    : (marketStatus === "LIVE" ? "LIVE" : directConnection === "LIVE" ? "LIVE" : marketStatus);
+
+  const live = selectedIsLive || (directConnection === "LIVE" && selectedMarket != null);
 
   const updateSelected = (symbol: string) => {
     setSelected(symbol);
@@ -1233,7 +1314,7 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <Brand live={live} />
+        <Brand live={live} source={selectedMarket?.status === "LIVE" ? "hot plane" : "read-model"} />
         <div className="top-meta">
           <span>{config?.provider ? `${config.provider} spot` : "public market stream"}</span>
           <span>{symbols.length || DEFAULT_SYMBOLS.length} symbols</span>
@@ -1249,7 +1330,7 @@ function App() {
             selectedMarket={selectedMarket}
             selectedTrades={selectedTrades}
             displaySymbols={displaySymbols}
-            selected={selectedMarket?.symbol || selected}
+            selected={selectedSymbol}
             onSelect={updateSelected}
             history={history}
             resolution={resolution}
@@ -1257,15 +1338,19 @@ function App() {
             evidence={evidence}
             health={health}
             durabilityStatus={durabilityStatus}
-            marketStatus={displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"}
+            marketStatus={selectedIsLive ? "LIVE" : displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"}
           />
         )}
 
         {tab === "opportunity" && (
           <>
             <Opportunity evidence={evidence} />
-            <QuantTimeline health={health} evidence={evidence} market={marketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
-            <PriceChart history={history} resolution={resolution} onResolution={setResolution} />
+            <QuantTimeline health={health} evidence={evidence} market={displayMarketStatus === "LIVE" ? "LIVE" : "DEGRADED"} />
+            <PriceChart
+              history={history?.candles?.length ? history : buildLocalHistory(selectedSymbol, resolution, selectedTrades)}
+              resolution={resolution}
+              onResolution={setResolution}
+            />
           </>
         )}
 
