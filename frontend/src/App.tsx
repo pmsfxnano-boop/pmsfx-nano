@@ -1078,9 +1078,9 @@ function VanguardTerminal({
       <div className="v-workspace">
         <section className="v-main">
           <PrimaryChart
-            history={history?.candles?.length ? history : buildLocalHistory(selectedSymbol, resolution, selectedTrades)}
+            history={history?.candles?.length ? history : buildLocalHistory(selected, resolution, selectedTrades)}
             liveEvents={selectedTrades}
-            symbol={selectedSymbol}
+            symbol={selected}
             resolution={resolution}
             onResolution={onResolution}
           />
