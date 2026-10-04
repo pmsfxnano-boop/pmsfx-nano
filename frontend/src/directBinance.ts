@@ -3,6 +3,8 @@ import type { MarketEvent, SymbolMarket } from "./api";
 export interface DirectFeedSnapshot {
   symbols: SymbolMarket[];
   events: MarketEvent[];
+  connection: "CONNECTING" | "LIVE" | "STALE" | "OFFLINE";
+  last_message_at: number | null;
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
@@ -14,6 +16,10 @@ const URL =
   "wss://data-stream.binance.vision/stream?streams=" +
   STREAMS.join("/");
 
+const LIVE_MAX_AGE_MS = 5000;
+const STALE_MAX_AGE_MS = 15000;
+const WATCHDOG_MS = 3000;
+
 export function createDirectBinanceFeed(
   onSnapshot: (snapshot: DirectFeedSnapshot) => void,
 ): () => void {
@@ -24,13 +30,15 @@ export function createDirectBinanceFeed(
   let snapshotTimer = 0;
   let snapshotPending = false;
   let seq = 0;
+  let lastMessageAt: number | null = null;
+  let connection: DirectFeedSnapshot["connection"] = "CONNECTING";
   const events: MarketEvent[] = [];
   const latest: Record<string, SymbolMarket> = Object.fromEntries(
     SYMBOLS.map((symbol) => [
       symbol,
       {
         symbol,
-        status: "STARTING",
+        status: "CONNECTING",
         price: null,
         window_change_pct: null,
         bid: null,
@@ -50,55 +58,82 @@ export function createDirectBinanceFeed(
     snapshotPending = false;
     snapshotTimer = 0;
     const now = Date.now();
-    if (events.length > 240) {
-      events.splice(0, events.length - 240);
-    }
+    if (events.length > 720) events.splice(0, events.length - 720);
+
+    let liveCount = 0;
+    let staleCount = 0;
     const symbols = SYMBOLS.map((symbol) => {
       const item = latest[symbol];
       const freshnessMs =
         item.freshness_ms == null
           ? null
           : Math.max(0, now - item.freshness_ms);
-      return {
-        ...item,
-        freshness_ms: freshnessMs,
-        status:
-          freshnessMs != null && freshnessMs <= 5000
-            ? "LIVE"
-            : freshnessMs != null && freshnessMs <= 30000
-              ? "DELAYED"
-              : "NO_DATA",
-      };
+
+      const status =
+        freshnessMs != null && freshnessMs <= LIVE_MAX_AGE_MS
+          ? "LIVE"
+          : freshnessMs != null && freshnessMs <= STALE_MAX_AGE_MS
+            ? "DELAYED"
+            : item.freshness_ms != null
+              ? "STALE"
+              : "NO_DATA";
+
+      if (status === "LIVE") liveCount += 1;
+      if (status === "DELAYED" || status === "STALE") staleCount += 1;
+
+      return { ...item, freshness_ms: freshnessMs, status };
     });
-    onSnapshot({ symbols, events: events.slice(-240) });
+
+    if (liveCount === SYMBOLS.length) connection = "LIVE";
+    else if (liveCount > 0 || staleCount > 0) connection = "STALE";
+    else if (socket) connection = "CONNECTING";
+    else connection = "OFFLINE";
+
+    onSnapshot({
+      symbols,
+      events: events.slice(-360),
+      connection,
+      last_message_at: lastMessageAt,
+    });
   };
 
-  // The provider can deliver hundreds of messages per second. React does not
-  // need one component-tree render per tick, so coalesce provider bursts into
-  // ~12.5 visual updates/sec while preserving the latest state and tape.
   const scheduleEmit = () => {
     if (stopped || snapshotPending) return;
     snapshotPending = true;
     snapshotTimer = window.setTimeout(emit, 80);
   };
 
+  const closeSocketForRecovery = () => {
+    if (!socket) return;
+    try {
+      socket.close();
+    } catch {}
+    socket = null;
+  };
+
   const scheduleReconnect = () => {
     if (stopped || reconnectTimer) return;
+    connection = "CONNECTING";
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = 0;
       connect();
     }, reconnectMs);
     reconnectMs = Math.min(10000, reconnectMs * 2);
+    emit();
   };
 
   const connect = () => {
     if (stopped) return;
+    connection = "CONNECTING";
     try {
       socket = new WebSocket(URL);
+
       socket.onopen = () => {
         reconnectMs = 500;
+        connection = "LIVE";
         scheduleEmit();
       };
+
       socket.onmessage = (message) => {
         try {
           const envelope = JSON.parse(String(message.data)) as {
@@ -110,7 +145,9 @@ export function createDirectBinanceFeed(
           const symbol = String(data.s || "").toUpperCase();
           if (!SYMBOLS.includes(symbol)) return;
 
-          const now = new Date().toISOString();
+          const receivedMs = Date.now();
+          lastMessageAt = receivedMs;
+          const receivedIso = new Date(receivedMs).toISOString();
           seq += 1;
 
           if (type === "trade") {
@@ -123,10 +160,8 @@ export function createDirectBinanceFeed(
               event_key: `binance-direct-trade-${symbol}-${String(data.t)}`,
               symbol,
               event_type: "trade",
-              event_time: new Date(
-                Number(data.E || Date.now()),
-              ).toISOString(),
-              received_time: now,
+              event_time: new Date(Number(data.E || receivedMs)).toISOString(),
+              received_time: receivedIso,
               price: Number.isFinite(price) ? price : null,
               quantity: Number.isFinite(quantity) ? quantity : null,
               side: Boolean(data.m) ? "SELL" : "BUY",
@@ -135,7 +170,7 @@ export function createDirectBinanceFeed(
             latest[symbol] = {
               ...latest[symbol],
               price: event.price,
-              freshness_ms: Date.now(),
+              freshness_ms: receivedMs,
               last_trade_time: event.received_time,
             };
           } else if (type === "bookTicker") {
@@ -161,8 +196,8 @@ export function createDirectBinanceFeed(
               event_key: `binance-direct-book-${symbol}-${String(data.u)}`,
               symbol,
               event_type: "bookTicker",
-              event_time: now,
-              received_time: now,
+              event_time: receivedIso,
+              received_time: receivedIso,
               price: mid,
               quantity: null,
               side: null,
@@ -180,26 +215,30 @@ export function createDirectBinanceFeed(
               bid_qty: event.bid_qty ?? null,
               ask_qty: event.ask_qty ?? null,
               spread_bps: spread,
-              freshness_ms: Date.now(),
+              imbalance:
+                Number.isFinite(bidQty) &&
+                Number.isFinite(askQty) &&
+                bidQty + askQty > 0
+                  ? (bidQty - askQty) / (bidQty + askQty)
+                  : null,
+              freshness_ms: receivedMs,
               last_book_time: event.received_time,
             };
           } else {
             return;
           }
 
-          if (events.length > 720) {
-            events.splice(0, events.length - 720);
-          }
           scheduleEmit();
         } catch {
-          // Ignore malformed browser-side provider frames and remain connected.
+          // Ignore malformed provider frames and let the watchdog reconnect if needed.
         }
       };
+
       socket.onerror = () => {
-        try {
-          socket?.close();
-        } catch {}
+        connection = "STALE";
+        scheduleReconnect();
       };
+
       socket.onclose = () => {
         socket = null;
         scheduleReconnect();
@@ -209,13 +248,35 @@ export function createDirectBinanceFeed(
     }
   };
 
-  connect();
+  const watchdog = window.setInterval(() => {
+    if (stopped) return;
+    const age = lastMessageAt == null ? Infinity : Date.now() - lastMessageAt;
+    if (age > STALE_MAX_AGE_MS) {
+      connection = socket ? "STALE" : "OFFLINE";
+      closeSocketForRecovery();
+      scheduleReconnect();
+    }
+    emit();
+  }, WATCHDOG_MS);
 
-  const freshnessTimer = window.setInterval(emit, 1000);
+  const onVisibility = () => {
+    if (document.visibilityState !== "visible" || stopped) return;
+    const age = lastMessageAt == null ? Infinity : Date.now() - lastMessageAt;
+    if (age > LIVE_MAX_AGE_MS) {
+      closeSocketForRecovery();
+      scheduleReconnect();
+    }
+    emit();
+  };
+
+  document.addEventListener("visibilitychange", onVisibility);
+  connect();
+  emit();
 
   return () => {
     stopped = true;
-    window.clearInterval(freshnessTimer);
+    document.removeEventListener("visibilitychange", onVisibility);
+    window.clearInterval(watchdog);
     if (snapshotTimer) window.clearTimeout(snapshotTimer);
     if (reconnectTimer) window.clearTimeout(reconnectTimer);
     reconnectTimer = 0;

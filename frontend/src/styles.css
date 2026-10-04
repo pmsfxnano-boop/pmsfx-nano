@@ -629,3 +629,16 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
   .opportunity-window-grid{grid-template-columns:1fr}
   .clock-meta-grid{grid-template-columns:1fr 1fr}
 }
+
+.brand-source{
+  color:#4f6872;
+  font-size:7px;
+  font-weight:800;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+  align-self:center;
+  white-space:nowrap;
+}
+@media(max-width:760px){
+  .brand-source{display:none}
+}
