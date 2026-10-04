@@ -4,7 +4,7 @@ on:
   schedule:
     # Render Free web services sleep after 15 minutes without inbound traffic.
     # Five-minute cadence provides margin without touching the production code path.
-    - cron: "7,22,37,52 * * * *"
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
 
 permissions: {}
