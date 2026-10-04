@@ -1,0 +1,52 @@
+name: Cryptonita capture keepalive
+
+on:
+  schedule:
+    # Render Free web services sleep after 15 minutes without inbound traffic.
+    # Five-minute cadence provides margin without touching the production code path.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Wake and verify capture service
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          url="https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"
+          curl             --fail             --silent             --show-error             --location             --max-time 110             --retry 3             --retry-all-errors             --retry-delay 4             "$url"             -o /tmp/health.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("/tmp/health.json").read_text())
+
+          print(json.dumps({
+              "status": payload.get("status"),
+              "worker_alive": payload.get("worker_alive"),
+              "heartbeat_alive": payload.get("heartbeat_alive"),
+              "symbols_live": payload.get("symbols_live"),
+              "study_id": payload.get("market_plane", {}).get("recovery_gate", {}).get("capture_session_id"),
+              "durability": payload.get("market_plane", {}).get("durability"),
+          }, indent=2, sort_keys=True))
+
+          failures = []
+          if not payload.get("worker_alive"):
+              failures.append("worker_not_alive")
+          if not payload.get("heartbeat_alive"):
+              failures.append("heartbeat_not_alive")
+          if not payload.get("prospective_capture"):
+              failures.append("prospective_capture_disabled")
+          if not payload.get("symbols_live"):
+              failures.append("symbols_not_live")
+
+          if failures:
+              raise SystemExit("CAPTURE_KEEPALIVE_FAILED: " + ",".join(failures))
+          PY
