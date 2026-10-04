@@ -157,12 +157,26 @@ export interface ConfigResponse extends AnyMap {
   quality_required_event_types: string[];
 }
 
-// The production terminal uses a same-origin gateway. This removes browser-to-API
-// DNS/CORS fragility while the gateway forwards /api/crypto/* to the durable service.
-export const API_BASE = (
-  import.meta.env.VITE_CRYPTO_API_BASE_URL ||
-  (typeof window !== "undefined" ? window.location.origin : "https://gorila-crypto-cleanroom-binance-capture.onrender.com")
-).replace(/\/$/, "");
+const PUBLIC_CRYPTO_API = "https://gorila-crypto-cleanroom-binance-capture.onrender.com";
+
+function resolveApiBase(): string {
+  const configured = String(import.meta.env.VITE_CRYPTO_API_BASE_URL || "").trim();
+  if (configured) return configured.replace(/\/$/, "");
+
+  if (typeof window === "undefined") return PUBLIC_CRYPTO_API;
+
+  const host = window.location.hostname;
+  // The Node web service has a same-origin gateway. Keep using it there to
+  // preserve the production gateway path, but static deployments must talk
+  // directly to the CORS-enabled public crypto API.
+  if (host === "cryptonita-terminal-app.onrender.com") {
+    return window.location.origin;
+  }
+
+  return PUBLIC_CRYPTO_API;
+}
+
+export const API_BASE = resolveApiBase();
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(API_BASE + path, {
