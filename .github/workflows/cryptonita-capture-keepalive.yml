@@ -1,0 +1,18 @@
+name: Cryptonita capture keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health-ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep Cryptonita capture warm
+        run: |
+          set -euo pipefail
+          url="https://gorila-crypto-cleanroom-binance-capture.onrender.com/api/crypto/health"
+          code="$(curl -sS -o /tmp/health.json -w "%{http_code}" --max-time 30 "$url")"
+          cat /tmp/health.json
+          test "$code" = "200"
