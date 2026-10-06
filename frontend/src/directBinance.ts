@@ -81,7 +81,7 @@ export function createDirectBinanceFeed(
           ? "LIVE"
           : freshnessMs != null && freshnessMs <= STALE_MAX_AGE_MS
             ? "DELAYED"
-            : item.freshness_ms != null
+            : freshnessMs != null
               ? "STALE"
               : "NO_DATA";
 
