@@ -996,6 +996,7 @@ class QuantCryptoStore(CryptoStore):
                         FROM crypto_capture_sessions s
                         LEFT JOIN crypto_runtime_leases r
                           ON r.session_id = s.session_id
+                         AND r.status = 'RUNNING'
                         WHERE s.study_id=%s
                           AND s.status IN ('STARTING','RUNNING')
                         GROUP BY s.session_id,s.status,s.started_at
@@ -1012,16 +1013,43 @@ class QuantCryptoStore(CryptoStore):
                         )
                         age_seconds = float(cur.fetchone()[0] or 0.0)
                         if age_seconds > stale_after_seconds:
+                            # Preserve the prospective cohort across a dead/restarted
+                            # worker. Fence only the stale runtime lease/run; the
+                            # capture session keeps its original started_at.
                             cur.execute(
                                 """
-                                UPDATE crypto_capture_sessions
-                                SET status='ABORTED_STALE',ended_at=NOW()::text
-                                WHERE session_id=%s
-                                  AND status IN ('STARTING','RUNNING')
+                                UPDATE crypto_runtime_leases
+                                SET status='ABORTED_STALE', heartbeat_at=NOW()::text
+                                WHERE session_id=%s AND status='RUNNING'
                                 """,
                                 (active_session_id,),
                             )
+                            cur.execute(
+                                """
+                                UPDATE crypto_runtime_runs
+                                SET status='ABORTED_STALE',
+                                    completed_at=NOW()::text,
+                                    result=%s
+                                WHERE status='RUNNING'
+                                  AND run_id IN (
+                                      SELECT run_id
+                                      FROM crypto_runtime_leases
+                                      WHERE session_id=%s
+                                  )
+                                """,
+                                (
+                                    json.dumps(
+                                        {
+                                            "reason": "stale_worker_takeover",
+                                            "preserved_capture_session": True,
+                                        },
+                                        sort_keys=True,
+                                    ),
+                                    active_session_id,
+                                ),
+                            )
                             conn.commit()
+                            return active_session_id
                         else:
                             conn.rollback()
                             raise RuntimeError(

@@ -1582,7 +1582,10 @@ class ProspectiveCryptoIngestor:
                             status=status,
                             result=result,
                         )
-                        if self.session_id is not None:
+                        if self.session_id is not None and status != "STOPPED":
+                            # A normal process/service shutdown must not terminate the
+                            # prospective cohort. The next worker can take over the
+                            # same session after the runtime lease becomes stale.
                             self.store.set_capture_session_status(
                                 self.session_id,
                                 status,
