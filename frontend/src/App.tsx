@@ -1289,11 +1289,15 @@ function App() {
         const message = err instanceof Error ? err.message : "market read-model unavailable";
         if (!disposed) {
           setError(message);
-          setMarketSync({
-            lastErrorAt: Date.now(),
-            lastError: message,
-            state: sync.market.lastOkAt ? "STALE" : "ERROR",
-          });
+          setSync(prev => ({
+            ...prev,
+            market: {
+              ...prev.market,
+              lastErrorAt: Date.now(),
+              lastError: message,
+              state: prev.market.lastOkAt ? "STALE" : "ERROR",
+            },
+          }));
         }
       } finally {
         window.clearTimeout(timeout);

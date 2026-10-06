@@ -33,6 +33,12 @@ export function createDirectBinanceFeed(
   let lastMessageAt: number | null = null;
   let connection: DirectFeedSnapshot["connection"] = "CONNECTING";
   const events: MarketEvent[] = [];
+  // Keep receive timestamps separate from the public freshness_ms field.
+  // freshness_ms is a derived age for the UI; it must never become the
+  // timestamp source for the next watchdog emission.
+  const lastSeenAtMs: Record<string, number | null> = Object.fromEntries(
+    SYMBOLS.map((symbol) => [symbol, null]),
+  );
   const latest: Record<string, SymbolMarket> = Object.fromEntries(
     SYMBOLS.map((symbol) => [
       symbol,
@@ -64,17 +70,18 @@ export function createDirectBinanceFeed(
     let staleCount = 0;
     const symbols = SYMBOLS.map((symbol) => {
       const item = latest[symbol];
+      const seenAt = lastSeenAtMs[symbol];
       const freshnessMs =
-        item.freshness_ms == null
+        seenAt == null
           ? null
-          : Math.max(0, now - item.freshness_ms);
+          : Math.max(0, now - seenAt);
 
       const status =
         freshnessMs != null && freshnessMs <= LIVE_MAX_AGE_MS
           ? "LIVE"
           : freshnessMs != null && freshnessMs <= STALE_MAX_AGE_MS
             ? "DELAYED"
-            : item.freshness_ms != null
+            : freshnessMs != null
               ? "STALE"
               : "NO_DATA";
 
@@ -167,6 +174,7 @@ export function createDirectBinanceFeed(
               side: Boolean(data.m) ? "SELL" : "BUY",
             };
             events.push(event);
+            lastSeenAtMs[symbol] = receivedMs;
             latest[symbol] = {
               ...latest[symbol],
               price: event.price,
@@ -207,6 +215,7 @@ export function createDirectBinanceFeed(
               ask_qty: Number.isFinite(askQty) ? askQty : null,
             };
             events.push(event);
+            lastSeenAtMs[symbol] = receivedMs;
             latest[symbol] = {
               ...latest[symbol],
               price: latest[symbol].price ?? mid,
