@@ -983,46 +983,95 @@ class QuantCryptoStore(CryptoStore):
             conn.close()
         session_id = str(uuid.uuid4())
         stale_after_seconds = 120.0
+        restartable_age_seconds = 8 * 24 * 3600
+        symbols_json = json.dumps(list(symbols), sort_keys=True)
+        streams_json = json.dumps(list(streams), sort_keys=True)
+
         conn = self.connect()
         try:
             if self._pg:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT s.session_id,
-                               s.status,
-                               s.started_at,
-                               COALESCE(MAX(r.heartbeat_at), '') AS heartbeat_at
-                        FROM crypto_capture_sessions s
-                        LEFT JOIN crypto_runtime_leases r
-                          ON r.session_id = s.session_id
-                         AND r.status = 'RUNNING'
-                        WHERE s.study_id=%s
-                          AND s.status IN ('STARTING','RUNNING')
-                        GROUP BY s.session_id,s.status,s.started_at
+                        SELECT session_id,status,started_at,protocol_hash,
+                               provider,venue,symbols_json,streams_json
+                        FROM crypto_capture_sessions
+                        WHERE study_id=%s
+                          AND status IN ('STARTING','RUNNING','STOPPED','ABORTED_STALE')
+                          AND started_at::timestamptz >= NOW() - INTERVAL '8 days'
+                        ORDER BY started_at DESC
+                        LIMIT 1
                         """,
                         (study_id,),
                     )
-                    active = cur.fetchone()
-                    if active is not None:
-                        active_session_id, active_status, started_at, heartbeat_at = active
-                        age_reference = heartbeat_at or started_at
+                    candidate = cur.fetchone()
+
+                    if candidate is not None:
+                        (
+                            candidate_id,
+                            candidate_status,
+                            candidate_started_at,
+                            candidate_protocol_hash,
+                            candidate_provider,
+                            candidate_venue,
+                            candidate_symbols_json,
+                            candidate_streams_json,
+                        ) = candidate
+
+                        identity_matches = (
+                            str(candidate_protocol_hash) == protocol_hash
+                            and str(candidate_provider) == provider
+                            and str(candidate_venue) == venue
+                            and str(candidate_symbols_json) == symbols_json
+                            and str(candidate_streams_json) == streams_json
+                        )
+                        if not identity_matches:
+                            candidate = None
+
+                    if candidate is not None:
+                        (
+                            candidate_id,
+                            candidate_status,
+                            candidate_started_at,
+                            _candidate_protocol_hash,
+                            _candidate_provider,
+                            _candidate_venue,
+                            _candidate_symbols_json,
+                            _candidate_streams_json,
+                        ) = candidate
+
+                        cur.execute(
+                            """
+                            SELECT COALESCE(MAX(heartbeat_at),'')
+                            FROM crypto_runtime_leases
+                            WHERE session_id=%s AND status='RUNNING'
+                            """,
+                            (candidate_id,),
+                        )
+                        heartbeat_at = cur.fetchone()[0] or ""
+                        age_reference = heartbeat_at or candidate_started_at
                         cur.execute(
                             "SELECT EXTRACT(EPOCH FROM (NOW() - %s::timestamptz))",
                             (age_reference,),
                         )
                         age_seconds = float(cur.fetchone()[0] or 0.0)
-                        if age_seconds > stale_after_seconds:
-                            # Preserve the prospective cohort across a dead/restarted
-                            # worker. Fence only the stale runtime lease/run; the
-                            # capture session keeps its original started_at.
+
+                        if candidate_status in {"STARTING", "RUNNING"} and heartbeat_at and age_seconds <= stale_after_seconds:
+                            conn.rollback()
+                            raise RuntimeError(
+                                "active_capture_session_exists:"
+                                f"session={candidate_id}:status={candidate_status}:"
+                                f"age_seconds={age_seconds:.1f}"
+                            )
+
+                        if age_seconds <= restartable_age_seconds:
                             cur.execute(
                                 """
                                 UPDATE crypto_runtime_leases
-                                SET status='ABORTED_STALE', heartbeat_at=NOW()::text
+                                SET status='ABORTED_STALE',heartbeat_at=NOW()::text
                                 WHERE session_id=%s AND status='RUNNING'
                                 """,
-                                (active_session_id,),
+                                (candidate_id,),
                             )
                             cur.execute(
                                 """
@@ -1040,26 +1089,97 @@ class QuantCryptoStore(CryptoStore):
                                 (
                                     json.dumps(
                                         {
-                                            "reason": "stale_worker_takeover",
+                                            "reason": "capture_session_resume",
                                             "preserved_capture_session": True,
+                                            "previous_status": str(candidate_status),
                                         },
                                         sort_keys=True,
                                     ),
-                                    active_session_id,
+                                    candidate_id,
+                                ),
+                            )
+                            cur.execute(
+                                """
+                                UPDATE crypto_capture_sessions
+                                SET status='RUNNING',ended_at=NULL,
+                                    region=COALESCE(%s,region),
+                                    instance_id=COALESCE(%s,instance_id),
+                                    code_version=COALESCE(%s,code_version)
+                                WHERE session_id=%s
+                                """,
+                                (
+                                    region,
+                                    instance_id,
+                                    code_version,
+                                    candidate_id,
                                 ),
                             )
                             conn.commit()
-                            return active_session_id
-                        else:
+                            return str(candidate_id)
+
+                        conn.rollback()
+            else:
+                # SQLite is used only outside the production durable path. Keep
+                # the same restart continuity contract there for deterministic
+                # local tests.
+                cur = conn.execute(
+                    """
+                    SELECT session_id,status,started_at,protocol_hash,
+                           provider,venue,symbols_json,streams_json
+                    FROM crypto_capture_sessions
+                    WHERE study_id=?
+                      AND status IN ('STARTING','RUNNING','STOPPED','ABORTED_STALE')
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    (study_id,),
+                )
+                candidate = cur.fetchone()
+                if candidate is not None:
+                    (
+                        candidate_id,
+                        candidate_status,
+                        candidate_started_at,
+                        candidate_protocol_hash,
+                        candidate_provider,
+                        candidate_venue,
+                        candidate_symbols_json,
+                        candidate_streams_json,
+                    ) = candidate
+                    if (
+                        str(candidate_protocol_hash) == protocol_hash
+                        and str(candidate_provider) == provider
+                        and str(candidate_venue) == venue
+                        and str(candidate_symbols_json) == symbols_json
+                        and str(candidate_streams_json) == streams_json
+                    ):
+                        age_seconds = max(
+                            0.0,
+                            (datetime.now(timezone.utc) - datetime.fromisoformat(
+                                str(candidate_started_at).replace("Z","+00:00")
+                            ).astimezone(timezone.utc)).total_seconds(),
+                        )
+                        if candidate_status in {"STARTING","RUNNING"} and age_seconds <= stale_after_seconds:
                             conn.rollback()
                             raise RuntimeError(
                                 "active_capture_session_exists:"
-                                f"session={active_session_id}:status={active_status}:"
+                                f"session={candidate_id}:status={candidate_status}:"
                                 f"age_seconds={age_seconds:.1f}"
                             )
-                    else:
-                        conn.rollback()
-            else:
+                        if age_seconds <= restartable_age_seconds:
+                            conn.execute(
+                                """
+                                UPDATE crypto_capture_sessions
+                                SET status='RUNNING',ended_at=NULL,
+                                    region=COALESCE(?,region),
+                                    instance_id=COALESCE(?,instance_id),
+                                    code_version=COALESCE(?,code_version)
+                                WHERE session_id=?
+                                """,
+                                (region,instance_id,code_version,candidate_id),
+                            )
+                            conn.commit()
+                            return str(candidate_id)
                 conn.rollback()
         finally:
             conn.close()
