@@ -1147,12 +1147,37 @@ function App() {
   const [directConnection, setDirectConnection] = useState<"CONNECTING" | "LIVE" | "STALE" | "OFFLINE">("CONNECTING");
 
   useEffect(() => {
-    directFeedRef.current = createDirectBinanceFeed((snapshot) => {
+    // The browser hot plane can receive hundreds of market events per second.
+    // Keep the chart hot-path independent, but commit the React dashboard at a
+    // bounded cadence so mobile CPUs are not forced to reconcile the full DOM
+    // tree for every provider burst.
+    const UI_COMMIT_MS = 200;
+    let pending: Parameters<Parameters<typeof createDirectBinanceFeed>[0]>[0] | null = null;
+    let timer = 0;
+    let disposed = false;
+
+    const commitLatest = () => {
+      timer = 0;
+      if (disposed || !pending) return;
+      const snapshot = pending;
+      pending = null;
       setDirectSymbols(snapshot.symbols);
       setDirectEvents(snapshot.events);
       setDirectConnection(snapshot.connection);
+    };
+
+    directFeedRef.current = createDirectBinanceFeed((snapshot) => {
+      pending = snapshot;
+      if (!timer) {
+        timer = window.setTimeout(commitLatest, UI_COMMIT_MS);
+      }
     });
+
     return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+      timer = 0;
+      pending = null;
       directFeedRef.current?.();
       directFeedRef.current = null;
     };
