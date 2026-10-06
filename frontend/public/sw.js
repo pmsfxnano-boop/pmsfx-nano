@@ -1,12 +1,12 @@
-const CACHE = "cryptonita-shell-v2";
+const CACHE = "cryptonita-shell-v3";
 const isApi = request => new URL(request.url).pathname.startsWith("/api/crypto/");
 
 self.addEventListener("install", event => {
-  event.waitUntil(
-    caches.open(CACHE).then(cache =>
-      cache.addAll(["/", "/manifest.webmanifest"])
-    )
-  );
+  // Do not precache "/" here. A stale HTML shell can otherwise survive a
+  // deploy/restart and make the terminal appear frozen even when the API is live.
+  event.waitUntil(caches.open(CACHE).then(cache =>
+    cache.addAll(["/manifest.webmanifest"])
+  ));
   self.skipWaiting();
 });
 
@@ -26,16 +26,29 @@ self.addEventListener("fetch", event => {
   const request = event.request;
   if (request.method !== "GET") return;
 
-  // Never turn an API failure into cached application HTML. API responses are
-  // always network-authoritative and are already marked no-store by the UI.
+  // API/read-model responses are always network-authoritative.
   if (isApi(request)) {
-    event.respondWith(fetch(request));
+    event.respondWith(fetch(request, { cache: "no-store" }));
+    return;
+  }
+
+  // HTML must prefer the deployed shell. Fall back to cache only when offline.
+  const acceptsHtml = request.mode === "navigate" ||
+    request.headers.get("accept")?.includes("text/html");
+  if (acceptsHtml) {
+    event.respondWith(
+      fetch(request, { cache: "no-store" }).catch(() =>
+        caches.match(request).then(r => r || caches.match("/manifest.webmanifest"))
+      )
+    );
     return;
   }
 
   event.respondWith(
-    fetch(request).catch(() =>
-      caches.match(request).then(r => r || caches.match("/"))
-    )
+    fetch(request).catch(() => caches.match(request))
   );
+});
+
+self.addEventListener("message", event => {
+  if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
