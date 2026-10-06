@@ -1122,12 +1122,68 @@ function VanguardTerminal({
   );
 }
 
+
+type SyncChannel = "market" | "health" | "config" | "evidence" | "history";
+
+interface SyncState {
+  lastOkAt: number | null;
+  lastErrorAt: number | null;
+  lastError: string | null;
+  state: "WAITING" | "LIVE" | "STALE" | "ERROR";
+}
+
+const EMPTY_SYNC: SyncState = {
+  lastOkAt: null,
+  lastErrorAt: null,
+  lastError: null,
+  state: "WAITING",
+};
+
+function syncAge(lastOkAt: number | null): string {
+  if (lastOkAt == null) return "—";
+  const age = Math.max(0, Math.floor((Date.now() - lastOkAt) / 1000));
+  if (age < 1) return "<1s";
+  if (age < 60) return `${age}s`;
+  return `${Math.floor(age / 60)}m`;
+}
+
+function SyncStatus({ hotConnection, sync, error }: {
+  hotConnection: string;
+  sync: Record<SyncChannel, SyncState>;
+  error: string | null;
+}) {
+  const hot = hotConnection === "LIVE";
+  const pills: Array<[string, string, string]> = [
+    ["HOT", hot ? "LIVE" : hotConnection, hot ? "good" : "warn"],
+    ["READ", sync.market.state, sync.market.state === "LIVE" ? "good" : "warn"],
+    ["EVIDENCE", sync.evidence.state, sync.evidence.state === "LIVE" ? "good" : "warn"],
+    ["HISTORY", sync.history.state, sync.history.state === "LIVE" ? "good" : "warn"],
+  ];
+  const topError = error || sync.market.lastError || sync.evidence.lastError || sync.history.lastError;
+  return (
+    <div className="surface-sync" aria-live="polite">
+      <div className="surface-sync-pills">
+        {pills.map(([label, value, tone]) => (
+          <span key={label} className={`surface-sync-pill ${tone}`}>
+            <i />{label} {value}
+          </span>
+        ))}
+      </div>
+      <div className={`surface-sync-detail ${topError ? "error" : ""}`}>
+        <span>READ {syncAge(sync.market.lastOkAt)}</span>
+        <span>EVIDENCE {syncAge(sync.evidence.lastOkAt)}</span>
+        <span>HISTORY {syncAge(sync.history.lastOkAt)}</span>
+        {topError ? <b title={topError}>RETRYING</b> : <b>AUTO</b>}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("terminal");
   const [symbols, setSymbols] = useState<SymbolMarket[]>([]);
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [selected, setSelected] = useState("BTCUSDT");
-  const cursorRef = useRef(0);
   const [marketStatus, setMarketStatus] = useState("STARTING");
   const [durabilityStatus, setDurabilityStatus] = useState("UNKNOWN");
   const [lastDurable, setLastDurable] = useState(0);
@@ -1141,6 +1197,13 @@ function App() {
   const [directEvents, setDirectEvents] = useState<MarketEvent[]>([]);
   const directFeedRef = useRef<(() => void) | null>(null);
   const inFlight = useRef(false);
+  const [sync, setSync] = useState<Record<SyncChannel, SyncState>>({
+    market: { ...EMPTY_SYNC },
+    health: { ...EMPTY_SYNC },
+    config: { ...EMPTY_SYNC },
+    evidence: { ...EMPTY_SYNC },
+    history: { ...EMPTY_SYNC },
+  });
 
   // Independent visual hot plane: when the API/read-model is unavailable or stale,
   // the terminal keeps receiving public Binance market data directly in the browser.
@@ -1186,13 +1249,20 @@ function App() {
   useEffect(() => {
     let disposed = false;
     let timer = 0;
+
+    const setMarketSync = (patch: Partial<SyncState>) => {
+      setSync(prev => ({ ...prev, market: { ...prev.market, ...patch } }));
+    };
+
     const poll = async () => {
       if (disposed || inFlight.current) return;
       inFlight.current = true;
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 12000);
+      const timeout = window.setTimeout(() => controller.abort(), 7000);
       try {
-        const response = await fetchMarketStream(cursorRef.current, 360, controller.signal);
+        // Always request a bounded hot snapshot rather than depending on a
+        // client cursor surviving Render restarts, tab sleeps or SW recovery.
+        const response = await fetchMarketStream(0, 360, controller.signal);
         if (disposed) return;
         setMarketStatus(response.market_status || response.status || "DEGRADED");
         setDurabilityStatus(response.durability_status || "UNKNOWN");
@@ -1207,19 +1277,39 @@ function App() {
             .sort((a, b) => a.stream_seq - b.stream_seq)
             .slice(-720);
         });
-        cursorRef.current = response.next_cursor || cursorRef.current;
+
         setError(null);
+        setMarketSync({
+          lastOkAt: Date.now(),
+          lastErrorAt: null,
+          lastError: null,
+          state: "LIVE",
+        });
       } catch (err) {
-        if (!disposed) setError(err instanceof Error ? err.message : "market read-model unavailable; hot plane may continue");
+        const message = err instanceof Error ? err.message : "market read-model unavailable";
+        if (!disposed) {
+          setError(message);
+          setMarketSync({
+            lastErrorAt: Date.now(),
+            lastError: message,
+            state: sync.market.lastOkAt ? "STALE" : "ERROR",
+          });
+        }
       } finally {
         window.clearTimeout(timeout);
         inFlight.current = false;
-        if (!disposed) timer = window.setTimeout(poll, 5000);
+        if (!disposed) {
+          timer = window.setTimeout(poll, 5000);
+        }
       }
     };
-    const onVisible = () => { if (document.visibilityState === "visible") void poll(); };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void poll();
+    };
     document.addEventListener("visibilitychange", onVisible);
     void poll();
+
     return () => {
       disposed = true;
       document.removeEventListener("visibilitychange", onVisible);
@@ -1227,71 +1317,176 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    let disposed = false;
-    const controller = new AbortController();
-    const run = async () => {
-      try {
-        const [nextHealth, nextConfig] = await Promise.all([
-          fetchHealth(controller.signal),
-          fetchConfig(controller.signal),
-        ]);
-        if (!disposed) {
-          setHealth(nextHealth);
-          setConfig(nextConfig);
-        }
-      } catch {
-        // Market stream remains authoritative for the hot UI.
-      }
-    };
-    void run();
-    const id = window.setInterval(() => void run(), 10000);
-    return () => {
-      disposed = true;
-      controller.abort();
-      window.clearInterval(id);
-    };
-  }, []);
 
   useEffect(() => {
     let disposed = false;
-    const controller = new AbortController();
+    let timer = 0;
+
+    const loadOne = async <T,>(channel: SyncChannel, fn: (signal: AbortSignal) => Promise<T>, onOk: (payload: T) => void) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 7000);
+      try {
+        const payload = await fn(controller.signal);
+        if (disposed) return;
+        onOk(payload);
+        setSync(prev => ({
+          ...prev,
+          [channel]: {
+            ...prev[channel],
+            lastOkAt: Date.now(),
+            lastErrorAt: null,
+            lastError: null,
+            state: "LIVE",
+          },
+        }));
+      } catch (err) {
+        if (disposed) return;
+        const message = err instanceof Error ? err.message : `${channel} unavailable`;
+        setSync(prev => ({
+          ...prev,
+          [channel]: {
+            ...prev[channel],
+            lastErrorAt: Date.now(),
+            lastError: message,
+            state: prev[channel].lastOkAt ? "STALE" : "ERROR",
+          },
+        }));
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+
+    const run = () => {
+      void loadOne("health", fetchHealth, payload => setHealth(payload));
+      void loadOne("config", fetchConfig, payload => setConfig(payload));
+    };
+
+    const tick = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    run();
+    timer = window.setInterval(tick, 10000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+
+  useEffect(() => {
+    let disposed = false;
+    let timer = 0;
+
     const loadEvidence = async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 9000);
       try {
         const payload = await fetchEvidence(controller.signal);
-        if (!disposed) setEvidence(payload);
-      } catch {
-        // Preserve the last good evidence snapshot through transient backend sleeps.
+        if (disposed) return;
+        setEvidence(payload);
+        setSync(prev => ({
+          ...prev,
+          evidence: {
+            ...prev.evidence,
+            lastOkAt: Date.now(),
+            lastErrorAt: null,
+            lastError: null,
+            state: "LIVE",
+          },
+        }));
+      } catch (err) {
+        if (!disposed) {
+          const message = err instanceof Error ? err.message : "evidence read-model unavailable";
+          setSync(prev => ({
+            ...prev,
+            evidence: {
+              ...prev.evidence,
+              lastErrorAt: Date.now(),
+              lastError: message,
+              state: prev.evidence.lastOkAt ? "STALE" : "ERROR",
+            },
+          }));
+        }
+      } finally {
+        window.clearTimeout(timeout);
       }
     };
+
+    const run = () => {
+      if (document.visibilityState === "visible") void loadEvidence();
+    };
     void loadEvidence();
-    const id = window.setInterval(() => void loadEvidence(), 15000);
+    timer = window.setInterval(run, 10000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void loadEvidence();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       disposed = true;
-      controller.abort();
-      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(timer);
     };
   }, []);
 
+
   useEffect(() => {
-    const controller = new AbortController();
     let disposed = false;
+    let timer = 0;
+
     const load = async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 9000);
       try {
         const payload = await fetchHistory(selected, resolution, 240, controller.signal);
-        if (!disposed) setHistory(payload);
-      } catch {
-        // Preserve durable history; chart components also derive a local hot-plane view.
+        if (disposed) return;
+        setHistory(payload);
+        setSync(prev => ({
+          ...prev,
+          history: {
+            ...prev.history,
+            lastOkAt: Date.now(),
+            lastErrorAt: null,
+            lastError: null,
+            state: "LIVE",
+          },
+        }));
+      } catch (err) {
+        if (!disposed) {
+          const message = err instanceof Error ? err.message : "history unavailable";
+          setSync(prev => ({
+            ...prev,
+            history: {
+              ...prev.history,
+              lastErrorAt: Date.now(),
+              lastError: message,
+              state: prev.history.lastOkAt ? "STALE" : "ERROR",
+            },
+          }));
+        }
+      } finally {
+        window.clearTimeout(timeout);
       }
     };
+
+    const run = () => {
+      if (document.visibilityState === "visible") void load();
+    };
     void load();
-    const id = window.setInterval(() => void load(), 30000);
+    timer = window.setInterval(run, 15000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       disposed = true;
-      controller.abort();
-      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(timer);
     };
   }, [selected, resolution]);
+
 
   const displaySymbols = useMemo(() => DEFAULT_SYMBOLS.map(symbol => {
     const apiItem = symbols.find(item => item.symbol === symbol);
@@ -1346,6 +1541,8 @@ function App() {
           <span>{error ? "read-model degraded" : "stream synchronized"}</span>
         </div>
       </header>
+
+      <SyncStatus hotConnection={directConnection} sync={sync} error={error} />
 
       <div className="content">
         <div className="brandline"><span>CRYPTONITA</span><b>QUANT TERMINAL</b></div>
