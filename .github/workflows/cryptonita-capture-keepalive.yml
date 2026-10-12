@@ -47,6 +47,18 @@ jobs:
           if not payload.get("symbols_live"):
               failures.append("symbols_not_live")
 
+          # A live socket is not sufficient: capture must be tied to a durable,
+          # named prospective cohort. This prevents a suspended DB from producing
+          # a misleading green keepalive run while events accumulate only in RAM.
+          market_plane = payload.get("market_plane") or {}
+          recovery_gate = market_plane.get("recovery_gate") or {}
+          capture_session_id = recovery_gate.get("capture_session_id")
+          durability = str(market_plane.get("durability") or "").upper()
+          if not capture_session_id:
+              failures.append("prospective_capture_session_missing")
+          if not durability or durability == "DEGRADED":
+              failures.append("durability_not_healthy")
+
           if failures:
               raise SystemExit("CAPTURE_KEEPALIVE_FAILED: " + ",".join(failures))
           PY
